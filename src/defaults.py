@@ -8,8 +8,8 @@ REFERENCE_BAND = 'B02' # Band that is fixed whilst others move. Naturally easies
 
 CLOUDY_THRESH = 2000 # Basic thresholding for cloudiness in DN of Sentinel-2. TOO: Implement way to skip cloudy points using this
 THRESHOLD_BAND = 'B08' # Band to use for thresholdings
-FOOTPRINT_RESOLUTION = 10/np.sqrt(2) # initial rate that is used during rotation of the image. Mostly important to not lose too much information during rotation, in metres
-CONVOLUTION_UPSAMPLING_RESOLUTION = 1 # pixel size that is used during convolution, in metres
+ALONG_TRACK_RESOLUTION = 1 # pixel size that is used during convolution, in metres
+ACROSS_TRACK_RESOLUTION = 10 # pixel size that is used during convolution, in metres
 STRIDE = 200 # Stride between points in metres
 CONVOLVED_SIZE_ALONG_TRACK = 300 # Size that is used in correlation along track. In metres
 CONVOLVED_SIZE_ACROSS_TRACK = 300 # Size that is used in correlation across track. In metres

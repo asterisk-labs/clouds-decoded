@@ -4,8 +4,7 @@ import skimage.transform
 from tqdm import tqdm
 from mpl_toolkits.mplot3d import Axes3D
 
-from data import heightsToOffsets, getValidFootprintIDs, getValidFootprintShape, \
-    extractAndRotateFootprint, getFootprints, getOrbitImageAngle, getBands
+from data import heightsToOffsets, Sentinel2Scene, ColumnExtractor, getBands
 from config import CloudHeightConfig
 from constants import BAND_RESOLUTIONS
 
@@ -86,7 +85,7 @@ def processColumnStrip(
     reference_band = config.reference_band
     original_resolution = BAND_RESOLUTIONS[reference_band]
     convolved_size_along_track = config.convolved_size_along_track
-    along_track_upsampled_resolution = config.convolution_upsampling_resolution
+    along_track_upsampled_resolution = config.along_track_resolution
     along_track_stride = config.stride
     heights = config.heights
     max_height = config.max_height
@@ -142,7 +141,8 @@ def processColumnStrip(
     # Extract the coordinates of the centres
     width = column_bands[reference_band].shape[1]
     centre_x = width//2
-    extracted_coords = column_coords[centres//along_track_upsampling_rate,centre_x]
+    print(column_coords.shape)
+    extracted_coords = column_coords[:,centres//along_track_upsampling_rate,centre_x]
     retrieved_heights = []
     retrieved_coords = []
     for centre,coord in zip(centres,extracted_coords):
@@ -165,54 +165,6 @@ def processColumnStrip(
     return retrieved_heights,retrieved_coords
 
 
-def processFootprint(footprint_bands,footprint_coords,footprint_direction,conf):
-    """
-    Process a footprint, extracting the heights at each point
-
-    Parameters:
-        footprint_bands: dict, Dictionary of bands in the footprint
-        footprint_coords: np.array, Array of coordinates of the pixels in the footprint
-        footprint_direction: str, Direction of the footprint
-        conf: CloudHeightConfig, Configuration object
-
-    Returns:
-        retrieved_heights: np.array, Array of retrieved heights
-        retrieved_coords: np.array, Array of coordinates of the retrieved heights
-    """
-
-    col_width = int(conf.convolved_size_across_track // conf.footprint_resolution)
-    col_step = int(conf.stride // conf.footprint_resolution)
-    col_starts = np.arange(0,footprint_bands[conf.reference_band].shape[1]-col_width,col_step)
-
-    retrieved_heights = []
-    retrieved_coords = []
-    for i,col_start in tqdm(enumerate(col_starts),total=len(col_starts)):
-        col_extracted_pair = {}
-        for name,band in footprint_bands.items():
-            col_extracted_pair[name] = band[:,col_start:col_start+col_width]
-        col_extracted_points = footprint_coords[:,col_start:col_start+col_width]
-        
-        col_heights,col_coords = processColumnStrip(
-            col_extracted_pair,
-            col_extracted_points,
-            conf,
-            footprint_direction,
-            brightness_mask=True
-        )
-        retrieved_heights.extend(col_heights)
-        retrieved_coords.extend(col_coords)
-    
-    return retrieved_heights,retrieved_coords
-
-# retrieved_heights,retrieved_coords = processFootprint(extracted,extracted_points,params)
-
-# # 3D plot of the retrieved heights
-# fig = plt.figure()
-# ax = fig.add_subplot(111, projection='3d')
-# ax.scatter(retrieved_coords[:,0],retrieved_coords[:,1],retrieved_heights,c=retrieved_heights)
-# plt.show()
-
-
 def processScene(config_file=None):
     """
     Process a scene, extracting the heights at each point
@@ -231,33 +183,32 @@ def processScene(config_file=None):
     else:
         raise ValueError("config_file must be a string or CloudHeightConfig object")
 
-    fps = getFootprints(conf.scene_dir,bands=conf.bands)
-    footprint_ids = getValidFootprintIDs(fps)
-    image_angle = getOrbitImageAngle(conf.scene_dir)
-
-    band_data = getBands(conf.scene_dir,conf.bands)
-
-    final_heights = []
-    final_coords = []
-    for fp_id in footprint_ids[1:-1]:
-        if fp_id % 2 == 0:
-            direction = 'up'
-        else:
-            direction = 'down'
-        valid_footprint = getValidFootprintShape(fps, fp_id)
-        extracted,extracted_points = extractAndRotateFootprint(
-            band_data,
-            valid_footprint,
-            image_angle,
-            conf.footprint_resolution,
-            reference_band=conf.reference_band
+    scene = Sentinel2Scene(conf.scene_dir)
+    column_extractor = ColumnExtractor(scene,conf,conf.hack_image_azimuth)
+    final_heights, final_coords = [], []
+    for col in column_extractor:
+        extracted,extracted_points,footprint_id = col
+        if extracted is None:
+            print('skipping')
+            continue
+        print('extracted and processing')
+        direction = 'up' if footprint_id % 2 == 0 else 'down'
+        
+        retrieved_heights,retrieved_coords = processColumnStrip(
+            extracted,
+            extracted_points,
+            conf,
+            direction,
+            brightness_mask=True
         )
-        retrieved_heights,retrieved_coords = processFootprint(extracted,extracted_points,direction,conf)
+
+        print(np.array(retrieved_coords).shape,np.array(retrieved_heights).shape)
+
         final_heights.extend(retrieved_heights)
         final_coords.extend(retrieved_coords)
-    final_heights = np.array(final_heights)
-    final_coords = np.array(final_coords)
-    return final_heights,final_coords
+        print(np.array(final_coords).shape,np.array(final_heights).shape)
+    return np.array(final_heights),np.array(final_coords)
+
 
 def plot_height(config,final_heights,final_coords):
     """
@@ -305,8 +256,14 @@ if __name__=='__main__':
     config = CloudHeightConfig(args.config)
 
     final_heights,final_coords = processScene(config)
-    final_heights,final_coords = np.load('output.npz')['heights'],np.load('output.npz')['coords']
+    # final_heights,final_coords = np.load('output.npz')['heights'],np.load('output.npz')['coords']
     if args.plot:
         plot_height(config,final_heights,final_coords)
     if args.output is not None:
         np.savez(args.output,heights=final_heights,coords=final_coords)
+
+
+
+
+
+# NOTE TO SELF: currently the points returned by ColumnExtractor are in the wrong shape for the height extraction. Not sure why this is different to what I implemented previously, but need to change something.
