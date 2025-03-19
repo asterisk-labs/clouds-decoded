@@ -1,8 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import skimage.transform
 from tqdm import tqdm
-from mpl_toolkits.mplot3d import Axes3D
+import time
 
 from data import heightsToOffsets, Sentinel2Scene, ColumnExtractor, getBands
 from config import CloudHeightConfig
@@ -58,22 +57,17 @@ def correlateAtHeights(footprint_bands,centre,along_track_size,heights,direction
         )
     return np.array(scores)
 
-def processColumnStrip(
-        column_bands,
-        column_coords,
+def processColumn(
+        column,
         config,
-        direction,
         brightness_mask=True,
     ):
     """
-    Takes the column of pixels, assumed to be fairly thin across. 
-    We then upsample the data along the track direction, and correlate the data at each height for each patch down the column.
+    Takes the column of pixels, assumed to be fairly thin across.
 
     Parameters:
-        column_bands: dict, Dictionary of bands in the column
-        column_coords: np.array, Array of coordinates of the pixels in the column
+        column: Column object
         config: CloudHeightConfig, Configuration object
-        direction: str, Direction of the column
         brightness_mask: bool, Whether to use a mask for brightness
 
     Returns:
@@ -83,66 +77,54 @@ def processColumnStrip(
 
     # Unpack the configuration
     reference_band = config.reference_band
-    original_resolution = BAND_RESOLUTIONS[reference_band]
     convolved_size_along_track = config.convolved_size_along_track
-    along_track_upsampled_resolution = config.along_track_resolution
+    along_track_resolution = config.along_track_resolution
+    across_track_resolution = config.across_track_resolution
     along_track_stride = config.stride
     heights = config.heights
     max_height = config.max_height
     cloudy_thresh = config.cloudy_thresh
     threshold_band = config.threshold_band
     
-
-    along_track_upsampling_rate = int(original_resolution / along_track_upsampled_resolution)
-    along_track_size = convolved_size_along_track // along_track_upsampled_resolution 
-    along_track_stride = along_track_stride // along_track_upsampled_resolution
-    pixel_size = original_resolution / along_track_upsampling_rate
-
-    # Upsample all the data along the track (vertical) direction
-    if along_track_upsampling_rate != 1:
-        column_bands = {
-            name:skimage.transform.resize(
-                band,
-                (band.shape[0]*along_track_upsampling_rate,band.shape[1]),
-                order=1,
-                anti_aliasing=False
-            ) for name,band in column_bands.items()
-        }
+    along_track_size = convolved_size_along_track // along_track_resolution 
+    along_track_stride = along_track_stride // along_track_resolution
+    gradient_power_ratio = along_track_resolution / across_track_resolution
 
     # Create mask for brightness
     if brightness_mask:
-        mask = column_bands[threshold_band] > cloudy_thresh
+        mask = column.getMask(threshold_band,cloudy_thresh)
         
     # Take gradients of the bands
-    column_bands = {
-        name: np.stack((
-            np.gradient(band,axis=0), 
-            np.gradient(band,axis=1)/along_track_upsampling_rate # TODO: Check if these gradients have same relative power along and across track
-        ), axis=-1) for name,band in column_bands.items()
-    }
+    if config.target_features == "reflectance":
+        target_features = column.bands
+    elif config.target_features == "gradient":
+        target_features = column.getGradients(gradient_power_ratio)
     # TODO: Check if block is actually finding correct range that heights should be calculated for...
 
     # Find the max offset that we need to consider
     max_offset = heightsToOffsets(
-        [max_height]*len(column_bands),
-        column_bands.keys(),
-        pixel_size)
-    max_offset = int(np.ceil(max_offset.max()))
-
-    # Using max offset, we determine the range of centres that we can use
-    centres = np.arange(
-        along_track_size+max_offset,
-        column_bands[reference_band].shape[0]-along_track_size-max_offset,
-        along_track_stride
+        [max_height]*len(target_features),
+        target_features.keys(),
+        along_track_resolution
     )
-
-    ####################### 
+    max_offset = int(np.ceil(max_offset.max()))
+    if column.direction == 'up':
+        centres = np.arange(
+            along_track_size//2,
+            column.bands[reference_band].shape[0]-along_track_size//2-max_offset,
+            along_track_stride
+            )
+    else:
+        centres = np.arange(
+            along_track_size//2+max_offset,
+            column.bands[reference_band].shape[0]-along_track_size//2,
+            along_track_stride
+            )
 
     # Extract the coordinates of the centres
-    width = column_bands[reference_band].shape[1]
+    width = target_features[reference_band].shape[1]
     centre_x = width//2
-    print(column_coords.shape)
-    extracted_coords = column_coords[:,centres//along_track_upsampling_rate,centre_x]
+    extracted_coords = column.points[centres,centre_x,:]
     retrieved_heights = []
     retrieved_coords = []
     for centre,coord in zip(centres,extracted_coords):
@@ -151,19 +133,18 @@ def processColumnStrip(
             if mask[centre,centre_x] == 0:
                 continue
             scores = correlateAtHeights(
-                column_bands,
+                target_features,
                 centre,
                 along_track_size,
                 heights,
-                direction,
-                pixel_size,
+                column.direction,
+                along_track_resolution,
                 reference_band=reference_band
             )
             height = heights[np.argmax(scores)]
             retrieved_heights.append(height)
             retrieved_coords.append(coord)
     return retrieved_heights,retrieved_coords
-
 
 def processScene(config_file=None):
     """
@@ -185,30 +166,44 @@ def processScene(config_file=None):
 
     scene = Sentinel2Scene(conf.scene_dir)
     column_extractor = ColumnExtractor(scene,conf,conf.hack_image_azimuth)
+
+    times = {'extraction':0,'processing':0}
+    
     final_heights, final_coords = [], []
-    for col in column_extractor:
-        extracted,extracted_points,footprint_id = col
-        if extracted is None:
-            print('skipping')
+    for idx in tqdm(range(len(column_extractor))):
+        t0 = time.time()
+        col = column_extractor[idx]
+        times['extraction'] += time.time()-t0
+
+        if col is None:
             continue
-        print('extracted and processing')
-        direction = 'up' if footprint_id % 2 == 0 else 'down'
-        
-        retrieved_heights,retrieved_coords = processColumnStrip(
-            extracted,
-            extracted_points,
+        t0 = time.time()
+        retrieved_heights,retrieved_coords = processColumn(
+            col,
             conf,
-            direction,
             brightness_mask=True
-        )
+            )
+        times['processing'] += time.time()-t0
+        if retrieved_heights is not None:
+            final_heights.extend(retrieved_heights)
+            final_coords.extend(retrieved_coords)
+    return np.array(final_heights),np.array(final_coords), times
 
-        print(np.array(retrieved_coords).shape,np.array(retrieved_heights).shape)
 
-        final_heights.extend(retrieved_heights)
-        final_coords.extend(retrieved_coords)
-        print(np.array(final_coords).shape,np.array(final_heights).shape)
-    return np.array(final_heights),np.array(final_coords)
-
+def debug_plot(extracted,extracted_points,footprint_id):
+    """
+    Debug plot of the extracted data
+    """
+    fig,ax = plt.subplots(1,1,figsize=(15,15))
+    c = extracted['B02'].ravel()
+    print(extracted_points.shape)
+    print(extracted['B02'].shape)
+    ax.scatter(extracted_points[...,0].ravel(),109800-extracted_points[...,1].ravel(),c=c,cmap='plasma',s=3,alpha=0.5)
+    ax.set_xlim([0,109800])
+    ax.set_ylim([0,109800])
+    fig.savefig(f'debug_{footprint_id}.png')
+    plt.close(fig)
+    return None
 
 def plot_height(config,final_heights,final_coords):
     """
@@ -255,7 +250,8 @@ if __name__=='__main__':
 
     config = CloudHeightConfig(args.config)
 
-    final_heights,final_coords = processScene(config)
+    final_heights,final_coords,times = processScene(config)
+    print(times)
     # final_heights,final_coords = np.load('output.npz')['heights'],np.load('output.npz')['coords']
     if args.plot:
         plot_height(config,final_heights,final_coords)

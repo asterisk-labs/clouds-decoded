@@ -32,6 +32,7 @@ class CloudHeightConfig:
             raise KeyError("SCENE_DIR not found in configuration file, this is a required parameter")
 
         self.hack_image_azimuth = config.get('HACK_IMAGE_AZIMUTH',defaults.HACK_IMAGE_AZIMUTH)
+        self.n_workers = config.get('N_WORKERS',defaults.N_WORKERS)
         self.cloudy_thresh = config.get('CLOUDY_THRESH',defaults.CLOUDY_THRESH)
         self.threshold_band = config.get('THRESHOLD_BAND',defaults.THRESHOLD_BAND)
         self.stride = config.get('STRIDE',defaults.STRIDE)
@@ -45,6 +46,7 @@ class CloudHeightConfig:
         if self.heights[-1] != self.max_height:
             self.heights = np.append(self.heights,self.max_height)
         self.bands = config.get('BANDS',defaults.BANDS)
+        self.target_features = config.get('TARGET_FEATURES',defaults.TARGET_FEATURES)
 
         self.plot_writeto = config.get('PLOT_WRITETO',None)
 
