@@ -257,9 +257,4 @@ if __name__=='__main__':
         plot_height(config,final_heights,final_coords)
     if args.output is not None:
         np.savez(args.output,heights=final_heights,coords=final_coords)
-
-
-
-
-
-# NOTE TO SELF: currently the points returned by ColumnExtractor are in the wrong shape for the height extraction. Not sure why this is different to what I implemented previously, but need to change something.
+        
