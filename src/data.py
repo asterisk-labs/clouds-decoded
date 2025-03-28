@@ -4,7 +4,7 @@ import numpy as np
 import rasterio as rio
 import pyproj
 import skimage.transform
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RegularGridInterpolator, interpn
 
 import defaults
 from constants import BAND_TIME_DELAYS, ORBITAL_VELOCITY, SPACECRAFT_ALTITUDE, BAND_RESOLUTIONS
@@ -116,6 +116,7 @@ def getFootprintPaths(sceneDirectory, bands):
     files = os.listdir(os.path.join(granule, "QI_DATA"))
     for band in bands:
         path = [f for f in files if f.endswith(f"DETFOO_{band}.jp2")]
+        print(path)
         assert len(path) == 1, f"Band {band} not found"
         paths[band] = os.path.join(granule, "QI_DATA", path[0])
     if len(paths) == 1:
@@ -197,7 +198,7 @@ def getLatitude(sceneDirectory):
         lat: float, latitude in radians
     """
 
-    band_path = getBandPaths(sceneDirectory, bands=['B02'])
+    band_path = getBandPaths(sceneDirectory, bands=['B02'])['B02']
     with rio.open(band_path) as src:
         bounds = src.bounds
     transform = pyproj.transformer.Transformer.from_crs(src.crs, 'EPSG:4326', always_xy=True)
@@ -205,8 +206,30 @@ def getLatitude(sceneDirectory):
         transform.transform(bounds.left, bounds.top)[1] + 
         transform.transform(bounds.right, bounds.bottom)[1]
     ) / 2
-    lat = np.deg2rad(lat)
+    # lat = np.deg2rad(lat)
     return lat
+
+def getLongitude(sceneDirectory):
+    """
+    Use rasterio to get the bbox of the scene and calculate the centre longitude
+
+    Parameters:
+        sceneDirectory: str, path to the scene directory
+
+    Returns:
+        lon: float, longitude in radians
+    """
+
+    band_path = getBandPaths(sceneDirectory, bands=['B02'])['B02']
+    with rio.open(band_path) as src:
+        bounds = src.bounds
+    transform = pyproj.transformer.Transformer.from_crs(src.crs, 'EPSG:4326', always_xy=True)
+    lon = (
+        transform.transform(bounds.left, bounds.top)[0] + 
+        transform.transform(bounds.right, bounds.bottom)[0]
+    ) / 2
+    # lon = np.deg2rad(lon)
+    return lon
 
 def getOrbitType(sceneDirectory):
     """
@@ -236,7 +259,7 @@ def getSceneOrientation(sceneDirectory):
         orientation: float, orientation in radians    
     """
 
-    band_path = getBandPaths(sceneDirectory, bands=['B02'])
+    band_path = getBandPaths(sceneDirectory, bands=['B02'])['B02']
     with rio.open(band_path) as src:
         topLeftUTM = src.transform * (0, 0)
         topRightUTM = src.transform * (src.width, 0) 
@@ -282,12 +305,22 @@ def getBandInterpolators(bands):
     if not isinstance(bands, list):
         bands = [bands]
 
+    # interpolators = []
+    # for band in bands:
+    #     interpolators.append(RegularGridInterpolator((
+    #         np.arange(band.shape[0]), 
+    #         np.arange(band.shape[1])
+    #     ), band))
+    # if len(interpolators) == 1:
+    #     return interpolators[0]
+
+    # Use interpn instead
     interpolators = []
     for band in bands:
-        interpolators.append(RegularGridInterpolator((
+        interpolators.append(lambda points: interpn((
             np.arange(band.shape[0]), 
             np.arange(band.shape[1])
-        ), band))
+        ), band, points))
     if len(interpolators) == 1:
         return interpolators[0]
     return interpolators
@@ -551,3 +584,354 @@ def extractAndRotateFootprint(bands,footprint,angle,resolution,reference_band='B
     rotated_points = np.delete(rotated_points,delete_cols,axis=1)
     rotated_points = np.delete(rotated_points,delete_rows,axis=0)
     return rotated_bands, rotated_points
+
+
+def extractAndRotateColumn(bands,col_start,angle,conf,reference_band='B02'):
+    """
+    Similar to extractAndRotateFootprint, but extracts a column of pixels from the bands
+    directly, without using a footprint. This is useful for extracting a column of pixels
+
+    Parameters:
+        bands: list, bands
+        col_start: int, starting position (in metres) of the column
+        angle: float, angle in radians
+        resolution: float, resolution of the new grid
+        reference_band: str, reference
+
+    Returns:
+        rotated_bands: dict, rotated bands
+        rotated_points: np.array, rotated points
+    """
+    assert reference_band in bands.keys(), "Reference band not found in bands"
+    
+    original_resolution = BAND_RESOLUTIONS[reference_band]
+    along_track_resolution = conf.along_track_resolution
+    across_track_resolution = conf.across_track_resolution
+
+
+    # Find length of column in metres, based on height of image, angle, and along track resolution
+    col_length = bands[reference_band].shape[0] * original_resolution / np.abs(np.cos(angle))
+
+    
+    # Find the width of the column in metres
+    row_length = conf.convolved_size_across_track
+    assert row_length % across_track_resolution == 0, "CONVOLVED_SIZE_ACROSS_TRACK must be a multiple of ACROSS_TRACK_RESOLUTION"
+
+    # Add a buffer to the length, equal to the 2x width of the column (to allow for rotation)
+    col_length += 2 * row_length
+
+    # Get coordinates of unrotated column (in metres)
+    xs = np.arange(col_start, col_start + row_length, across_track_resolution)
+    ys = np.arange(-row_length, col_length - row_length, along_track_resolution)
+    points = np.meshgrid(xs, ys)
+    points = np.array([points[0].flatten(), points[1].flatten()])
+
+    # Rotate the mesh
+    if angle != 0:
+        rotation = RotationTransform(angle, centre=(col_start, 0))
+        rotated_points = rotation(points)
+    else:
+        rotated_points = points
+
+    # Interpolate the bands at the rotated points
+    rotated_bands = {}
+    for name, band in bands.items():
+        band_resolution = BAND_RESOLUTIONS[name]
+
+        interpolator = RegularGridInterpolator(
+            (
+                band_resolution * np.arange(band.shape[0]),  # Original data set in grid with metre coordinates
+                band_resolution * np.arange(band.shape[1]),
+            ),
+            band,
+            fill_value=np.nan,
+            bounds_error=False,
+            method='linear'
+        )
+        if angle == 0:
+            rotated_band = interpolator((points[1].flatten(), points[0].flatten()))
+        else:
+            rotated_band = interpolator((rotated_points[1], rotated_points[0]))
+        rotated_band = rotated_band.reshape(len(ys), len(xs))
+        rotated_bands[name] = rotated_band
+
+class Sentinel2Scene:
+    def __init__(self,scene_directory):
+        self.scene_directory = scene_directory
+        self.bands = getBands(scene_directory, defaults.BANDS)
+        self.footprints = getFootprints(scene_directory, defaults.BANDS)
+        self.sun_zenith, self.sun_azimuth = getSunAngle(scene_directory)
+        self.image_azimuth = getOrbitImageAngle(scene_directory)
+        self.latitude = getLatitude(scene_directory)
+        self.orientation = getSceneOrientation(scene_directory)
+        self.orbit_type = getOrbitType(scene_directory)
+
+class Column:
+    def __init__(self,bands,points,footprint_id):
+        self.bands = bands
+        self.points = points
+        self.footprint_id = footprint_id
+        self.direction = 'up' if footprint_id % 2 == 0 else 'down'
+
+    def getGradients(self, gradient_power_ratio=1):
+        """
+        Calculate the gradients of the bands
+        """
+        # Take gradients of the bands
+        gradients = {
+            name: np.stack((
+                np.gradient(band,axis=0), 
+                np.gradient(band,axis=1) * gradient_power_ratio # TODO: Check if these gradients have same relative power along and across track
+            ), axis=-1) for name,band in self.bands.items()
+        }
+        return gradients
+    
+    def getMask(self,threshold_band,threshold):
+        """
+        Get the mask of the column based on the threshold band
+        """
+        mask = self.bands[threshold_band] > threshold
+        return mask
+    
+class RetrievalCube:
+    """
+    Object to store height retrievals for a scene. The cube is a 3D array of X-Y-Z where Z is the number of height steps
+    """
+    
+    def __init__(self,scene,retrievals,coords,conf):
+        self.scene = scene
+        self.conf = conf
+        self.retrievals = retrievals
+        self.coords = coords
+
+        
+    def createRtree(self):
+        """
+        Create an R-tree (in X and Y) for the retrieval cube
+        """
+        import rtree
+
+        # Create an R-tree for the retrieval cube
+
+        def generate_points():
+            for i in range(self.retrievals.shape[2]):
+                coord = self.coords[i]
+                retrieval = self.retrievals[:,:,i]
+                yield i, (coord[0], coord[1], coord[0], coord[1]), retrieval
+        
+        self.rtree = rtree.index.Index(generate_points())
+
+    def getNearestRetrieval(self,point):
+        """
+        Get the nearest retrieval to a point
+        """
+        return self.rtree.nearest(point,1,objects=True)
+    
+
+class ColumnExtractor:
+    def __init__(self,scene,conf,angle):
+        self.bands = scene.bands
+        self.footprints = scene.footprints
+        self.angle = angle
+        self.conf = conf
+        self.band_interpolators = self.getBandInterpolators(self.bands) 
+        self.footprint_interpolators = self.getFootprintInterpolators(self.footprints)
+        self.original_resolution = BAND_RESOLUTIONS[conf.reference_band]
+        self.along_track_resolution = conf.along_track_resolution
+        self.across_track_resolution = conf.across_track_resolution
+        self.width = conf.convolved_size_across_track
+        self.stride = conf.stride
+        self.reference_band = conf.reference_band
+        self.unrotated_origin_column, self.col_shape = self.getUnrotatedOriginColumn()
+        self.rotation = RotationTransform(angle)
+
+    def getBandInterpolators(self,bands):
+        """
+        Get interpolators for the bands
+        
+        Parameters:
+            bands: dict, bands
+
+        Returns:
+            interpolators: list, interpolators
+        """
+        
+        assert isinstance(bands, dict), "Bands must be a dictionary"
+
+        interpolators = {}
+        for band in bands.keys():
+            interpolators[band] = RegularGridInterpolator((
+                    np.arange(bands[band].shape[0]) * BAND_RESOLUTIONS[band],
+                    np.arange(bands[band].shape[1]) * BAND_RESOLUTIONS[band]
+                ), 
+                bands[band], 
+                fill_value=np.nan,
+                bounds_error=False, 
+                method='linear'
+            )
+
+        # RegularGridInterpolator is 2.5x slower than interp2d. Don't want to change other code that touches the interpolators
+        # so, we will make a lambda function that calls interpn with the same syntax as RegularGridInterpolator (x,y) instead of ((x,y))
+        # interpolators = {band: lambda coords: interpn(
+        #     (np.arange(bands[band].shape[0]) * BAND_RESOLUTIONS[band], np.arange(bands[band].shape[1]) * BAND_RESOLUTIONS[band]),
+        #     bands[band],
+        #     coords,
+        #     fill_value=np.nan,
+        #     bounds_error=False
+        # ) for band in bands.keys()}
+        return interpolators
+    
+    def getFootprintInterpolators(self,footprints):
+        """
+        Get interpolators for the footprints
+        
+        Parameters:
+            footprints: dict, footprints
+
+        Returns:
+            interpolators: list, interpolators
+        """
+        
+        assert isinstance(footprints, dict), "Footprints must be a dictionary"
+
+        interpolators = {}
+        for band in footprints.keys():
+            interpolators[band] = RegularGridInterpolator((
+                    np.arange(footprints[band].shape[0]) * BAND_RESOLUTIONS[band],
+                    np.arange(footprints[band].shape[1]) * BAND_RESOLUTIONS[band]
+                ), 
+                footprints[band], 
+                fill_value=np.nan,
+                bounds_error=False, 
+                method='nearest'
+            )
+        return interpolators
+    
+    def getUnrotatedOriginColumn(self):
+        """
+        Get the unrotated column of points that will be rotated and translated for a given column -- much faster
+        than recalculating the points each time
+        """
+        # Find length of column in metres, based on height of image, angle, and along track resolution
+        col_length = self.bands[self.reference_band].shape[0] * self.original_resolution / np.abs(np.cos(self.angle))
+
+        # Get the width of the column in metres
+        row_length = self.width
+        assert row_length % self.across_track_resolution == 0, "CONVOLVED_SIZE_ACROSS_TRACK must be a multiple of ACROSS_TRACK_RESOLUTION"
+
+        # Add a buffer to the length, equal to the 2x width of the column (to allow for rotation)
+        col_length += 2 * row_length
+
+        # Get coordinates of unrotated column (in metres)
+        xs = np.arange(0, row_length, self.across_track_resolution)
+        ys = np.arange(-row_length, col_length - row_length, self.along_track_resolution)
+        points = np.meshgrid(xs, ys)
+        points = np.array([points[0].flatten(), points[1].flatten()])
+        return points, (len(ys), len(xs))
+    
+    def extractRotatedColumn(self, col_start):
+        """
+        Extract a column of pixels from the bands, rotate it by the given angle, and return the rotated bands
+
+        Parameters:
+            col_start: int, starting position (in metres) of the column
+            angle: float, angle in radians
+
+        Returns:
+            rotated_bands: dict, rotated bands
+        """
+        points = self.rotation(self.unrotated_origin_column) # Rotate the points
+        points += np.array([[col_start],[0]]) # Final, translated points
+
+        footprint_id = self.getFootprintID(points)
+        if footprint_id is None:
+            return None
+        
+        rotated_bands = {}
+        for band in self.bands.keys():
+            rotated_band = self.band_interpolators[band]((points[1].flatten(),points[0].flatten()))
+            rotated_band = rotated_band.reshape(self.col_shape)
+            rotated_bands[band] = rotated_band
+
+        points = self.reshapePointsToArr(points,self.col_shape)
+        rotated_bands, points = self.depad(rotated_bands,points)
+        return Column(rotated_bands,points,footprint_id)
+    
+    def reshapePointsToArr(self,points,shape):
+        """
+        Reshape the points to the shape of the rotated bands, YxXx2
+        """
+            
+        points = np.reshape(points,(2,shape[0],shape[1]))
+        points = np.moveaxis(points,0,-1)
+        return points
+    
+    def depad(self,data,points):
+        """
+        Checks for nan values and removes them from the rotated bands and points
+        """
+
+        delete_cols = np.where(np.all(np.isnan(data[self.reference_band]),axis=0))[0]
+        delete_rows = np.where(np.all(np.isnan(data[self.reference_band]),axis=1))[0]
+        for name,band in data.items():
+            data[name] = np.delete(band,delete_cols,axis=1)
+            data[name] = np.delete(data[name],delete_rows,axis=0)
+        points = np.delete(points,delete_cols,axis=1)
+        points = np.delete(points,delete_rows,axis=0)
+        if np.size(points) == 0:
+            return None, None
+        return data, points
+
+    def getFootprintID(self,points):
+        """
+        Make sure that all points are within the valid footprint, and return the ID of the footprint
+        """
+        # Check that the points are within the valid footprint
+        # Only check first and last of each row, along the whole column
+        sparse_points = points
+
+        id = None
+        for band in self.footprints.keys():
+            interpolator = self.footprint_interpolators[band]
+            col_footprint_ids = interpolator((sparse_points[1].flatten(),sparse_points[0].flatten()))
+            present_ids = np.unique(col_footprint_ids[~np.isnan(col_footprint_ids)])
+
+            # If there are no valid IDs, or more than one, return False
+            if present_ids.size != 1:
+                return None
+            
+            # Set the ID if it is not set
+            if id is None:
+                id = present_ids[0]
+
+            # Check to see if the ID is the same as the previous band
+            elif id != present_ids[0]:
+                return None
+        return id
+
+
+    def __getitem__(self,idx):
+        """
+        Get the rotated column at the given index
+
+        Parameters:
+            idx: int, index of the column
+
+        Returns:
+            rotated_bands: dict, rotated bands
+        """
+        col_start = int(idx * self.stride)
+        column = self.extractRotatedColumn(col_start)
+        if column is None:
+            return None
+        if column.bands is None:
+            return None
+        return column
+        
+    def __len__(self):
+        base_length = self.bands[self.reference_band].shape[1] * self.original_resolution * (1 + np.abs(np.sin(self.angle)))
+        return int(base_length / self.stride)
+    
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]

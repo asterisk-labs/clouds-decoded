@@ -32,11 +32,12 @@ class CloudHeightConfig:
             raise KeyError("SCENE_DIR not found in configuration file, this is a required parameter")
 
         self.hack_image_azimuth = config.get('HACK_IMAGE_AZIMUTH',defaults.HACK_IMAGE_AZIMUTH)
+        self.n_workers = config.get('N_WORKERS',defaults.N_WORKERS)
         self.cloudy_thresh = config.get('CLOUDY_THRESH',defaults.CLOUDY_THRESH)
         self.threshold_band = config.get('THRESHOLD_BAND',defaults.THRESHOLD_BAND)
-        self.footprint_resolution = config.get('FOOTPRINT_RESOLUTION',defaults.FOOTPRINT_RESOLUTION)
-        self.convolution_upsampling_resolution = config.get('CONVOLUTION_UPSAMPLING_RESOLUTION',defaults.CONVOLUTION_UPSAMPLING_RESOLUTION)
         self.stride = config.get('STRIDE',defaults.STRIDE)
+        self.along_track_resolution = config.get('ALONG_TRACK_RESOLUTION',defaults.ALONG_TRACK_RESOLUTION)
+        self.across_track_resolution = config.get('ACROSS_TRACK_RESOLUTION',defaults.ACROSS_TRACK_RESOLUTION)
         self.convolved_size_along_track = config.get('CONVOLVED_SIZE_ALONG_TRACK',defaults.CONVOLVED_SIZE_ALONG_TRACK)
         self.convolved_size_across_track = config.get('CONVOLVED_SIZE_ACROSS_TRACK',defaults.CONVOLVED_SIZE_ACROSS_TRACK)
         self.max_height = config.get('MAX_HEIGHT',defaults.MAX_HEIGHT)
@@ -45,6 +46,7 @@ class CloudHeightConfig:
         if self.heights[-1] != self.max_height:
             self.heights = np.append(self.heights,self.max_height)
         self.bands = config.get('BANDS',defaults.BANDS)
+        self.target_features = config.get('TARGET_FEATURES',defaults.TARGET_FEATURES)
 
         self.plot_writeto = config.get('PLOT_WRITETO',None)
 
