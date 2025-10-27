@@ -3,13 +3,12 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import rasterio as rio
 import pyproj
-import skimage.transform
 from scipy.interpolate import RegularGridInterpolator, interpn
 import time
 from multiprocessing import Queue, Process
 import uuid
 import pickle
-# impor
+import rtree
 
 import defaults
 from constants import BAND_TIME_DELAYS, ORBITAL_VELOCITY, SPACECRAFT_ALTITUDE, BAND_RESOLUTIONS
@@ -498,7 +497,6 @@ class RetrievalCube:
         """
         Create an R-tree (in X and Y) for the retrieval cube
         """
-        import rtree
 
         # Create an R-tree for the retrieval cube
 
