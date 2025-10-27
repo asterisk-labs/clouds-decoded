@@ -1,7 +1,6 @@
 import numpy as np
 
 ##### USER PARAMETERS TO SET #####
- # degrees, TODO: Find a way to calculate this automatically. Currently manual from looking at the detfoo_*.jp2 files
 
 REFERENCE_BAND = 'B02' # Band that is fixed whilst others move. Naturally easiest to be B02 as it has zero time delay
 N_WORKERS = 4 # Number of workers to use in parallel processing

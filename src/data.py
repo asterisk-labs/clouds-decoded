@@ -342,39 +342,6 @@ def getBands(sceneDirectory, bands):
             bands[band] = src.read(1)
     return bands
 
-def getBandInterpolators(bands):
-    """
-    Get interpolators for the bands
-    
-    Parameters:
-        bands: dict, bands
-
-    Returns:
-        interpolators: list, interpolators
-    """
-    if not isinstance(bands, list):
-        bands = [bands]
-
-    # interpolators = []
-    # for band in bands:
-    #     interpolators.append(RegularGridInterpolator((
-    #         np.arange(band.shape[0]), 
-    #         np.arange(band.shape[1])
-    #     ), band))
-    # if len(interpolators) == 1:
-    #     return interpolators[0]
-
-    # Use interpn instead
-    interpolators = []
-    for band in bands:
-        interpolators.append(lambda points: interpn((
-            np.arange(band.shape[0]), 
-            np.arange(band.shape[1])
-        ), band, points))
-    if len(interpolators) == 1:
-        return interpolators[0]
-    return interpolators
-
 def getFootprints(sceneDirectory, bands):
     """
     Get the valid footprint shape from the DETFOO file
