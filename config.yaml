@@ -1,18 +1,24 @@
-# YAML
-
-SCENE_DIR: /mnt/raid/data/lot-sample-s2-scenes/S2B_MSIL1C_20190603T105629_N0500_R094_T31UDQ_20221219T014037.SAFE
-THRESHOLD_BAND: 'B03'
-STRIDE: 1600
-HEIGHT_STEP: 200
-ALONG_TRACK_RESOLUTION: 2 # pixel size that is used during convolution, in metres
-ACROSS_TRACK_RESOLUTION: 10 # pixel size that is used during convolution, in metres
-CONVOLVED_SIZE_ALONG_TRACK: 200 # Size that is used in correlation along track. In metres
-CONVOLVED_SIZE_ACROSS_TRACK: 200 # Size that is used in correlation along track. In metres
-PLOT_WRITETO: 'heights_new.png'
-TARGET_FEATURES: 'gradient' # 'gradient' or 'reflectance'. Currently 'reflectance' doesn't work very well. We could also explore more complex features like HoG or SIFT.
-
-N_WORKERS: 4
-BANDS: ['B02', 'B03', 'B04', 'B08']
-
-CLOUDY_THRESH: 1500
-MAX_HEIGHT: 16_000
+ACROSS_TRACK_RESOLUTION: 10
+ALONG_TRACK_RESOLUTION: 5
+BANDS:
+# - B01
+- B02
+- B03
+- B04
+- B05
+- B07
+- B08
+# - B8A
+CLOUDY_THRESH: 1600
+THRESHOLD_BAND: B08
+CONVOLVED_SIZE_ACROSS_TRACK: 200
+CONVOLVED_SIZE_ALONG_TRACK: 200
+HEIGHT_STEP: 50
+MAX_HEIGHT: 18000
+N_WORKERS: 32
+PLOT_WRITETO: ./validation/outputs/plots/S2A_MSIL1C_20180609T094031_N0500_R036_T32NLJ_20230715T110315.png
+SCENE_DIR: /mnt/raid/data/s2get/Sentinel-2/MSI/L1C/2018/06/09/S2A_MSIL1C_20180609T094031_N0500_R036_T32NLJ_20230715T110315.SAFE
+STRIDE: 100
+TARGET_FEATURES: reflectance
+SMOOTHING_MODE: spatial
+SPATIAL_SMOOTHING_SIGMA: 100 # Standard deviation of Gaussian kernel for spatial smoothing, in metres
