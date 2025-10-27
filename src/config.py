@@ -4,6 +4,8 @@ import yaml as yaml
 import numpy as np
 from pprint import pprint
 
+import uuid
+
 
 class CloudHeightConfig:
 
@@ -31,7 +33,6 @@ class CloudHeightConfig:
         except KeyError:
             raise KeyError("SCENE_DIR not found in configuration file, this is a required parameter")
 
-        self.hack_image_azimuth = config.get('HACK_IMAGE_AZIMUTH',defaults.HACK_IMAGE_AZIMUTH)
         self.n_workers = config.get('N_WORKERS',defaults.N_WORKERS)
         self.cloudy_thresh = config.get('CLOUDY_THRESH',defaults.CLOUDY_THRESH)
         self.threshold_band = config.get('THRESHOLD_BAND',defaults.THRESHOLD_BAND)
@@ -47,8 +48,13 @@ class CloudHeightConfig:
             self.heights = np.append(self.heights,self.max_height)
         self.bands = config.get('BANDS',defaults.BANDS)
         self.target_features = config.get('TARGET_FEATURES',defaults.TARGET_FEATURES)
+        self.smoothing_mode = config.get('SMOOTHING_MODE',defaults.SMOOTHING_MODE)
+        self.spatial_smoothing_sigma = config.get('SPATIAL_SMOOTHING_SIGMA',defaults.SPATIAL_SMOOTHING_SIGMA)    
+
+        self.temp_dir = config.get('TEMP_DIR',f"/dev/shm/cloudheight_temp_{uuid.uuid4()}")
 
         self.plot_writeto = config.get('PLOT_WRITETO',None)
+    
 
         # Probably shouldn't change this from B02!
         self.reference_band = config.get('reference_band',defaults.REFERENCE_BAND)
