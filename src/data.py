@@ -25,8 +25,7 @@ def offsetsToHeights(offsets,bands,pixel_size):
     # Calculate the time delay between the bands
     if len(bands) == 1:
         bands = [bands[0]] * len(offsets)
-    delays = [BAND_TIME_DELAYS[band] for band in bands]
-    delays = np.array(delays)
+    delays =  np.array([BAND_TIME_DELAYS[band] for band in bands])
     # The height can be found with the velocity of the spacecraft, and it's orbital altitude
     # We can work out what a given offset translates to in terms of altitude for misaligned bands, given that the bands are aligned perfectly at the ground
     motion_in_space = ORBITAL_VELOCITY * delays # m
@@ -118,10 +117,8 @@ def getFootprintPaths(sceneDirectory, bands):
     granule = getGranuleDirectory(sceneDirectory)
     paths = {}
     files = os.listdir(os.path.join(granule, "QI_DATA"))
-    print(bands)
     for band in bands:
         path = [f for f in files if f.endswith(f"DETFOO_{band}.jp2")]
-        print(path)
         assert len(path) == 1, f"Band {band} not found"
         paths[band] = os.path.join(granule, "QI_DATA", path[0])
     if len(paths) == 1:
@@ -312,7 +309,6 @@ def getSceneOrientation(sceneDirectory):
             topRight[1] - topLeft[1], 
             topRight[0] - topLeft[0]
         )
-    print(f"Image orientation: {np.rad2deg(orientation)}")
     return orientation
 
 def getBands(sceneDirectory, bands):
@@ -402,6 +398,7 @@ class Sentinel2Scene:
         self.latitude = getLatitude(scene_directory)
         self.orientation = getSceneOrientation(scene_directory)
         self.orbit_type = getOrbitType(scene_directory)
+      
 
 class Column:
     def __init__(self,bands,points,footprint_id):
@@ -434,14 +431,13 @@ class RetrievalCube:
     """
     Object to store height retrievals for a scene. The cube is a 3D array of X-Y-Z where Z is the number of height steps
     """
-    
+
     def __init__(self,retrievals,coords,conf):
         self.conf = conf
         self.retrievals = retrievals
         self.coords = coords
         self.ids = np.arange(len(retrievals))
         self.clean_nans()
-        print(f"Number of valid retrievals: {len(self.retrievals)}")
 
     def clean_nans(self):
         """

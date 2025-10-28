@@ -1,6 +1,7 @@
+import os
 
 import defaults
-import yaml as yaml
+import yaml
 import numpy as np
 from pprint import pprint
 
@@ -9,12 +10,13 @@ import uuid
 
 class CloudHeightConfig:
 
-    def __init__(self,config_file):
+    def __init__(self,config_file,scene_dir):
         """
         Load the configuration from a YAML file, using defaults for any missing values
 
         Parameters:
             config_file: str, Path to the configuration file
+            scene_dir: str, Path to the scene directory
     
         Returns:
             None
@@ -25,14 +27,13 @@ class CloudHeightConfig:
                 with open(config_file,'r') as f:
                     config = yaml.load(f,Loader=yaml.FullLoader)
             except FileNotFoundError:
-                print(f"Configuration file not found: {config_file}")
+                print(f"Configuration file {config_file} not found. Using default parameters.")
         else:
             config = {}
-        try:
-            self.scene_dir = config['SCENE_DIR']
-        except KeyError:
-            raise KeyError("SCENE_DIR not found in configuration file, this is a required parameter")
 
+
+        self.scene_dir = scene_dir
+    
         self.n_workers = config.get('N_WORKERS',defaults.N_WORKERS)
         self.cloudy_thresh = config.get('CLOUDY_THRESH',defaults.CLOUDY_THRESH)
         self.threshold_band = config.get('THRESHOLD_BAND',defaults.THRESHOLD_BAND)
@@ -53,17 +54,14 @@ class CloudHeightConfig:
         self.spatial_smoothing_sigma = config.get('SPATIAL_SMOOTHING_SIGMA',defaults.SPATIAL_SMOOTHING_SIGMA)    
 
         self.temp_dir = config.get('TEMP_DIR',f"/dev/shm/cloudheight_temp_{uuid.uuid4()}")
+        self.output_dir = config.get('OUTPUT_DIR',defaults.OUTPUT_DIR)
 
-        self.plot_writeto = config.get('PLOT_WRITETO',None)
-    
+
+        product_id =  os.path.splitext(os.path.basename(self.scene_dir))[0]
+        self.plot_writeto = os.path.join(self.output_dir,"plots",f"{product_id}.png")
+        self.log_writeto = os.path.join(self.output_dir,"log",product_id)
+        self.pcloud_writeto = os.path.join(self.output_dir,"pcloud",f"{product_id}.npz")
+
 
         # Probably shouldn't change this from B02!
         self.reference_band = config.get('reference_band',defaults.REFERENCE_BAND)
-
-        # print out the configuration
-        print('Starting cloud height algorithm with the following configuration:')    
-        pprint(vars(self))
-
-
-
-
