@@ -1,0 +1,9 @@
+# Requirements for the Cloud Height Prototype project with python 3.11
+matplotlib==3.10.7
+numpy==2.3.4
+pyaml==25.7.0
+pyproj==3.7.2
+rasterio==1.4.3
+rtree==1.4.1
+scipy==1.16.2
+tqdm==4.67.1
