@@ -1,21 +1,18 @@
-version: "3.9"
-
 services:
   cloud-height:
-    build: .
+    shm_size: 2g
+    build:
+      context: .
+      dockerfile: dockerfile
     container_name: cloud-height
     volumes:
-      # Mount config file
-      - /home/paul/cloud-height-prototype/config.yaml:/app/config.yaml
       # Mount data directory
-      - /mnt/raid/data:/mnt/raid/data
-    command: >
-      python ./src/main.py
-      --config /app/config.yaml
-      --scene_dir /mnt/raid/data/s2get/Sentinel-2/MSI/L1C/2025/08/01/S2C_MSIL1C_20250801T232231_N0511_R044_T58NFN_20250802T005448.SAFE
-      --plot
-      --save
-      --log
+      - /mnt/raid/data/s2get:/app/s2get:ro
+      # Mount data output directory
+      - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
+
     environment:
-      - PYTHONUNBUFFERED=1  # Ensures real-time logs
-    restart: unless-stopped
+      - PYTHONUNBUFFERED=1 # Ensures real-time logs
+
+    command: >
+      bash -c "source ~/.bashrc && conda activate geoenv && python ./src/main.py --config /app/config.yaml --scene_dir /app/s2get/Sentinel-2/MSI/L1C/2025/08/01/S2C_MSIL1C_20250801T232231_N0511_R044_T58NFN_20250802T005448.SAFE --plot --save --log"
