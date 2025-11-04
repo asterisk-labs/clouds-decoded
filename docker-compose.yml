@@ -7,12 +7,14 @@ services:
     container_name: cloud-height
     volumes:
       # Mount data directory
-      - /mnt/raid/data/s2get:/app/s2get:ro
+      # - /mnt/raid/data/s2get:/app/s2get:r
       # Mount data output directory
       - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
 
     environment:
       - PYTHONUNBUFFERED=1 # Ensures real-time logs
+      - SCENE_DIR=
 
     command: >
-      bash -c "source ~/.bashrc && conda activate geoenv && python ./src/main.py --config /app/config.yaml --scene_dir /app/s2get/Sentinel-2/MSI/L1C/2025/08/01/S2C_MSIL1C_20250801T232231_N0511_R044_T58NFN_20250802T005448.SAFE --plot --save --log"
+      echo "${SCENE_DIR}"
+      bash -c "source ~/.bashrc && conda activate geoenv && python ./src/main.py --config /app/config.yaml --scene_dir /app/s2get/${SCENE_DIR} --plot --save --log"
