@@ -41,6 +41,7 @@ class CloudHeightConfig:
         self.across_track_resolution = config.get('ACROSS_TRACK_RESOLUTION',defaults.ACROSS_TRACK_RESOLUTION)
         self.convolved_size_along_track = config.get('CONVOLVED_SIZE_ALONG_TRACK',defaults.CONVOLVED_SIZE_ALONG_TRACK)
         self.convolved_size_across_track = config.get('CONVOLVED_SIZE_ACROSS_TRACK',defaults.CONVOLVED_SIZE_ACROSS_TRACK)
+        self.correlation_weighting = config.get('CORRELATION_WEIGHTING',defaults.CORRELATION_WEIGHTING)
         self.max_height = config.get('MAX_HEIGHT',defaults.MAX_HEIGHT)
         self.height_step = config.get('HEIGHT_STEP',defaults.HEIGHT_STEP)
         self.heights = np.arange(0,self.max_height,self.height_step)
