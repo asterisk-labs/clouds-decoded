@@ -160,79 +160,71 @@ def getSunAngle(sceneDirectory):
 
 def getOrbitImageAngle(sceneDirectory):
     """
-    Azimuth is from north in the anticlockwise direction
+    Previous function doesn't handle no data well, because it messes up the assumptions about the footprints.
 
-    Parameters:
-        sceneDirectory: str, path to the scene directory
+    Instead, we can iterate through columns in the footprint raster, and wait until we find a column
+    with >1 footprint IDs (where no data is treated as ID=0)
 
-    Returns:
-        image_azimuth: float, image azimuth angle in degrees (from north)
+    Then we can look at the ensuing columns until a new unique set of footprint IDs is found. We can then 
+    calculate the angle based on the distance between the first and last columns with the same footprint IDs.
     """
-
-    # We will look at first row of the DETFOO, then look for the longest stretches of the same numbers, 
-    # and look at how many rows we need to go before they are shifted by the width of the column. 
-    # Then, we can use tan(theta) = opposite/adjacent to find the angle
-    
-    #
-    #                         LENGTH
-    #                     X-----------/
-    #                    /|H---------/
-    #                   /-|E--------/
-    #                  /--|I-------/   
-    #                 /---|G------/
-    #                /----|H-----/
-    #               /-----|T----/
-    #              /------|----/
-    #             /-------|---/
-    #            /--------|--/
-    #           /---------|A/
-    #          /----------|/
-    #         /-----------X
-    #        /-----------/
-    #       /-----------/
 
     footprint_path = getFootprintPaths(sceneDirectory, bands=['B02','B03'])['B02']
     with rio.open(footprint_path) as src:
         footprint = src.read(1)
-    first_row = footprint[0,:]
-    unique, counts = np.unique(first_row, return_counts=True)
-    counts = dict(zip(unique, counts))
-    # Find the longest stretch of the same number
-    longest_arg = np.argmax(list(counts.values()))
-    longest_id = list(counts.keys())[longest_arg]
-    longest_count = counts[longest_id]
-    
-    horizontantal_dist = longest_count
 
-    vertical_dist = 0
-    # Go through rows until a row has neither first nor last pixel of original range as longest_id
-    left_edge = np.where(first_row==longest_id)[0][0]
-    right_edge = np.where(first_row==longest_id)[0][-1]
+    for col_idx in range(footprint.shape[1]):
+        column = footprint[:,col_idx]
+        
+        diffs = np.diff(column)
 
-    for i in range(1,footprint.shape[0]):
-        row = footprint[i,left_edge:right_edge+1]
-        if longest_id not in row:
+        if np.any(diffs == 1):
+            # Look for first  diff
+            lower_point_y = np.where(diffs == 1)[0][0]
+            lower_id = column[lower_point_y]
+            upper_id = column[lower_point_y + 1]
+
+            assert lower_id != upper_id, "Lower and upper IDs are the same"
+
             break
-        vertical_dist += 1
+
+    # Now we have the lower and upper IDs, we can look for the next column with the same IDs
+    for next_col_idx in range(col_idx + 1, footprint.shape[1]):
+        next_column = footprint[:,next_col_idx]
     
-    angle = -np.arctan2(horizontantal_dist, vertical_dist)
+        # If both lower and upper IDs are present, continue, otherwise we've found our last column
+        if lower_id in next_column and upper_id in next_column:
+            continue
+        else:
+            last_col_idx = next_col_idx - 1
+            break
+
+    horizontal_dist = last_col_idx - col_idx
+    
+    # Vertical distance is the distance between lower_point_y and the same transition in the new column
+    next_column = footprint[:,last_col_idx]
+    
+    upper_point_y = np.argmax(next_column == lower_id)
+
+    vertical_dist =  lower_point_y - upper_point_y
+    angle = -np.arctan2(horizontal_dist, vertical_dist)
     print(f"Image azimuth: {angle}")
 
+    # # Debug plot
+    # import matplotlib.pyplot as plt
+    # plt.imshow(footprint==lower_id,cmap='gray')
+    
+    # centre_point = (footprint.shape[0]//2, footprint.shape[1]//2)
+    # magnitude = footprint.shape[1]//8
+    # # plot an arrow from the centre point at the angle of the image azimuth
+    # plt.arrow(centre_point[1], centre_point[0],
+    #     magnitude * np.sin(angle), 
+    #     magnitude * np.cos(angle), 
+    #     color='red', width=2)
+    # plt.scatter([col_idx, last_col_idx], [lower_point_y, upper_point_y], color='blue')
 
-    # Debug plot
-
-    import matplotlib.pyplot as plt
-    plt.imshow(footprint==longest_id,cmap='gray')
-    centre_point = (footprint.shape[0]//2, footprint.shape[1]//2)
-    magnitude = footprint.shape[1]//8
-    # plot an arrow from the centre point at the angle of the image azimuth
-
-    # tan(angle) is horizontal/vertical, so x is sin(angle), y is cos(angle)
-    plt.arrow(centre_point[1], centre_point[0], 
-        magnitude * np.sin(angle), 
-        magnitude * np.cos(angle), 
-        color='red', width=2)
-    plt.savefig("debug_image_azimuth.png")
+    # plt.savefig("debug_image_azimuth_new.png")
+    # plt.close()
 
 
     return angle
