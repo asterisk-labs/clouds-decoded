@@ -1,20 +1,36 @@
 services:
-  cloud-height:
-    shm_size: 2g
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: always
+
+
+  producer:
     build:
       context: .
-      dockerfile: dockerfile
-    container_name: cloud-height
-    volumes:
-      # Mount data directory
-      # - /mnt/raid/data/s2get:/app/s2get:r
-      # Mount data output directory
-      - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
-
-    environment:
-      - PYTHONUNBUFFERED=1 # Ensures real-time logs
-      - SCENE_DIR=
-
+      dockerfile: Dockerfile
     command: >
-      echo "${SCENE_DIR}"
-      bash -c "source ~/.bashrc && conda activate geoenv && python ./src/main.py --config /app/config.yaml --scene_dir /app/s2get/${SCENE_DIR} --plot --save --log"
+      bash -c "source ~/.bashrc && conda activate geoenv && python producer.py"
+    depends_on:
+      - redis
+    volumes:
+      - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    shm_size: 2g
+    command: >
+      bash -c "source ~/.bashrc && conda activate geoenv && python worker.py"
+    depends_on:
+      - redis
+    deploy:
+      replicas: 8  # number of parallel workers (across nodes)
+    volumes:
+      - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
+    environment:
+      - REDIS_URL=redis://redis:6379/0
