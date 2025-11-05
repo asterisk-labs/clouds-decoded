@@ -28,7 +28,30 @@ class CloudHeightProcessor:
         self.scene = Sentinel2Scene(config.scene_dir, bands=config.bands)
         self.final_heights = None
         self.final_coords = None
+        if self.config.correlation_weighting:
+            self.final_gridded_heights = None
+        self.gaussian_kernel = self._constructGaussianKernel()
 
+    def _constructGaussianKernel(self):
+        """
+        Constructs a Gaussian kernel based on the configuration parameters.
+        """
+        along_size = self.config.convolved_size_along_track // self.config.along_track_resolution
+        across_size = self.config.convolved_size_across_track // self.config.across_track_resolution
+
+        print(f"Constructing Gaussian kernel of size {along_size} x {across_size}...")
+
+        x = np.linspace(-across_size // 2, across_size // 2, across_size)
+        y = np.linspace(-along_size // 2, along_size // 2, along_size)
+        X, Y = np.meshgrid(x, y)
+
+        # Set sigma as half the kernel size
+        sigma_x = across_size / 2
+        sigma_y = along_size / 2
+
+        kernel = np.exp(-((X**2) / (2 * sigma_x**2) + (Y**2) / (2 * sigma_y**2)))
+        kernel /= np.mean(kernel) # Normalize to have mean of 1, so pearson correlation is unaffected
+        return kernel
 
     def _normalizePatch(self, patch, remove_mean=True, remove_var=True):
         """
@@ -47,19 +70,19 @@ class CloudHeightProcessor:
         try:
             if nan_check:
                 if remove_mean:
-                    sample = sample - np.nanmean(sample)
+                    patch = patch - np.nanmean(sample)
                 if remove_var:
-                    sample = sample / np.nanstd(sample)
+                    patch = patch / np.nanstd(sample)
             else:
                 if remove_mean:
-                    sample = sample - np.mean(sample)
+                    patch = patch - np.mean(sample)
                 if remove_var:
-                    sample = sample / np.std(sample)
+                    patch = patch / np.std(sample)
         except Warning as w:
             print(f"Warning during normalization: {w}.")
             import pdb; pdb.set_trace()
 
-        return sample
+        return patch
 
     def _correlateAtHeight(self, footprint_bands, centre, along_track_size, height, direction, remove_mean=True, remove_var=True):
         """
@@ -87,9 +110,7 @@ class CloudHeightProcessor:
 
             patch = data[along_track_start:along_track_end, :]
 
-
             patch = self._normalizePatch(patch, remove_mean=remove_mean, remove_var=remove_var)
-
             patches.append(patch)
         
         # For each patch, add up all the other patches and then do correlation 
@@ -101,6 +122,8 @@ class CloudHeightProcessor:
             for other_patch in patches[i+1:]:
                 other_sum += other_patch
                 n += 1
+            if self.config.correlation_weighting:
+                other_sum *= self.gaussian_kernel
             corr += np.mean(patch * other_sum)
         corr /= n
 
