@@ -4,7 +4,11 @@ services:
     ports:
       - "6379:6379"
     restart: always
-
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   producer:
     build:
@@ -18,6 +22,7 @@ services:
       - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
     environment:
       - REDIS_URL=redis://redis:6379/0
+    restart: on-failure
 
   worker:
     build:
@@ -29,8 +34,21 @@ services:
     depends_on:
       - redis
     deploy:
-      replicas: 8  # number of parallel workers (across nodes)
+      replicas: 8  # Parallel RQ workers
     volumes:
       - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
     environment:
       - REDIS_URL=redis://redis:6379/0
+    restart: always
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      bash -c "source ~/.bashrc && conda activate geoenv && rqscheduler --url redis://redis:6379/0"
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    restart: always
