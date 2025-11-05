@@ -16,3 +16,6 @@ dependencies:
   - libgdal-jp2openjpeg
   - rq
   - redis
+  - pip       
+  - pip:
+      - rq-scheduler 
