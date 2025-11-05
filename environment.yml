@@ -14,3 +14,5 @@ dependencies:
   - scipy>=1.15.3
   - tqdm>=4.67.1
   - libgdal-jp2openjpeg
+  - rq
+  - redis

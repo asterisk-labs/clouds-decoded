@@ -56,8 +56,10 @@ class CloudHeightConfig:
         self.temp_dir = config.get('TEMP_DIR',f"/dev/shm/cloudheight_temp_{uuid.uuid4()}")
         self.output_dir = config.get('OUTPUT_DIR',defaults.OUTPUT_DIR)
 
-
-        product_id =  os.path.splitext(os.path.basename(self.scene_dir))[0]
+        if self.scene_dir[-1]=="/":
+            product_id = os.path.splitext(self.scene_dir.split("/")[-2])[0]
+        else:
+            product_id =  os.path.splitext(os.path.basename(self.scene_dir))[0]
         self.plot_writeto = os.path.join(self.output_dir,"plots",f"{product_id}.png")
         self.log_writeto = os.path.join(self.output_dir,"log",product_id)
         self.pcloud_writeto = os.path.join(self.output_dir,"pcloud",f"{product_id}.npz")
