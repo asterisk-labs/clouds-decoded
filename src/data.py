@@ -155,7 +155,7 @@ def getSunAngle(sceneDirectory):
 
     return zenith, azimuth
 
-def getOrbitImageAngle(sceneDirectory):
+def getOrbitImageAngle(sceneDirectory,debug_logto=None):
     """
     Previous function doesn't handle no data well, because it messes up the assumptions about the footprints.
 
@@ -208,20 +208,21 @@ def getOrbitImageAngle(sceneDirectory):
     print(f"Image azimuth: {angle}")
 
     # # Debug plot
-    # import matplotlib.pyplot as plt
-    # plt.imshow(footprint==lower_id,cmap='gray')
-    
-    # centre_point = (footprint.shape[0]//2, footprint.shape[1]//2)
-    # magnitude = footprint.shape[1]//8
-    # # plot an arrow from the centre point at the angle of the image azimuth
-    # plt.arrow(centre_point[1], centre_point[0],
-    #     magnitude * np.sin(angle), 
-    #     magnitude * np.cos(angle), 
-    #     color='red', width=2)
-    # plt.scatter([col_idx, last_col_idx], [lower_point_y, upper_point_y], color='blue')
+    if debug_logto is not None:
+        import matplotlib.pyplot as plt
+        plt.imshow(footprint==lower_id,cmap='gray')
+        
+        centre_point = (footprint.shape[0]//2, footprint.shape[1]//2)
+        magnitude = footprint.shape[1]//8
+        # plot an arrow from the centre point at the angle of the image azimuth
+        plt.arrow(centre_point[1], centre_point[0],
+            magnitude * np.sin(angle), 
+            magnitude * np.cos(angle), 
+            color='red', width=2)
+        plt.scatter([col_idx, last_col_idx], [lower_point_y, upper_point_y], color='blue')
 
-    # plt.savefig("debug_image_azimuth_new.png")
-    # plt.close()
+        plt.savefig(os.path.join(debug_logto,"debug_image_azimuth_new.png"))
+        plt.close()
 
 
     return angle
@@ -389,12 +390,12 @@ class RotationTransform:
 
 
 class Sentinel2Scene:
-    def __init__(self,scene_directory,bands=defaults.BANDS):
+    def __init__(self, scene_directory, bands=defaults.BANDS, debug_logto=None):
         self.scene_directory = scene_directory
         self.bands = getBands(scene_directory, bands)
         self.footprints = getFootprints(scene_directory, bands)
         self.sun_zenith, self.sun_azimuth = getSunAngle(scene_directory)
-        self.image_azimuth = getOrbitImageAngle(scene_directory)
+        self.image_azimuth = getOrbitImageAngle(scene_directory, debug_logto)
         self.latitude = getLatitude(scene_directory)
         self.orientation = getSceneOrientation(scene_directory)
         self.orbit_type = getOrbitType(scene_directory)

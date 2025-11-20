@@ -19,7 +19,8 @@ services:
     depends_on:
       - redis
     volumes:
-      - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
+       - /mnt/raid/data/CTH_emulator_dataset/synthetic_B02_all:/app/CTH_emulator_dataset/
+       - /mnt/raid/data/CTH_emulator_dataset/synthetic_B02_all/:/app/out_dir
     environment:
       - REDIS_URL=redis://redis:6379/0
     restart: on-failure
@@ -28,15 +29,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    shm_size: 2g
+    shm_size: 4g
     command: >
       bash -c "source ~/.bashrc && conda activate geoenv && python worker.py"
     depends_on:
       - redis
     deploy:
-      replicas: 8  # Parallel RQ workers
+      replicas: 1  # Parallel RQ workers
     volumes:
-      - /mnt/raid/data/CTH_emulator_dataset:/app/CTH_emulator_dataset
+      - /mnt/raid/data/CTH_emulator_dataset/synthetic_B02_all:/app/CTH_emulator_dataset/
+      - /mnt/raid/data/CTH_emulator_dataset/synthetic_B02_all/:/app/out_dir
     environment:
       - REDIS_URL=redis://redis:6379/0
     restart: always
