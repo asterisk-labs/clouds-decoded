@@ -51,9 +51,9 @@ class CloudHeightProcessor:
             config: CloudHeightConfig, the configuration for the processing run.
         """
         self.config = config
-
+        debug_logto = self.config.log_writeto if args.log else None
         self.scene = Sentinel2Scene(
-            config.scene_dir, bands=config.bands)
+            config.scene_dir, bands=config.bands, debug_logto=debug_logto)
         logger.info(f"Image orientation: {np.rad2deg(self.scene.orientation)}")
         logger.info(f"Sun zenith angle: {self.scene.sun_zenith}")
         logger.info(f"Sun azimuth angle: {self.scene.sun_azimuth}")
@@ -137,12 +137,9 @@ class CloudHeightProcessor:
             offset = offsets[i]
             along_track_start = int(centre - along_track_size / 2 - offset)
             along_track_end = along_track_start + along_track_size
-
             patch = data[along_track_start:along_track_end, :]
-
             patch = self._normalizePatch(
                 patch, remove_mean=remove_mean, remove_var=remove_var)
-
             patches.append(patch)
 
         # For each patch, add up all the other patches and then do correlation
@@ -287,7 +284,7 @@ class CloudHeightProcessor:
             column_iterator = ColumnIterator(
                 column_extractor, n_workers=self.config.n_workers, temp_dir=temp_dir)
 
-            max_points = int(109800**2 / self.config.stride**2)
+            max_points = int(109800**2 / self.config.stride**2)*2 ###### what value should be put there
             if self.config.smoothing_mode == 'spatial':
                 N_heights = len(self.config.heights)
                 heights_buffer = np.zeros(
@@ -495,6 +492,7 @@ if __name__ == '__main__':
         description='Process a scene to retrieve cloud heights')
     parser.add_argument('--scene_dir', '-sd', type=str,
                         help='Path to the SAFE scene directory', required=True)
+
     parser.add_argument('--config', '-c', type=str,
                         help='Path to the configuration file')
     parser.add_argument('--log', '-o', action='store_true', help='Store logs')

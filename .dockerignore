@@ -3,3 +3,4 @@ validation/
 *.png
 *.npz
 *.ipynb
+*.json
