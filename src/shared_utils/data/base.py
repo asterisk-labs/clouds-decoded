@@ -9,6 +9,15 @@ import rasterio as rio
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+class NumpyEncoder(json.JSONEncoder):
+    """ Custom encoder for numpy data types """
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.generic):
+            return obj.item()
+        return super().default(obj)
+
 class Data(BaseModel, ABC):
     """Abstract base class for data models."""
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
@@ -135,7 +144,7 @@ class GeoRasterData(Data):
             # We bundle the metadata object into a JSON string to preserve structure
             meta_dict = self.metadata.model_dump(exclude_defaults=True)
             if meta_dict:
-                 json_meta = json.dumps(meta_dict)
+                 json_meta = json.dumps(meta_dict, cls=NumpyEncoder)
                  # rasterio accepts string tags
                  # Note: standard TIFF tags are restrictive, but 'extra_metadata' custom tag 
                  # works in GDAL workflow usually, definitely works for NetCDF attributes.

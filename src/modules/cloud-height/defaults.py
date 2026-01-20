@@ -16,8 +16,6 @@ CORRELATION_WEIGHTING = True # Whether to weight the height estimates by the cor
 MAX_HEIGHT = 15_000
 HEIGHT_STEP = 200
 BANDS = ['B01','B02','B03','B04','B05','B07','B06','B08','B8A'] # Don't use B10 as it is cirrus band. B11, B12 are risky as they are SWIR so may not work well
-TARGET_FEATURES = 'reflectance' # 'gradient' or 'reflectance', whether to correlate the gradient or the reflectance of the bands
-SMOOTHING_MODE = 'independent' # 'independent' or 'spatial', whether to smooth the results spatially after independent retrievals, or to do a spatial retrieval directly
 SPATIAL_SMOOTHING_SIGMA = 200 # Standard deviation of Gaussian kernel for spatial smoothing, in metres
 OUTPUT_DIR = "./validation/outputs"
 

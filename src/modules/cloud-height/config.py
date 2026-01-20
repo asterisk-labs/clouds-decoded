@@ -1,6 +1,6 @@
 import os
 
-import defaults
+from . import defaults
 import yaml
 import numpy as np
 from pprint import pprint
@@ -49,8 +49,6 @@ class CloudHeightConfig:
         if self.heights[-1] != self.max_height:
             self.heights = np.append(self.heights,self.max_height)
         self.bands = config.get('BANDS',defaults.BANDS)
-        self.target_features = config.get('TARGET_FEATURES',defaults.TARGET_FEATURES)
-        self.smoothing_mode = config.get('SMOOTHING_MODE',defaults.SMOOTHING_MODE)
         self.spatial_smoothing_sigma = config.get('SPATIAL_SMOOTHING_SIGMA',defaults.SPATIAL_SMOOTHING_SIGMA)    
 
         self.temp_dir = config.get('TEMP_DIR',f"/dev/shm/cloudheight_temp_{uuid.uuid4()}")
