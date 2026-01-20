@@ -5,7 +5,7 @@ import numpy as np
 import xml.etree.ElementTree as ET
 import rasterio as rio
 from rasterio.windows import Window
-from typing import Optional, Any, Dict, List, Tuple, Union
+from typing import Optional, Any, Dict, List, Tuple, Union, ClassVar
 
 from .base import Data
 from ..constants import BANDS, BAND_RESOLUTIONS
@@ -21,18 +21,22 @@ class Sentinel2Scene(Data):
     footprints: Dict[str, Any] = Field(default_factory=dict)
     sun_zenith: Optional[float] = None
     sun_azimuth: Optional[float] = None
+    view_zenith: Optional[float] = None
+    view_azimuth: Optional[float] = None
     image_azimuth: Optional[float] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     orientation: Optional[float] = None
     orbit_type: Optional[str] = None
+    crs: Optional[Any] = None
+    transform: Optional[Any] = None
 
     # Constants for SAFE format
-    GRANULE_DIR = "GRANULE"
-    IMG_DATA_DIR = "IMG_DATA"
-    QI_DATA_DIR = "QI_DATA"
-    METADATA_TL = "MTD_TL.xml"
-    METADATA_MTD = "MTD_MSIL1C.xml"
+    GRANULE_DIR: ClassVar[str] = "GRANULE"
+    IMG_DATA_DIR: ClassVar[str] = "IMG_DATA"
+    QI_DATA_DIR: ClassVar[str] = "QI_DATA"
+    METADATA_TL: ClassVar[str] = "MTD_TL.xml"
+    METADATA_MTD: ClassVar[str] = "MTD_MSIL1C.xml"
 
     def read(self, filepath: Union[str, Path], bands: List[str] = None, crop_window: Tuple[int, int, int, int] = None):
         """
@@ -43,8 +47,22 @@ class Sentinel2Scene(Data):
              bands = BANDS
              
         self.bands = self._get_bands(self.scene_directory, bands, crop_window)
+
+        # Get Georeferencing from reference band (B02)
+        try:
+             # Use B02 as reference for CRS and Transform (10m resolution)
+             ref_paths = self._get_band_paths(self.scene_directory, ["B02"])
+             if "B02" in ref_paths:
+                  with rio.open(ref_paths["B02"]) as src:
+                       self.crs = src.crs
+                       self.transform = src.transform
+        except Exception as e:
+             # Just warn, don't crash if we can't extract CRS
+             print(f"Warning: Could not extract CRS/Transform: {e}")
+
         self.footprints = self._get_footprints(self.scene_directory, bands, crop_window)
         self.sun_zenith, self.sun_azimuth = self._get_sun_angle(self.scene_directory)
+        self.view_zenith, self.view_azimuth = self._get_view_angle(self.scene_directory)
         self.image_azimuth = self._get_orbit_image_angle(self.scene_directory)
         self.latitude = self._get_latitude(self.scene_directory)
         self.longitude = self._get_longitude(self.scene_directory)
@@ -156,6 +174,46 @@ class Sentinel2Scene(Data):
         zenith = float(sun_angle_node.find("ZENITH_ANGLE").text)
         azimuth = float(sun_angle_node.find("AZIMUTH_ANGLE").text)
         return zenith, azimuth
+
+    def _get_view_angle(self, scene_directory: Path):
+        """
+        Parses Mean_Viewing_Incidence_Angle_List from MTD_TL.xml and calculates
+        the mean Zenith and Azimuth across all available bands.
+        """
+        granule = self._get_granule_directory(scene_directory)
+        root = self._read_xml_root(granule / self.METADATA_TL)
+        
+        angle_list_node = root.find(".//Mean_Viewing_Incidence_Angle_List")
+        if angle_list_node is None:
+            # Maybe warning? Or raise? For now raise as it is critical for cloud properties
+            # Some old products (pre-2016?) might have different structure.
+            # But normally it exists.
+            raise ValueError("Mean_Viewing_Incidence_Angle_List not found in metadata")
+
+        zeniths = []
+        azimuths = []
+
+        for angle_node in angle_list_node.findall("Mean_Viewing_Incidence_Angle"):
+            z = float(angle_node.find("ZENITH_ANGLE").text)
+            a = float(angle_node.find("AZIMUTH_ANGLE").text)
+            zeniths.append(z)
+            azimuths.append(a)
+            
+        if not zeniths:
+            return 0.0, 0.0 # Or None?
+            
+        mean_zenith = float(np.mean(zeniths))
+        
+        # Calculate circular mean for azimuth to correctly handle 0/360 boundary
+        az_rad = np.deg2rad(azimuths)
+        mean_azimuth = float(np.rad2deg(np.arctan2(
+            np.sum(np.sin(az_rad)), 
+            np.sum(np.cos(az_rad))
+        )))
+        # Normalize to [0, 360)
+        mean_azimuth = (mean_azimuth + 360) % 360
+        
+        return mean_zenith, mean_azimuth
 
     def _get_orbit_image_angle(self, scene_directory: Path):
         # Relies on B02 footprint

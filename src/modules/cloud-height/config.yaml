@@ -1,5 +1,5 @@
 ACROSS_TRACK_RESOLUTION: 10
-ALONG_TRACK_RESOLUTION: 2
+ALONG_TRACK_RESOLUTION: 5
 BANDS:
 # - B01
 - B02
@@ -10,15 +10,13 @@ BANDS:
 - B08
 # - B8A
 CLOUDY_THRESH: 1600
-THRESHOLD_BAND: B02
+THRESHOLD_BAND: B08
 CONVOLVED_SIZE_ACROSS_TRACK: 200
 CONVOLVED_SIZE_ALONG_TRACK: 200
 HEIGHT_STEP: 100
 MAX_HEIGHT: 18000
 N_WORKERS: 32
-TARGET_FEATURES: reflectance # 'gradient' or 'reflectance', whether to correlate the gradient or the reflectance of the bands
-STRIDE: 200
+STRIDE: 300
 OUTPUT_DIR:  /app/out_dir/   #to change out of docker
-SMOOTHING_MODE: spatial
 SPATIAL_SMOOTHING_SIGMA: 200 # Standard deviation of Gaussian kernel for spatial smoothing, in metres
 CORRELATION_WEIGHTING: True 

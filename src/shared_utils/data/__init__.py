@@ -1,5 +1,5 @@
 from .base import Data, Metadata, GeoRasterData, PointCloudData, AlbedoData, RetrievalsData
-from .sentinel import Sentinel2Scene, Sentinel2Metadata
+from .sentinel import Sentinel2Scene
 from .cloud_mask import CloudMaskData, CloudMaskMetadata
 from .cloud_height import CloudHeightGridData, CloudHeightPointsData, CloudHeightMetadata
 
@@ -11,7 +11,6 @@ __all__ = [
     "AlbedoData",
     "RetrievalsData",
     "Sentinel2Scene",
-    "Sentinel2Metadata",
     "CloudMaskData",
     "CloudMaskMetadata",
     "CloudHeightGridData",
