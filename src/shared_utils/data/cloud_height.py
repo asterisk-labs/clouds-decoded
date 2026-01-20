@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, ClassVar
 import numpy as np
 from pydantic import Field
 from .base import GeoRasterData, PointCloudData, Metadata
@@ -31,7 +31,7 @@ class CloudHeightPointsData(PointCloudData):
     Expected columns: x, y, height
     Optional columns: correlation, etc.
     """
-    REQUIRED_COLUMNS = ['x', 'y', 'height']
+    REQUIRED_COLUMNS: ClassVar[list[str]] = ['x', 'y', 'height']
     metadata: CloudHeightMetadata = Field(default_factory=CloudHeightMetadata)
 
     def validate(self) -> bool:
