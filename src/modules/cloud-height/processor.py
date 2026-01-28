@@ -85,10 +85,18 @@ class CloudHeightProcessor:
                                 heights_buffer[count:count+num] = retrievals
                                 coords_buffer[count:count+num] = result.get('coords')
                                 count += num
+                                
                     pbar.update(1)
 
             for p in workers:
                 p.join()
+                
+            if count == 0:
+                 logger.warning("No valid points retrieved. Process aborting.")
+                 # Return empty result
+                 scale_factor = self.config.stride / BAND_RESOLUTIONS['B02']
+                 t = self.scene.transform * Affine.scale(scale_factor, scale_factor)
+                 return CloudHeightGridData(data=None, transform=t, crs=self.scene.crs)
 
             self.final_heights = heights_buffer[:count]
             self.final_coords = coords_buffer[:count]
@@ -104,7 +112,8 @@ class CloudHeightProcessor:
         # If grid_stride != 1, resolution changed.
         
         # Prepare Metadata
-        meta = CloudHeightMetadata(processing_config=self.config.dict() if hasattr(self.config, 'dict') else vars(self.config))
+        meta_dict = self.config.model_dump() if hasattr(self.config, 'model_dump') else self.config.dict()
+        meta = CloudHeightMetadata(processing_config=meta_dict)
 
         # Calculate Transform and CRS
         if self.scene.transform is None:
