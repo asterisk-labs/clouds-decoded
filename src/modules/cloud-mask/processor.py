@@ -14,14 +14,14 @@ class CloudMaskProcessor:
     def __init__(self, config=None):
         self.config = config
 
-    def process(self, scene: Sentinel2Scene, threshold_band: str = "B04", threshold_value: float = 0.25) -> CloudMaskData:
+    def process(self, scene: Sentinel2Scene, threshold_band: str = "B08", threshold_value: float = 1600) -> CloudMaskData:
         """
         Creates a basic cloud mask by thresholding a specific band.
         Values GREATER than the threshold are considered cloud (1), others not (0).
         
         Args:
             scene: Sentinel2Scene object with loaded bands.
-            threshold_band: The band ID to use (e.g., 'B04', 'B10').
+            threshold_band: The band ID to use (e.g., 'B08', 'B10').
             threshold_value: The cutoff value for cloud detection.
             
         Returns:
@@ -56,7 +56,7 @@ class CloudMaskProcessor:
         # match the reference standard (usually 10m or 20m like B02).
         # Let's standardize on B02 (10m) resolution/crs for the output mask.
         
-        ref_band = 'B02'
+        ref_band = "B02"
         if ref_band in scene.bands:
              ref_arr = scene.bands[ref_band]
              if ref_arr.ndim == 3: ref_arr = ref_arr[0]
