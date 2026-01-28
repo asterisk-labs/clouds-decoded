@@ -113,13 +113,6 @@ def cloud_properties(
     result.write(output_path)
     logger.info(f"Cloud Properties saved to {output_path}")
 
-    inverter = CloudPropertyInverter(checkpoint_path=model_path, device='cpu')
-    result = inverter.process(scene, height_data)
-    
-    # 5. Save Results
-    logger.info("Properties calculated. Saving results.")
-    result.write(output_path)
-
 @app.command()
 def workflow(
     scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),

@@ -258,10 +258,10 @@ class CloudPropertyInverter:
         #Debugging prints, show histograms, min/max, etc. of all inputs and all outputs, in 17+4 png files and 17+4 lines of print
         for i in range(17):
             col_data = input_matrix[:,i]
-            print(f"Input Feature {i}: min={np.min(col_data)}, max={np.max(col_data)}, mean={np.mean(col_data)}")
+            print(f"Input Feature {i}: min={np.nanmin(col_data)}, max={np.nanmax(col_data)}, mean={np.nanmean(col_data)}")
         for i in range(4):
             out_data = results[i].reshape(-1)
-            print(f"Output Property {i}: min={np.min(out_data)}, max={np.max(out_data)}, mean={np.mean(out_data)}")
+            print(f"Output Property {i}: min={np.nanmin(out_data)}, max={np.nanmax(out_data)}, mean={np.nanmean(out_data)}")
 
         import pprint
         pprint.pprint(self.model.ranges)
