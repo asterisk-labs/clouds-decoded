@@ -125,7 +125,31 @@ class GeoRasterData(Data):
         else:
             raise ValueError(f"Data has invalid number of dimensions: {self.data.ndim}")
 
-        driver = 'NetCDF' if is_netcdf else 'GTiff'
+        if is_netcdf:
+            # Fallback to xarray/netcdf4 as GDAL NetCDF driver support varies
+            try:
+                import xarray as xr
+            except ImportError:
+                 raise ImportError("xarray is required to write NetCDF files.")
+            
+            metadata = self.metadata.model_dump(exclude_defaults=True)
+            
+            da = xr.DataArray(
+                out_data,
+                dims=("band", "y", "x"),
+                coords={"band": np.arange(1, count + 1)},
+                attrs=metadata
+            )
+            
+            if self.crs:
+                 da.attrs['crs'] = str(self.crs)
+            if self.transform:
+                 da.attrs['transform'] = str(self.transform) # Serializing Affine object
+                 
+            da.to_netcdf(filepath)
+            return
+
+        driver = 'GTiff'
         
         profile = {
             'driver': driver,
@@ -285,7 +309,4 @@ class PointCloudData(Data):
         pq.write_table(table, filepath)
 
 class AlbedoData(GeoRasterData):
-    pass
-
-class RetrievalsData(GeoRasterData):
     pass
