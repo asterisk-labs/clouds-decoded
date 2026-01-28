@@ -19,7 +19,7 @@ except ImportError:
 
 # Refl2Prop (Cloud Properties Inversion) Module
 try:
-    from clouds_decoded.modules.refl2prop.inference import CloudPropertyInverter
+    from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter
 except ImportError:
     logger.debug("Refl2Prop module not found. CloudPropertyInverter not available.")
     CloudPropertyInverter = None
@@ -30,3 +30,10 @@ try:
 except ImportError:
     logger.debug("Albedo Estimator module not found. AlbedoEstimator not available.")
     AlbedoEstimator = None
+
+# Cloud Mask Module
+try:
+    from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor
+except ImportError:
+    logger.debug("Cloud Mask module not found. CloudMaskProcessor not available.")
+    CloudMaskProcessor = None
