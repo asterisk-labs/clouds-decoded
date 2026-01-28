@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from refl2prop.dataset import InMemoryRefl2PropDataset, Refl2PropDataset, collate_fn
-from refl2prop.model import InversionNet, NormalizationWrapper
-from refl2prop.loss import physics_masked_loss
+from .dataset import InMemoryRefl2PropDataset, Refl2PropDataset, collate_fn
+from .model import InversionNet, NormalizationWrapper
+from .loss import physics_masked_loss
 
 
 def validate_and_plot(model, iterator, device, epoch, output_dir, val_batches=20):

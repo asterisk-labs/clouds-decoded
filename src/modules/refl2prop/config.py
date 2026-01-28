@@ -49,3 +49,40 @@ class OutputFeature(str, Enum):
     @classmethod
     def list(cls) -> List[str]:
         return [param.value for param in cls]
+
+
+# --- New Configuration Implementation ---
+from pydantic import Field
+from clouds_decoded.shared_utils.config import BaseProcessorConfig
+
+class Refl2PropConfig(BaseProcessorConfig):
+    """
+    Configuration for the Cloud Property Inversion (Refl2Prop) module.
+    """
+    # Resources
+    model_path: str = Field(..., description="Path to the .pth model checkpoint")
+    
+    # Input Specification
+    required_bands: List[str] = ["B01", "B02", "B04", "B08", "B11", "B12"]
+    
+    # Processing Parameters
+    mask_invalid_height: bool = Field(True, description="If True, masks pixels with Cloud Height <= 0 as NaN")
+    batch_size: int = Field(32768, description="Inference batch size (pixels)")
+    output_resolution: Optional[int] = Field(None, description="Target spatial resolution in meters. If None, uses input resolution.")
+    
+    # Normalization Parameters (Raw -> Model Input)
+    # Model expects: (value - offset) / scale
+    # Default training used: (v - 1000) / 10000 for bands and albedo
+    norm_bands_offset: float = 1000.0
+    norm_bands_scale: float = 10000.0
+    
+    # Height was divided by 1000 in legacy code.
+    norm_height_offset: float = 0.0
+    norm_height_scale: float = 1000.0 
+    
+    # Default Fallbacks
+    default_albedo: float = 0.1
+    default_shading_ratio: float = 0.5
+    
+    # Output Features (Logic control)
+    output_feature_names: List[str] = ['tau', 'ice_liq_ratio', 'r_eff_liq', 'r_eff_ice']
