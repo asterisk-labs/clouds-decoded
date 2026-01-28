@@ -1,6 +1,10 @@
 # refl2prop/config.py
 from enum import Enum
 from typing import List
+from pydantic import Field
+
+
+from clouds_decoded.config import BaseProcessorConfig
 
 # Bands used for the inversion (matching your notebook)
 INVERSION_BANDS = ['B01', 'B02', 'B04', 'B08', 'B11', 'B12']
@@ -51,9 +55,7 @@ class OutputFeature(str, Enum):
         return [param.value for param in cls]
 
 
-# --- New Configuration Implementation ---
-from pydantic import Field
-from clouds_decoded.shared_utils.config import BaseProcessorConfig
+
 
 class Refl2PropConfig(BaseProcessorConfig):
     """
