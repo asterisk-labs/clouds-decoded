@@ -227,6 +227,9 @@ class ColumnIterator:
         for i in range(self.length):
             column = self.extractor[i]
 
+            while queue.full():
+                time.sleep(0.1)  # Wait for space in the queue
+                
             if column is not None:
                 filename = f"column_{uuid.uuid4()}.pkl" 
                 column_path = os.path.join(self.temp_dir, filename)

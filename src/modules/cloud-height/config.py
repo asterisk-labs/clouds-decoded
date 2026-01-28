@@ -1,67 +1,42 @@
-import os
-
-from . import defaults
-import yaml
+from typing import List, Optional
 import numpy as np
-from pprint import pprint
+from pydantic import Field
+from clouds_decoded.shared_utils.config import BaseProcessorConfig
 
-import uuid
-
-
-class CloudHeightConfig:
-
-    def __init__(self,config_file,scene_dir):
-        """
-        Load the configuration from a YAML file, using defaults for any missing values
-
-        Parameters:
-            config_file: str, Path to the configuration file
-            scene_dir: str, Path to the scene directory
+class CloudHeightConfig(BaseProcessorConfig):
+    """
+    Configuration for Cloud Height Processor.
+    """
+    # Core Parameters
+    reference_band: str = Field('B02', description="Band that is fixed whilst others move.")
+    bands: List[str] = Field(['B02','B03','B04','B05','B07','B08'], description="Bands to use for correlation.")
     
-        Returns:
-            None
-        """
-
-        if config_file is not None:
-            try:
-                with open(config_file,'r') as f:
-                    config = yaml.load(f,Loader=yaml.FullLoader)
-            except FileNotFoundError:
-                print(f"Configuration file {config_file} not found. Using default parameters.")
-        else:
-            config = {}
-
-
-        self.scene_dir = scene_dir
+    # Thresholding
+    cloudy_thresh: float = Field(1600.0, description="Basic thresholding for cloudiness in DN.")
+    threshold_band: str = Field('B08', description="Band to use for thresholding.")
     
-        self.n_workers = config.get('N_WORKERS',defaults.N_WORKERS)
-        self.cloudy_thresh = config.get('CLOUDY_THRESH',defaults.CLOUDY_THRESH)
-        self.threshold_band = config.get('THRESHOLD_BAND',defaults.THRESHOLD_BAND)
-        self.stride = config.get('STRIDE',defaults.STRIDE)
-        self.along_track_resolution = config.get('ALONG_TRACK_RESOLUTION',defaults.ALONG_TRACK_RESOLUTION)
-        self.across_track_resolution = config.get('ACROSS_TRACK_RESOLUTION',defaults.ACROSS_TRACK_RESOLUTION)
-        self.convolved_size_along_track = config.get('CONVOLVED_SIZE_ALONG_TRACK',defaults.CONVOLVED_SIZE_ALONG_TRACK)
-        self.convolved_size_across_track = config.get('CONVOLVED_SIZE_ACROSS_TRACK',defaults.CONVOLVED_SIZE_ACROSS_TRACK)
-        self.correlation_weighting = config.get('CORRELATION_WEIGHTING',defaults.CORRELATION_WEIGHTING)
-        self.max_height = config.get('MAX_HEIGHT',defaults.MAX_HEIGHT)
-        self.height_step = config.get('HEIGHT_STEP',defaults.HEIGHT_STEP)
-        self.heights = np.arange(0,self.max_height,self.height_step)
-        if self.heights[-1] != self.max_height:
-            self.heights = np.append(self.heights,self.max_height)
-        self.bands = config.get('BANDS',defaults.BANDS)
-        self.spatial_smoothing_sigma = config.get('SPATIAL_SMOOTHING_SIGMA',defaults.SPATIAL_SMOOTHING_SIGMA)    
+    # Spatial / Convolution
+    along_track_resolution: int = Field(5, description="Pixel size used during convolution (m).")
+    across_track_resolution: int = Field(10, description="Pixel size used during convolution (m).")
+    stride: int = Field(300, description="Stride between points in metres.")
+    convolved_size_along_track: int = Field(200, description="Correlation window size along track (m).")
+    convolved_size_across_track: int = Field(200, description="Correlation window size across track (m).")
+    
+    # Method
+    correlation_weighting: bool = Field(True, description="Weight height estimates by correlation value.")
+    spatial_smoothing_sigma: float = Field(200.0, description="Gaussian kernel sigma for smoothing (m).")
+    
+    # Height Search Space
+    max_height: int = Field(18000, description="Maximum height to search (m).")
+    height_step: int = Field(100, description="Height step (m).")
+    
+    # System
+    temp_dir: Optional[str] = Field(None, description="Temporary directory. If None, uses /dev/shm.")
 
-        self.temp_dir = config.get('TEMP_DIR',f"/dev/shm/cloudheight_temp_{uuid.uuid4()}")
-        self.output_dir = config.get('OUTPUT_DIR',defaults.OUTPUT_DIR)
-
-        if self.scene_dir[-1]=="/":
-            product_id = os.path.splitext(self.scene_dir.split("/")[-2])[0]
-        else:
-            product_id =  os.path.splitext(os.path.basename(self.scene_dir))[0]
-        self.plot_writeto = os.path.join(self.output_dir,"plots",f"{product_id}.png")
-        self.log_writeto = os.path.join(self.output_dir,"log",product_id)
-        self.pcloud_writeto = os.path.join(self.output_dir,"pcloud",f"{product_id}.npz")
-
-
-        # Probably shouldn't change this from B02!
-        self.reference_band = config.get('reference_band',defaults.REFERENCE_BAND)
+    @property
+    def heights(self) -> np.ndarray:
+        """Derived property: Array of heights to search."""
+        hs = np.arange(0, self.max_height, self.height_step)
+        if hs[-1] != self.max_height:
+            hs = np.append(hs, self.max_height)
+        return hs
