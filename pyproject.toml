@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clouds-decoded"
+version = "0.1.0"
+description = "Clouds Decoded: End-to-end cloud properties from Sentinel-2"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "rasterio",
+    "pydantic>=2.0.0",
+    "typer",
+    "pandas",
+    "pyarrow",
+    "torch>=1.10.0",
+    "xarray",
+    "netCDF4",
+    "scikit-image",
+    "pyyaml"
+]
+
+[tool.setuptools.package-dir]
+"clouds_decoded" = "src/shared_utils"
+"clouds_decoded.modules" = "src/modules"
+"clouds_decoded.modules.cloud_mask" = "src/modules/cloud-mask"
+"clouds_decoded.modules.cloud_height" = "src/modules/cloud-height"
+"clouds_decoded.modules.albedo_estimator" = "src/modules/albedo-estimator"
+"clouds_decoded.cli" = "src/cli"
+
+[project.scripts]
+cd-workflow = "clouds_decoded.cli.entry:app"
