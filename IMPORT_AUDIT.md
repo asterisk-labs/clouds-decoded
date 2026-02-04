@@ -129,14 +129,17 @@ except ImportError:
 After Phase 1 rename, verify imports work:
 
 ```bash
+# Activate environment first (REQUIRED)
+conda activate cd-build-0
+
 # Test each module individually
-python3 -c "from clouds_decoded.modules.cloud_height import CloudHeightProcessor"
-python3 -c "from clouds_decoded.modules.cloud_mask import CloudMaskProcessor"
-python3 -c "from clouds_decoded.modules.albedo_estimator import AlbedoEstimator"
-python3 -c "from clouds_decoded.modules.refl2prop import CloudPropertyInverter"
+python -c "from clouds_decoded.modules.cloud_height import CloudHeightProcessor"
+python -c "from clouds_decoded.modules.cloud_mask import CloudMaskProcessor"
+python -c "from clouds_decoded.modules.albedo_estimator import AlbedoEstimator"
+python -c "from clouds_decoded.modules.refl2prop import CloudPropertyInverter"
 
 # Test unified import
-python3 -c "from clouds_decoded.shared_utils.processors import *"
+python -c "from clouds_decoded.shared_utils.processors import *"
 
 # Test CLI still works
 clouds-decoded --help

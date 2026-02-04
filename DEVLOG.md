@@ -4,6 +4,11 @@
 **Start Date**: 2026-02-04
 **References**: ARCHITECTURE.md, CODEBASE_ANALYSIS.md, IMPLEMENTATION_PLAN.md
 
+> **⚠️ IMPORTANT**: All Python commands must be run within conda environment `cd-build-0`
+> ```bash
+> conda activate cd-build-0
+> ```
+
 ---
 
 ## Phase 0: Pre-Flight Checks ✅ COMPLETE
@@ -19,6 +24,7 @@
 - ✅ Verified .gitignore properly excludes __pycache__/
 
 ### Current State
+- **Environment**: Conda environment `cd-build-0` (MUST be activated for all Python commands)
 - **Tests**: None exist currently
 - **Test data**: Available at `/data/sample-sentinel2-scenes/S2B_MSIL1C_20250104T185019_N0511_R127_T09KVQ_20250104T220125.SAFE/`
   - Size: ~1GB (cannot add to git)
