@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from .dataset import InMemoryRefl2PropDataset, Refl2PropDataset, collate_fn
-from .model import InversionNet, NormalizationWrapper
-from .loss import physics_masked_loss
+from .model import InversionNet, NormalizationWrapper, NoiseGenerator
+from .loss import physics_masked_loss, combined_loss
 
 
 def validate_and_plot(model, iterator, device, epoch, output_dir, val_batches=20):
@@ -22,6 +22,7 @@ def validate_and_plot(model, iterator, device, epoch, output_dir, val_batches=20
 
     all_preds = []
     all_targets = []
+    all_uncertainties = []
 
     with torch.no_grad():
         for _ in range(val_batches):
@@ -31,13 +32,14 @@ def validate_and_plot(model, iterator, device, epoch, output_dir, val_batches=20
             except StopIteration:
                 # Should not happen with infinite dataset, but safety first
                 break
-            
+
             inputs = inputs.to(device)
-            # model() returns PHYSICAL values (denormalized)
-            preds = model(inputs)
-            
+            # model() returns PHYSICAL values (denormalized) and uncertainty
+            preds, uncertainty = model(inputs, return_uncertainty=True)
+
             all_preds.append(preds.cpu())
             all_targets.append(targets)
+            all_uncertainties.append(uncertainty.cpu())
 
     if not all_preds:
         return
@@ -45,6 +47,11 @@ def validate_and_plot(model, iterator, device, epoch, output_dir, val_batches=20
     # Cat into large tensors
     preds = torch.cat(all_preds, dim=0).numpy()
     targets = torch.cat(all_targets, dim=0).numpy()
+    uncertainties = torch.cat(all_uncertainties, dim=0).numpy()
+
+    # Print uncertainty statistics
+    print(f"  Uncertainty stats: mean={uncertainties.mean():.4f}, std={uncertainties.std():.4f}, "
+          f"min={uncertainties.min():.4f}, max={uncertainties.max():.4f}")
 
     # --- Plotting Configuration ---
     param_names = ["Optical Thickness", "Ice/Liq Ratio", "Reff Liquid", "Reff Ice"]
@@ -123,6 +130,10 @@ def main():
     parser.add_argument('--lr', type=float, default=5e-3)
     parser.add_argument('--in_memory', action='store_true', help='Load dataset into RAM')
     parser.add_argument('--num_workers', type=int, default=1)
+    parser.add_argument('--noise_min', type=float, default=0.001, help='Min noise magnitude (fraction of range)')
+    parser.add_argument('--noise_max', type=float, default=0.02, help='Max noise magnitude (fraction of range)')
+    parser.add_argument('--physics_weight', type=float, default=1.0, help='Weight for physics loss')
+    parser.add_argument('--noise_weight', type=float, default=1.0, help='Weight for noise reconstruction loss')
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -147,47 +158,68 @@ def main():
 
     # 3. Init Model
     input_size = len(dataset.input_stats['min'])
-    core_model = InversionNet(input_size=input_size, output_size=4).to(device)
+    core_model = InversionNet(input_size=input_size, output_size=4, noise_output_size=6).to(device)
     model = NormalizationWrapper(core_model, dataset.input_stats, dataset.output_stats).to(device)
-    
+
+    # 4. Init Noise Generator
+    noise_generator = NoiseGenerator(dataset.input_stats, noise_min=args.noise_min, noise_max=args.noise_max)
+
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
     # Create the infinite iterator ONCE
     train_iterator = iter(loader)
-    
-    # 4. Train Loop
+
+    # 5. Train Loop
     for epoch in range(args.epochs):
         model.train()
         total_loss = 0
-        
+        total_physics_loss = 0
+        total_noise_loss = 0
+
         # LR Decay
         lr = args.lr * (0.2 ** (epoch // 30))
         optimizer.param_groups[0]['lr'] = lr
         print(f"Epoch {epoch+1}/{args.epochs} | LR: {lr:.2e}")
-        
+
         # Training Steps
         epoch_batches = 1000
-        for i in tqdm(range(epoch_batches), desc=f"Epoch {epoch+1}", smoothing=0.05):
+        for i in tqdm(range(epoch_batches), desc=f"Epoch {epoch+1}", smoothing=0.05, ncols=100):
             try:
                 inputs, targets = next(train_iterator)
             except StopIteration:
                 train_iterator = iter(loader)
                 inputs, targets = next(train_iterator)
-                
+
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
-            
-            norm_in = model.normalize_input(inputs)
+
+            # Generate and add noise
+            noise_to_add, target_noise = noise_generator.generate(inputs.size(0), device)
+            noisy_inputs = inputs + noise_to_add
+
+            # Forward pass with noisy inputs
+            norm_in = model.normalize_input(noisy_inputs)
             norm_tgt = (targets - model.out_min) / (model.out_max - model.out_min) * 2 - 1
-            norm_pred = model.model(norm_in)
-            loss = physics_masked_loss(norm_pred, norm_tgt, targets)
-            
+            physics_pred, noise_pred = model.model(norm_in)
+
+            # Combined loss
+            loss, loss_dict = combined_loss(
+                physics_pred, norm_tgt, targets,
+                noise_pred, target_noise,
+                physics_weight=args.physics_weight, noise_weight=args.noise_weight
+            )
+
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
-            
+
+            total_loss += loss_dict['total']
+            total_physics_loss += loss_dict['physics']
+            total_noise_loss += loss_dict['noise']
+
         avg_loss = total_loss / epoch_batches
-        print(f"  Avg Loss: {avg_loss:.6f}")
+        avg_physics = total_physics_loss / epoch_batches
+        avg_noise = total_noise_loss / epoch_batches
+        print(f"  Avg Loss: {avg_loss:.6f} (Physics: {avg_physics:.6f}, Noise: {avg_noise:.6f})")
 
         # Validation Steps (Reuse same iterator!)
         # Pass 20 batches (approx 2500 samples) for validation

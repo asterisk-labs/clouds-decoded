@@ -22,7 +22,7 @@ except ImportError:
     AlbedoEstimator = None
 
 from .model import InversionNet, NormalizationWrapper
-from .config import InputFeature, Refl2PropConfig
+from .config import InputFeature, Refl2PropConfig, OutputFeature
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,8 @@ class CloudPropertyInverter:
         
         # Init Model
         # TODO: Move input/output sizes to config or infer from checkpoint meta if available
-        core_model = InversionNet(input_size=17, output_size=4)
+        # Note: noise_output_size=6 matches the training configuration for model_ood.pth
+        core_model = InversionNet(input_size=17, output_size=4, noise_output_size=6)
         
         # Reconstruct Normalization Wrapper using dummy stats (overwritten by load_state_dict)
         dummy = {'min': [0]*17, 'max': [1]*17}
@@ -217,6 +218,8 @@ class CloudPropertyInverter:
         batch_size = self.config.batch_size
         n_pixels = input_matrix.shape[0]
         output_list = []
+        uncertainty_list = []
+        return_uncertainty = self.config.return_uncertainty
         
         steps = range(0, n_pixels, batch_size)
         
@@ -228,22 +231,39 @@ class CloudPropertyInverter:
                 batch_np = np.nan_to_num(batch_np)
                 
                 batch_t = torch.from_numpy(batch_np).to(self.device)
-                pred = self.model(batch_t)
-                output_list.append(pred.cpu().numpy())
+                
+                if return_uncertainty:
+                    # Model returns (physics, uncertainty)
+                    pred, unc = self.model(batch_t, return_uncertainty=True)
+                    output_list.append(pred.cpu().numpy())
+                    # uncertainty is (Batch,) -> reshape to (Batch, 1) for concatenation later if needed
+                    uncertainty_list.append(unc.cpu().numpy())
+                else:
+                    pred = self.model(batch_t)
+                    output_list.append(pred.cpu().numpy())
                 
         # Stack outputs -> (N, 4)
         results = np.concatenate(output_list, axis=0)
+
+        # Append uncertainty if requested
+        if return_uncertainty:
+            unc_results = np.concatenate(uncertainty_list, axis=0)
+            # Expand dims to (N, 1)
+            unc_results = unc_results[:, np.newaxis]
+            results = np.concatenate([results, unc_results], axis=1)
         
-        # Reshape to (4, H, W)
+        num_channels = results.shape[1]
+
+        # Reshape to (C, H, W)
         # Note: PyTorch/Rasterio standard is (Channels, Height, Width)
-        results = results.reshape((target_shape[0], target_shape[1], 4))
-        results = np.moveaxis(results, -1, 0) # (H, W, 4) -> (4, H, W)
+        results = results.reshape((target_shape[0], target_shape[1], num_channels))
+        results = np.moveaxis(results, -1, 0) # (H, W, C) -> (C, H, W)
         
         # Post-process Masking
         if self.config.mask_invalid_height:
              logger.info("Masking pixels where Cloud Height <= 0 with NaN")
              invalid_mask = (height_map <= 0)
-             # results shape (4, H, W)
+             # results shape (C, H, W)
              for i in range(results.shape[0]):
                  results[i][invalid_mask] = np.nan
         
@@ -253,13 +273,18 @@ class CloudPropertyInverter:
         retrieval_obj.data = results
         retrieval_obj.transform = start_transform
         retrieval_obj.crs = start_crs
-        # Metadata is auto-initialized with default band definitions
+        
+        if return_uncertainty:
+            current_bands = list(retrieval_obj.metadata.band_names)
+            if OutputFeature.UNCERTAINTY.value not in current_bands:
+                 current_bands.append(OutputFeature.UNCERTAINTY.value)
+                 retrieval_obj.metadata.band_names = current_bands
 
         #Debugging prints, show histograms, min/max, etc. of all inputs and all outputs, in 17+4 png files and 17+4 lines of print
         for i in range(17):
             col_data = input_matrix[:,i]
             print(f"Input Feature {i}: min={np.nanmin(col_data)}, max={np.nanmax(col_data)}, mean={np.nanmean(col_data)}")
-        for i in range(4):
+        for i in range(num_channels):
             out_data = results[i].reshape(-1)
             print(f"Output Property {i}: min={np.nanmin(out_data)}, max={np.nanmax(out_data)}, mean={np.nanmean(out_data)}")
 

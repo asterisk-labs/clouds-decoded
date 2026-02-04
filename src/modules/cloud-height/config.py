@@ -1,7 +1,7 @@
 from typing import List, Optional
 import numpy as np
 from pydantic import Field
-from clouds_decoded.shared_utils.config import BaseProcessorConfig
+from clouds_decoded.config import BaseProcessorConfig
 
 class CloudHeightConfig(BaseProcessorConfig):
     """

@@ -1,6 +1,6 @@
 # refl2prop/config.py
 from enum import Enum
-from typing import List
+from typing import List, Optional
 from pydantic import Field
 
 
@@ -49,6 +49,7 @@ class OutputFeature(str, Enum):
     ICE_LIQ_RATIO = 'ice_liq_ratio'
     R_EFF_LIQ = 'r_eff_liq'
     R_EFF_ICE = 'r_eff_ice'
+    UNCERTAINTY = 'uncertainty'
     
     @classmethod
     def list(cls) -> List[str]:
@@ -68,6 +69,7 @@ class Refl2PropConfig(BaseProcessorConfig):
     required_bands: List[str] = ["B01", "B02", "B04", "B08", "B11", "B12"]
     
     # Processing Parameters
+    return_uncertainty: bool = Field(False, description="If True, calculates and appends uncertainty channel")
     mask_invalid_height: bool = Field(True, description="If True, masks pixels with Cloud Height <= 0 as NaN")
     batch_size: int = Field(32768, description="Inference batch size (pixels)")
     output_resolution: Optional[int] = Field(None, description="Target spatial resolution in meters. If None, uses input resolution.")

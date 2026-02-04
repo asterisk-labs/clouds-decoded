@@ -18,8 +18,11 @@ class BaseProcessorConfig(BaseModel):
     debug_mode: bool = False
 
     @classmethod
-    def load_yaml(cls, config_path: str):
-        """Loads configuration from a YAML file."""
+    def from_yaml(cls, config_path: Optional[str] = None):
+        """Loads configuration from a YAML file. If path is None, returns default config."""
+        if config_path is None:
+            return cls()
+
         config_path = Path(config_path)
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")

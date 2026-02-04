@@ -33,7 +33,11 @@ except ImportError:
 
 # Cloud Mask Module
 try:
-    from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor
+    from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor, ThresholdCloudMaskProcessor
+    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
 except ImportError:
     logger.debug("Cloud Mask module not found. CloudMaskProcessor not available.")
     CloudMaskProcessor = None
+    ThresholdCloudMaskProcessor = None
+    CloudMaskConfig = None
+    PostProcessParams = None
