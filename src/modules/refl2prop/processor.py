@@ -14,12 +14,8 @@ from clouds_decoded.data import (
     AlbedoData,
     CloudMaskData
 )
-# We will import AlbedoEstimator properly once we fix that module.
-# For now, we mock or try import
-try:
-    from clouds_decoded.modules.albedo_estimator.processor import AlbedoEstimator
-except ImportError:
-    AlbedoEstimator = None
+# AlbedoEstimator import
+from clouds_decoded.modules.albedo_estimator import AlbedoEstimator
 
 from .model import InversionNet, NormalizationWrapper
 from .config import InputFeature, Refl2PropConfig, OutputFeature

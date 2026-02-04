@@ -9,35 +9,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Cloud Height Module
-try:
-    from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
-    from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
-except ImportError:
-    logger.debug("Cloud Height module not found. CloudHeightProcessor not available.")
-    CloudHeightProcessor = None
-    CloudHeightConfig = None
+from clouds_decoded.modules.cloud_height import CloudHeightProcessor, CloudHeightConfig
+
+# Cloud Mask Module
+from clouds_decoded.modules.cloud_mask import (
+    CloudMaskProcessor,
+    ThresholdCloudMaskProcessor,
+    CloudMaskConfig,
+    PostProcessParams
+)
+
+# Albedo Estimator Module
+from clouds_decoded.modules.albedo_estimator import AlbedoEstimator
 
 # Refl2Prop (Cloud Properties Inversion) Module
 try:
     from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter
 except ImportError:
-    logger.debug("Refl2Prop module not found. CloudPropertyInverter not available.")
+    logger.debug("Refl2Prop module not found. CloudPropertyInverter not available (requires PyTorch).")
     CloudPropertyInverter = None
 
-# Albedo Estimator Module
-try:
-    from clouds_decoded.modules.albedo_estimator.processor import AlbedoEstimator
-except ImportError:
-    logger.debug("Albedo Estimator module not found. AlbedoEstimator not available.")
-    AlbedoEstimator = None
-
-# Cloud Mask Module
-try:
-    from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor, ThresholdCloudMaskProcessor
-    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
-except ImportError:
-    logger.debug("Cloud Mask module not found. CloudMaskProcessor not available.")
-    CloudMaskProcessor = None
-    ThresholdCloudMaskProcessor = None
-    CloudMaskConfig = None
-    PostProcessParams = None
+__all__ = [
+    'CloudHeightProcessor',
+    'CloudHeightConfig',
+    'CloudMaskProcessor',
+    'ThresholdCloudMaskProcessor',
+    'CloudMaskConfig',
+    'PostProcessParams',
+    'AlbedoEstimator',
+    'CloudPropertyInverter',
+]
