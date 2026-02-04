@@ -1,119 +1,113 @@
+"""Albedo estimation processor."""
 import numpy as np
 import logging
-from typing import Dict, Optional
+from typing import List
 
-from clouds_decoded.data import Sentinel2Scene, AlbedoData, GeoRasterData
-# from .config import AlbedoConfig 
+from clouds_decoded.data import Sentinel2Scene, AlbedoData, Metadata
+from .config import AlbedoEstimatorConfig
 
 logger = logging.getLogger(__name__)
 
+
 class AlbedoEstimator:
-    def __init__(self, config=None):
-        self.config = config
+    """Estimates surface albedo from Sentinel-2 scenes.
 
-    def process(self, scene: Sentinel2Scene, percentile: float = 1.0) -> Dict[str, AlbedoData]:
-        """
-        Estimates albedo as a constant value per band based on the n-th percentile of reflectances.
-        Returns a dictionary of AlbedoData objects (one per band), where each object contains 
-        a raster filled with the estimated value.
-        
+    Uses a simple percentile-based method to estimate constant albedo per band.
+    This is a placeholder approach suitable for quick estimates; more sophisticated
+    methods (BRDF models, atmospheric correction) can be added in the future.
+    """
+
+    def __init__(self, config: AlbedoEstimatorConfig):
+        """Initialize with configuration.
+
         Args:
-            scene: The Sentinel2Scene input.
-            percentile: The percentile to extract (0-100). Default 1.0 (dark object).
-            
-        Returns:
-             Dict[str, AlbedoData]: Dictionary of AlbedoData raasters per band.
+            config: AlbedoEstimatorConfig instance with estimation parameters
         """
-        logger.info(f"Estimating albedo using {percentile}th percentile method.")
-        
-        albedo_rasters = {}
-        
-        # We iterate over all loaded bands in the scene
-        for band_name, band_data in scene.bands.items():
-            if not isinstance(band_data, np.ndarray):
-                logger.debug(f"Skipping band {band_name} (not a numpy array/not loaded).")
-                continue
-                
-            try:
-                # Calculate scalar albedo
-                estimated_val = 0.05 # Default
-                
-                valid_mask = ~np.isnan(band_data)
-                if np.any(valid_mask):
-                    estimated_val = float(np.percentile(band_data[valid_mask], percentile))
-                else:
-                    logger.warning(f"Band {band_name} is all NaN. Defaulting to 0.05")
-                
-                # Create a full raster of this value
-                # Using float32 for model compatibility
-                albedo_map = np.full_like(band_data, estimated_val, dtype=np.float32)
+        self.config = config
+        logger.info(f"Initialized AlbedoEstimator with {config.method} method "
+                   f"(percentile={config.percentile})")
 
-                # Wrap in AlbedoData
-                # We assume the scene has a valid transform/crs from B02
-                # If these are None, GeoRasterData will just lack georef, which is fine for internal use
-                # but might be issue for writing.
-                
-                albedo_obj = AlbedoData(
-                    data=albedo_map,
-                    transform=scene.transform,
-                    crs=scene.crs,
-                    metadata={"method": "percentile", "percentile": percentile, "band": band_name}
-                )
-                
-                albedo_rasters[band_name] = albedo_obj
-                    
-            except Exception as e:
-                logger.error(f"Failed to estimate albedo for {band_name}: {e}")
-                # Create a fallback/dummy raster of same shape as band??
-                # If calculation fails, we might not even have shape if band_data was the issue.
-                # Skip.
-                continue
-        
-        return albedo_rasters
+    def process(self, scene: Sentinel2Scene) -> AlbedoData:
+        """Estimate surface albedo for all bands in scene.
 
-            
-        h, w = ref_raster.data.shape # Assuming 2D [H, W] for single band read
-        
-        # List of band names to process
-        band_names = list(scene.bands.keys())
+        Args:
+            scene: Sentinel-2 scene with loaded bands
+
+        Returns:
+            AlbedoData: Multi-band raster with shape (n_bands, height, width).
+                       Each band contains a constant albedo value based on the
+                       specified percentile of that band's reflectance.
+        """
+        logger.info(f"Estimating albedo using {self.config.percentile}th percentile method")
+
+        # Get band names in consistent order
+        band_names = sorted(scene.bands.keys())
         n_bands = len(band_names)
-        
-        # Initialize output array (Bands, Height, Width)
-        out_array = np.zeros((n_bands, h, w), dtype=np.float32)
-        
-        metadata = {}
-        
-        for idx, b_name in enumerate(band_names):
-            # Read band
-            b_path = scene.bands[b_name]
-            # We treat it as 1D for percentile calculation to save memory if possible
-            # But standard read loads it all.
-            with GeoRasterData.from_file(b_path) as b_obj:
-                # b_obj is not a context manager, it returns instance. 
-                pass
-            
-            b_obj = GeoRasterData.from_file(b_path)
-            if b_obj.data is None:
-                continue
-                
-            # Calculate Percentile
-            # Note: b_obj.data might contain NaNs or 0 for nodata
-            data_valid = b_obj.data[np.isfinite(b_obj.data)]
-            if data_valid.size == 0:
-                p_val = 0.0
-            else:
-                p_val = np.percentile(data_valid, percentile)
-            
-            # Fill the plane
-            out_array[idx, :, :] = p_val
-            metadata[f"albedo_{b_name}"] = float(p_val)
-            
-        # Create AlbedoData
-        output = AlbedoData()
-        output.data = out_array
-        output.transform = ref_raster.transform
-        output.crs = ref_raster.crs
-        output.metadata.extra = metadata # Or proper field
-        
-        logger.info("Albedo estimation complete.")
+
+        if n_bands == 0:
+            raise ValueError("Scene has no loaded bands. Call scene.read() first.")
+
+        # Get reference shape from first band (assume all bands will be resampled to match)
+        ref_band_data = scene.bands[band_names[0]]
+        if ref_band_data.ndim == 3:
+            # Handle (1, H, W) shape
+            h, w = ref_band_data.shape[1:]
+        else:
+            # Handle (H, W) shape
+            h, w = ref_band_data.shape
+
+        # Initialize output array (n_bands, height, width)
+        albedo_array = np.zeros((n_bands, h, w), dtype=np.float32)
+        albedo_values = {}  # Track computed values for metadata
+
+        # Estimate albedo for each band
+        for idx, band_name in enumerate(band_names):
+            try:
+                band_data = scene.bands[band_name]
+
+                # Handle different shapes
+                if band_data.ndim == 3 and band_data.shape[0] == 1:
+                    band_data = band_data[0]  # Extract 2D array from (1, H, W)
+
+                # Resize to reference shape if needed
+                if band_data.shape != (h, w):
+                    from skimage.transform import resize
+                    band_data = resize(band_data, (h, w), order=1, preserve_range=True)
+
+                # Calculate percentile on valid data
+                valid_mask = np.isfinite(band_data)
+                if np.any(valid_mask):
+                    estimated_val = float(np.percentile(band_data[valid_mask],
+                                                        self.config.percentile))
+                else:
+                    logger.warning(f"Band {band_name} is all NaN/invalid. "
+                                 f"Using default albedo {self.config.default_albedo}")
+                    estimated_val = self.config.default_albedo
+
+                # Fill band plane with constant value
+                albedo_array[idx, :, :] = estimated_val
+                albedo_values[band_name] = estimated_val
+
+            except Exception as e:
+                logger.error(f"Failed to estimate albedo for {band_name}: {e}. "
+                           f"Using default {self.config.default_albedo}")
+                albedo_array[idx, :, :] = self.config.default_albedo
+                albedo_values[band_name] = self.config.default_albedo
+
+        # Package output with metadata
+        metadata = Metadata(
+            method=self.config.method,
+            percentile=self.config.percentile,
+            band_names=band_names,  # Preserve band order
+            albedo_values=albedo_values,  # Actual computed values
+        )
+
+        output = AlbedoData(
+            data=albedo_array,
+            transform=scene.transform,
+            crs=scene.crs,
+            metadata=metadata
+        )
+
+        logger.info(f"Albedo estimation complete for {n_bands} bands")
         return output

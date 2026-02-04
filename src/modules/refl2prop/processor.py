@@ -15,7 +15,7 @@ from clouds_decoded.data import (
     CloudMaskData
 )
 # AlbedoEstimator import
-from clouds_decoded.modules.albedo_estimator import AlbedoEstimator
+from clouds_decoded.modules.albedo_estimator import AlbedoEstimator, AlbedoEstimatorConfig
 
 from .model import InversionNet, NormalizationWrapper
 from .config import InputFeature, Refl2PropConfig, OutputFeature
@@ -55,11 +55,11 @@ class CloudPropertyInverter:
         self.model.eval()
         
         # Initialize internal Albedo Estimator
-        if AlbedoEstimator:
-            self.albedo_estimator = AlbedoEstimator()
-        else:
-            self.albedo_estimator = None
-            logger.warning("AlbedoEstimator not available. Using default 0.1 albedo.")
+        albedo_config = AlbedoEstimatorConfig(
+            percentile=1.0,  # Use 1st percentile (dark object)
+            default_albedo=self.config.default_albedo
+        )
+        self.albedo_estimator = AlbedoEstimator(albedo_config)
 
     def process(self, scene: Sentinel2Scene, height_data: CloudHeightGridData) -> CloudPropertiesData:
         """
@@ -112,28 +112,27 @@ class CloudPropertyInverter:
         # B. Surface Albedo
         # -----------------
         logger.info("Estimating Surface Albedo (Geospatial)...")
-        albedo_maps = {} 
-        
-        # We need to get albedo for each required band
-        if self.albedo_estimator:
-            try:
-                # Returns Dict[str, AlbedoData]
-                raw_albedo_dict = self.albedo_estimator.process(scene)
-            except Exception as e:
-                logger.error(f"Albedo estimation failed: {e}")
-                raw_albedo_dict = {}
-        else:
-             raw_albedo_dict = {}
+        albedo_maps = {}
+
+        # Get albedo for all bands (now returns single AlbedoData with multi-band array)
+        try:
+            albedo_data = self.albedo_estimator.process(scene)
+            # albedo_data.data has shape (n_bands, h, w)
+            # albedo_data.metadata.band_names has the band order
+            band_to_index = {band: idx for idx, band in enumerate(albedo_data.metadata.band_names)}
+        except Exception as e:
+            logger.error(f"Albedo estimation failed: {e}. Using default albedo.")
+            albedo_data = None
+            band_to_index = {}
 
         for b in required_bands:
             # 1. Get raw albedo raster (or fallback constant)
-            if b in raw_albedo_dict and raw_albedo_dict[b].data is not None:
-                alb_arr = raw_albedo_dict[b].data
-                # Ensure 2D
-                if alb_arr.ndim == 3: alb_arr = alb_arr[0]
+            if albedo_data and b in band_to_index:
+                band_idx = band_to_index[b]
+                alb_arr = albedo_data.data[band_idx]  # Extract 2D plane for this band
             else:
                 logger.warning(f"Albedo for {b} missing. Using {self.config.default_albedo} fallback.")
-                # Create constant array of target shape directly (optimization: skip resize step)
+                # Create constant array of target shape
                 alb_arr = np.full(target_shape, self.config.default_albedo, dtype=np.float32)
 
             # 2. Resize to match Cloud Height Grid if needed
@@ -141,7 +140,7 @@ class CloudPropertyInverter:
                  alb_arr = resize(alb_arr, target_shape, order=0, preserve_range=True).astype(np.float32)
             else:
                  alb_arr = alb_arr.astype(np.float32)
-            
+
             albedo_maps[b] = alb_arr
 
         # C. Geometry (Sun/View Angles)

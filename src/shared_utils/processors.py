@@ -20,7 +20,7 @@ from clouds_decoded.modules.cloud_mask import (
 )
 
 # Albedo Estimator Module
-from clouds_decoded.modules.albedo_estimator import AlbedoEstimator
+from clouds_decoded.modules.albedo_estimator import AlbedoEstimator, AlbedoEstimatorConfig
 
 # Refl2Prop (Cloud Properties Inversion) Module
 try:
@@ -37,5 +37,6 @@ __all__ = [
     'CloudMaskConfig',
     'PostProcessParams',
     'AlbedoEstimator',
+    'AlbedoEstimatorConfig',
     'CloudPropertyInverter',
 ]
