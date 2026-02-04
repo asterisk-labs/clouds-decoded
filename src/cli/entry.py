@@ -34,16 +34,11 @@ def run_cloud_height(
     
     # Configure
     from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
-    
-    if hasattr(CloudHeightConfig, 'from_yaml'):
+
+    if config_path:
         config = CloudHeightConfig.from_yaml(config_path)
-    elif hasattr(CloudHeightConfig, 'load_yaml'):
-         if config_path:
-             config = CloudHeightConfig.load_yaml(config_path)
-         else:
-             config = CloudHeightConfig()
     else:
-         config = CloudHeightConfig()
+        config = CloudHeightConfig()
 
     processor = CloudHeightProcessor(config)
     result = processor.process(scene)

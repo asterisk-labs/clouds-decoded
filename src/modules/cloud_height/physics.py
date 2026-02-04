@@ -1,5 +1,5 @@
 import numpy as np
-from .constants import BAND_TIME_DELAYS, ORBITAL_VELOCITY, SPACECRAFT_ALTITUDE
+from clouds_decoded.constants import BAND_TIME_DELAYS, ORBITAL_VELOCITY, SPACECRAFT_ALTITUDE
 
 class RotationTransform:
     def __init__(self, angle, centre=(0,0)):

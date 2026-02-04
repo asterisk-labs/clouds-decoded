@@ -1,3 +1,7 @@
+# Cloud Height Configuration Example
+# Copy and modify this file to customize cloud height retrieval parameters
+# Usage: clouds-decoded cloud-height scene.SAFE --config my_config.yaml
+
 ACROSS_TRACK_RESOLUTION: 10
 ALONG_TRACK_RESOLUTION: 5
 BANDS:

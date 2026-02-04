@@ -1,4 +1,6 @@
-# Default Configuration for Refl2Prop
+# Refl2Prop (Cloud Properties) Configuration Example
+# Copy and modify this file to customize cloud property inversion
+# Usage: clouds-decoded workflow scene.SAFE --model model.pth --config my_config.yaml
 
 # File Paths
 model_path: "./src/modules/refl2prop/model.pth"

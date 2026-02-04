@@ -14,7 +14,7 @@ from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeight
 from .data import ColumnExtractor, ColumnIterator, RetrievalCube
 from .physics import heightsToOffsets
 from .config import CloudHeightConfig
-from .constants import BAND_RESOLUTIONS
+from clouds_decoded.constants import BAND_RESOLUTIONS
 
 # Module-level logger setup
 logger = logging.getLogger(__name__)

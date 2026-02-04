@@ -9,7 +9,7 @@ import pickle
 import rtree
 
 from clouds_decoded.data import Sentinel2Scene
-from .constants import BAND_RESOLUTIONS
+from clouds_decoded.constants import BAND_RESOLUTIONS
 from .physics import RotationTransform
 
 class Column:
