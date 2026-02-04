@@ -103,3 +103,43 @@ Ready to proceed with Phase 1: Module Naming & Imports (CRITICAL PATH)
 Ready to proceed with Phase 2: Constants & Configuration Unification
 
 ---
+
+## Phase 2: Constants & Configuration Unification ✅ COMPLETE
+
+**Duration**: 20 minutes
+**Commit**: `ddff4ea`
+**Risk Level**: LOW
+
+### Actions Completed
+- ✅ Deleted duplicate `cloud_height/constants.py`
+- ✅ Updated 3 files to import from `clouds_decoded.constants`
+  - `processor.py`, `physics.py`, `data.py`
+- ✅ Removed defensive config loading branching in CLI
+- ✅ Created `docs/examples/` directory
+- ✅ Moved 2 config.yaml files to examples with descriptive names
+- ✅ Added usage headers to example configs
+- ✅ Removed empty albedo_estimator config
+
+### Key Achievements
+- **Single source of truth**: All constants in `shared_utils/constants.py`
+- **No duplication risk**: BAND_TIME_DELAYS, ORBITAL_VELOCITY centralized
+- **Clean config loading**: Removed unnecessary hasattr checks
+- **Better organization**: Example configs separated from source code
+
+### Files Changed
+- Deleted: 2 files (`constants.py`, empty `config.yaml`)
+- Moved: 2 config files to `docs/examples/`
+- Updated: 4 files (3 imports, 1 CLI logic)
+
+### Verification
+```bash
+✓ No duplicate BAND_TIME_DELAYS definitions
+✓ All cloud_height imports use clouds_decoded.constants
+✓ CLI config loading simplified (no branching)
+✓ Example configs in docs/examples/ with headers
+```
+
+### Next Steps
+Ready to proceed with Phase 3: Enforce Processor Pattern
+
+---
