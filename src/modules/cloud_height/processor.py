@@ -49,6 +49,7 @@ class CloudHeightProcessor:
 
             
             # Using specific value for max points buffer
+            # TODO : Dynamically size based on scene dimensions
             max_points = int(109800**2 / self.config.stride**2)*2 
             
             N_heights = len(self.config.heights)

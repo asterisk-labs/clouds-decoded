@@ -161,6 +161,42 @@ n_workers: 4
     print("✓ Config YAML loading works")
 
 
+def test_cloud_mask_to_binary():
+    """Smoke test: CloudMaskData.to_binary() works."""
+    from clouds_decoded.data import CloudMaskData, CloudMaskMetadata
+    from rasterio.transform import Affine
+
+    # Create categorical mask with all classes
+    mask_data = np.array([
+        [0, 0, 1, 1],
+        [0, 2, 2, 1],
+        [3, 3, 2, 0],
+        [3, 0, 0, 0]
+    ], dtype=np.uint8)
+
+    mask = CloudMaskData(
+        data=mask_data,
+        transform=Affine.identity(),
+        crs=None,
+        metadata=CloudMaskMetadata()
+    )
+
+    # Convert to binary (default: thick + thin cloud = classes 1, 2)
+    binary = mask.to_binary()
+
+    assert binary.data.shape == (4, 4)
+    assert set(np.unique(binary.data)) == {0, 1}
+    # Classes 1 and 2 should be 1, rest should be 0
+    expected = np.array([
+        [0, 0, 1, 1],
+        [0, 1, 1, 1],
+        [0, 0, 1, 0],
+        [0, 0, 0, 0]
+    ], dtype=np.uint8)
+    np.testing.assert_array_equal(binary.data, expected)
+    print("✓ CloudMaskData.to_binary() works")
+
+
 if __name__ == "__main__":
     """Run smoke tests directly (no pytest needed)."""
     print("\n=== Running Smoke Tests ===\n")
@@ -180,6 +216,8 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
             test_config_from_yaml(Path(tmpdir))
+
+        test_cloud_mask_to_binary()
 
         print("\n=== ✓ All Smoke Tests Passed ===\n")
     except Exception as e:

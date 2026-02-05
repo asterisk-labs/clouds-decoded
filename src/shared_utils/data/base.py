@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import json
+import logging
 import pandas as pd
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -8,6 +9,8 @@ from typing import Optional, Any, Dict, List, Tuple, Union
 import rasterio as rio
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+logger = logging.getLogger(__name__)
 
 class NumpyEncoder(json.JSONEncoder):
     """ Custom encoder for numpy data types """
@@ -65,6 +68,17 @@ class GeoRasterData(Data):
             raise ValueError("Data must be a numpy array")
         return v
 
+    def validate(self) -> bool:
+        """Validate data integrity. Override in subclasses for specific checks.
+
+        Returns:
+            True if data is valid, False otherwise.
+        """
+        if self.data is None:
+            return True
+        # Base validation: check it's an array with valid shape
+        return isinstance(self.data, np.ndarray) and self.data.ndim in (2, 3)
+
     def read(self, filepath: Union[str, Path]):
         """Read data from a file (GeoTIFF or NetCDF)."""
         filepath = Path(filepath)
@@ -110,7 +124,11 @@ class GeoRasterData(Data):
         """Write data to a file (GeoTIFF or NetCDF)."""
         if self.data is None:
             raise ValueError("No data to write")
-        
+
+        # Validate data before writing
+        if not self.validate():
+            logger.warning(f"Data validation failed for {type(self).__name__}. Writing anyway.")
+
         filepath = Path(filepath)
         is_netcdf = filepath.suffix.lower() == '.nc'
         
