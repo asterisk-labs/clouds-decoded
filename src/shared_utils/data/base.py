@@ -120,7 +120,7 @@ class GeoRasterData(Data):
                     # but Metadata has extra='allow')
                     self.metadata = meta_type(**json_dict)
 
-    def write(self, filepath: Union[str, Path]):
+    def write(self, filepath: Union[str, Path], compression: str = 'lzw'):
         """Write data to a file (GeoTIFF or NetCDF)."""
         if self.data is None:
             raise ValueError("No data to write")
@@ -176,7 +176,8 @@ class GeoRasterData(Data):
             'count': count,
             'dtype': self.data.dtype,
             'crs': self.crs,
-            'transform': self.transform
+            'transform': self.transform,
+            'compress': compression
         }
 
         with rio.open(filepath, 'w', **profile) as dst:
