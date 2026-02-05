@@ -307,3 +307,39 @@ Ready for Phase 6-8: Cleanup, testing, verification
 Continue with Phase 6 cleanup or proceed to Phase 7 (Testing & Documentation)
 
 ---
+## Tangent: Cloud Height Revamp ✅ COMPLETE
+
+**Duration**: 45 minutes
+**Commit**: TBD
+**Risk Level**: MEDIUM (Logic refactoring)
+
+### Actions Completed
+- ✅ **Unified Cloud Height Workflow**: Merged `process()` and `postprocess()` into a single `process()` call, now returning `CloudHeightGridData` directly.
+- ✅ **Stateless Processor**: Removed instance state (`final_heights`, `scene`, etc.) from `CloudHeightProcessor` favoring explicit data flow.
+- ✅ **Dynamic Buffering**: Implemented dynamic `max_points` calculation based on scene dimensions via new `Sentinel2Scene.get_scene_size_meters()`, avoiding hardcoded limits.
+- ✅ **Decoupled Masking**: Removed legacy masking config (`cloudy_thresh`) from `CloudHeightConfig`. Updated `process()` to accept an external `CloudMaskData` object or mask path, effectively decoupling height retrieval from cloud detection logic.
+- ✅ **Data Model Cleanup**: Removed unused `CloudHeightPointsData`.
+
+### Key Achievements
+- **Robustness**: Processor now handles scenes of any size without crashing or running out of buffer space.
+- **Separation of Concerns**: Cloud height retrieval no longer implicitly performs its own threshold-based cloud detection.
+- **API Simplicity**: User gets the final gridded product in one call: `processor.process(scene, mask=my_mask)`.
+
+### Files Changed
+- `cloud_height/processor.py`: Major refactor, unified flow, external mask support.
+- `cloud_height/config.py`: Removed legacy threshold params.
+- `cloud_height/data.py`: Updated `ColumnExtractor` to interpolate external masks.
+- `shared_utils/data/sentinel.py`: Added `get_scene_size_meters()`.
+- `shared_utils/data/cloud_height.py`: Removed `CloudHeightPointsData`.
+
+### Next Steps
+Verify integration with CLI and full workflow.
+### Follow-up Actions
+- ✅ **CLI Update**: Updated `src/cli/entry.py` to support the new `cloud_height` signature (accepting external mask).
+- ✅ **Workflow Integration**: Updated `workflow` command to pass the generated mask to the height processor.
+- ✅ **Refl2Prop Config**: Moved hardcoded neural net dimensions to `Refl2PropConfig`.
+
+### Optimization & Fixes
+- ✅ **Fix**: Handled `ValueError` in Cloud Height when mask results in empty rows.
+- ✅ **Optim**: Updated Cloud Height to skip processing for masked (clear-sky) grid points.
+- ✅ **Feat**: Enabled LZW compression by default for all `GeoRasterData` writes.
