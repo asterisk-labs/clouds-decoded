@@ -1,37 +1,122 @@
 from typing import List, Optional
 import numpy as np
-from pydantic import Field
+from pydantic import Field, field_validator
 from clouds_decoded.config import BaseProcessorConfig
 
 class CloudHeightConfig(BaseProcessorConfig):
-    """
-    Configuration for Cloud Height Processor.
+    """Configuration for Cloud Height Processor.
+
+    Retrieves cloud top height from Sentinel-2 parallax using multi-band correlation.
     """
     # Core Parameters
-    reference_band: str = Field('B02', description="Band that is fixed whilst others move.")
-    bands: List[str] = Field(['B02','B03','B04','B05','B07','B08'], description="Bands to use for correlation.")
-    
+    reference_band: str = Field(
+        default='B02',
+        description="Reference band (fixed while others shift for parallax)"
+    )
+    bands: List[str] = Field(
+        default=['B02', 'B03', 'B04', 'B05', 'B07', 'B08'],
+        description="Bands to use for correlation (minimum 2 required)"
+    )
+
     # Thresholding
-    cloudy_thresh: float = Field(1600.0, description="Basic thresholding for cloudiness in DN.")
-    threshold_band: str = Field('B08', description="Band to use for thresholding.")
-    
+    cloudy_thresh: float = Field(
+        default=1600.0,
+        ge=0,
+        le=10000,
+        description="Reflectance threshold for cloud detection (DN, 0-10000)"
+    )
+    threshold_band: str = Field(
+        default='B08',
+        description="Band to use for cloud thresholding"
+    )
+
     # Spatial / Convolution
-    along_track_resolution: int = Field(5, description="Pixel size used during convolution (m).")
-    across_track_resolution: int = Field(10, description="Pixel size used during convolution (m).")
-    stride: int = Field(300, description="Stride between points in metres.")
-    convolved_size_along_track: int = Field(200, description="Correlation window size along track (m).")
-    convolved_size_across_track: int = Field(200, description="Correlation window size across track (m).")
-    
+    along_track_resolution: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        description="Pixel size along track during convolution (meters)"
+    )
+    across_track_resolution: int = Field(
+        default=10,
+        ge=1,
+        le=60,
+        description="Pixel size across track during convolution (meters)"
+    )
+    stride: int = Field(
+        default=300,
+        ge=10,
+        le=5000,
+        description="Stride between retrieval points (meters)"
+    )
+    convolved_size_along_track: int = Field(
+        default=200,
+        ge=50,
+        le=2000,
+        description="Correlation window size along track (meters)"
+    )
+    convolved_size_across_track: int = Field(
+        default=200,
+        ge=50,
+        le=2000,
+        description="Correlation window size across track (meters)"
+    )
+
     # Method
-    correlation_weighting: bool = Field(True, description="Weight height estimates by correlation value.")
-    spatial_smoothing_sigma: float = Field(200.0, description="Gaussian kernel sigma for smoothing (m).")
-    
+    correlation_weighting: bool = Field(
+        default=True,
+        description="Weight height estimates by correlation strength"
+    )
+    spatial_smoothing_sigma: float = Field(
+        default=200.0,
+        ge=0,
+        le=5000,
+        description="Gaussian smoothing kernel sigma (meters, 0=no smoothing)"
+    )
+
     # Height Search Space
-    max_height: int = Field(18000, description="Maximum height to search (m).")
-    height_step: int = Field(100, description="Height step (m).")
-    
+    max_height: int = Field(
+        default=18000,
+        ge=1000,
+        le=25000,
+        description="Maximum cloud height to search (meters, troposphere limit ~18km)"
+    )
+    height_step: int = Field(
+        default=100,
+        ge=10,
+        le=1000,
+        description="Height search step size (meters)"
+    )
+
     # System
-    temp_dir: Optional[str] = Field(None, description="Temporary directory. If None, uses /dev/shm.")
+    n_workers: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        description="Number of parallel workers for processing"
+    )
+    temp_dir: Optional[str] = Field(
+        default=None,
+        description="Temporary directory for intermediate files (None=use /dev/shm)"
+    )
+
+    @field_validator('bands')
+    @classmethod
+    def validate_bands(cls, v):
+        """Ensure at least 2 bands for correlation."""
+        if len(v) < 2:
+            raise ValueError("At least 2 bands required for parallax correlation")
+        return v
+
+    @field_validator('reference_band')
+    @classmethod
+    def validate_reference_band(cls, v):
+        """Validate reference band is a valid Sentinel-2 band."""
+        valid_bands = {'B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07',
+                       'B08', 'B8A', 'B09', 'B10', 'B11', 'B12'}
+        if v not in valid_bands:
+            raise ValueError(f"Invalid band: {v}. Must be one of {valid_bands}")
+        return v
 
     @property
     def heights(self) -> np.ndarray:
