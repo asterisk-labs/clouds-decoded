@@ -69,7 +69,44 @@ class Sentinel2Scene(Data):
         self.orientation = self._get_scene_orientation(self.scene_directory)
         self.orbit_type = self._get_orbit_type(self.scene_directory)
 
+    def get_scene_size_meters(self) -> Tuple[float, float]:
+        """
+        Calculates the scene dimensions in meters based on a loaded band and its resolution.
+        Attempts to use 'B02' (10m) first, then falls back to any available band.
+        
+        Returns:
+            Tuple[float, float]: (width_meters, height_meters)
+        
+        Raises:
+            ValueError: If no bands are loaded or if resolution is unknown for available bands.
+        """
+        # Try finding a resolution from available bands
+        band_name = None
+        if "B02" in self.bands:
+            band_name = "B02"
+        elif self.bands:
+            band_name = list(self.bands.keys())[0]
+        else:
+            raise ValueError("No bands loaded to determine scene size.")
+
+        if band_name not in BAND_RESOLUTIONS:
+             raise ValueError(f"Unknown resolution for band {band_name}")
+
+        resolution = BAND_RESOLUTIONS[band_name]
+        band_data = self.bands[band_name]
+        
+        # Band data might be (C, H, W) or (H, W)
+        if band_data.ndim == 3:
+             height, width = band_data.shape[1], band_data.shape[2]
+        elif band_data.ndim == 2:
+             height, width = band_data.shape[0], band_data.shape[1]
+        else:
+             raise ValueError(f"Invalid shape for band {band_name}: {band_data.shape}")
+             
+        return (float(width * resolution), float(height * resolution))
+
     def write(self, filepath: str):
+
         """Writing Sentinel-2 scenes is not supported."""
         raise NotImplementedError("Writing Sentinel-2 scenes is not supported.")
 

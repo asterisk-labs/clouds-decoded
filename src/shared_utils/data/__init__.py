@@ -1,7 +1,7 @@
 from .base import Data, Metadata, GeoRasterData, PointCloudData, AlbedoData
 from .sentinel import Sentinel2Scene
 from .cloud_mask import CloudMaskData, CloudMaskMetadata
-from .cloud_height import CloudHeightGridData, CloudHeightPointsData, CloudHeightMetadata
+from .cloud_height import CloudHeightGridData, CloudHeightMetadata
 from .refl2prop import CloudPropertiesData, CloudPropertiesMetadata
 
 __all__ = [
@@ -14,7 +14,6 @@ __all__ = [
     "CloudMaskData",
     "CloudMaskMetadata",
     "CloudHeightGridData",
-    "CloudHeightPointsData",
     "CloudHeightMetadata",
     "CloudPropertiesData",
     "CloudPropertiesMetadata"

@@ -10,7 +10,9 @@ from rasterio.transform import Affine
 
 
 # Standardized Imports
-from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeightMetadata
+from typing import Optional, Union
+from pathlib import Path
+from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeightMetadata, CloudMaskData
 from .data import ColumnExtractor, ColumnIterator, RetrievalCube
 from .physics import heightsToOffsets
 from .config import CloudHeightConfig
@@ -25,32 +27,56 @@ class CloudHeightProcessor:
         Initializes the CloudHeightProcessor with a configuration object.
         """
         self.config = config
-        self.final_heights = None
-        self.final_coords = None
-        self.final_gridded_heights = None
         self.gaussian_kernel = self._constructGaussianKernel()
 
-    def process(self, scene: Sentinel2Scene) -> CloudHeightGridData:
+    def process(self, scene: Sentinel2Scene, cloud_mask: Optional[Union[CloudMaskData, np.ndarray, str, Path]] = None) -> CloudHeightGridData:
         """
         Main processing method.
         Args:
             scene: The standardized Sentinel2Scene object.
+            cloud_mask: Optional cloud mask to restrict processing to cloudy pixels.
+                        Can be CloudMaskData object, numpy array, or path to file.
+                        If provided, only pixels where mask > 0 are processed.
         Returns:
             CloudHeightGridData: The result containing the height map.
         """
         logger.info(f"Processing scene: {scene.scene_directory}")
-        self.scene = scene # Helper for postprocess
         
-        # Override config scene_dir if needed, or trust the passed scene object?
-        # Ideally we trust the scene object. The locally stored config might have a path, but the object is source of truth.
-        
+        # Resolve mask
+        mask_array = None
+        if cloud_mask is not None:
+             logger.info("Using provided cloud mask.")
+             if isinstance(cloud_mask, (str, Path)):
+                  try:
+                       # Attempt to load as CloudMaskData
+                       cm_obj = CloudMaskData.from_file(str(cloud_mask))
+                       mask_array = cm_obj.data
+                  except Exception:
+                       # If that fails (e.g. plain geotiff), try generic load?
+                       # Or just fail? Let's assume valid CloudMaskData file.
+                       logger.warning(f"Could not load {cloud_mask} as CloudMaskData. Ignoring mask.")
+             elif isinstance(cloud_mask, CloudMaskData):
+                  mask_array = cloud_mask.data
+             elif isinstance(cloud_mask, np.ndarray):
+                  mask_array = cloud_mask
+             
+             # Ensure mask is 2D
+             if mask_array is not None:
+                  if mask_array.ndim == 3:
+                       mask_array = mask_array[0]
+                  
+                  # If we have a mask, ensure it matches scene dimensions? 
+                  # ColumnExtractor's interpolator handles this somewhat, but resolution mismatch might be weird.
+                  # Assuming 10m based mask for now.
+
         with tempfile.TemporaryDirectory(dir="/dev/shm") as temp_dir:
             logger.info("Using temporary directory: %s", temp_dir)
 
             
-            # Using specific value for max points buffer
-            # TODO : Dynamically size based on scene dimensions
-            max_points = int(109800**2 / self.config.stride**2)*2 
+
+            width_m, height_m = scene.get_scene_size_meters()
+            max_points = int((width_m * height_m) / (self.config.stride ** 2) * 2)
+            logger.info(f"Initialized buffer for up to {max_points} points for scene size {width_m:.0f}m x {height_m:.0f}m")
             
             N_heights = len(self.config.heights)
             heights_buffer = np.zeros((max_points, N_heights), dtype=np.float32)
@@ -58,7 +84,8 @@ class CloudHeightProcessor:
             coords_buffer = np.zeros((max_points, 2), dtype=np.float32)
             count = 0
             
-            column_extractor = ColumnExtractor(scene, self.config)
+            # Pass mask to extractor
+            column_extractor = ColumnExtractor(scene, self.config, mask=mask_array)
             column_iterator = ColumnIterator(
                 column_extractor, n_workers=self.config.n_workers, temp_dir=temp_dir)
             
@@ -96,37 +123,32 @@ class CloudHeightProcessor:
                  logger.warning("No valid points retrieved. Process aborting.")
                  # Return empty result
                  scale_factor = self.config.stride / BAND_RESOLUTIONS['B02']
-                 t = self.scene.transform * Affine.scale(scale_factor, scale_factor)
-                 return CloudHeightGridData(data=None, transform=t, crs=self.scene.crs)
+                 t = scene.transform * Affine.scale(scale_factor, scale_factor)
+                 return CloudHeightGridData(data=None, transform=t, crs=scene.crs)
 
-            self.final_heights = heights_buffer[:count]
-            self.final_coords = coords_buffer[:count]
+            final_heights = heights_buffer[:count]
+            final_coords = coords_buffer[:count]
 
         # Post-Processing
-        self.postprocess()
+        final_gridded_heights = self._smooth_and_grid(final_heights, final_coords, scene, mask_array)
 
         # Construct Output Object
-        # Note: final_gridded_heights is populated by postprocess
-        # We need to attach CRS and Transform. 
-        # Sentinel2Scene likely knows its native CRS/Transform, but we might have regridded?
-        # The grid inside postprocess uses 'grid_stride'. 
-        # If grid_stride != 1, resolution changed.
         
         # Prepare Metadata
         meta_dict = self.config.model_dump() if hasattr(self.config, 'model_dump') else self.config.dict()
         meta = CloudHeightMetadata(processing_config=meta_dict)
 
         # Calculate Transform and CRS
-        if self.scene.transform is None:
+        if scene.transform is None:
              raise ValueError("Scene transform is missing. Ensure input scene is georeferenced.")
 
         # Calculate scaling factor based on ratio of output stride to reference band resolution
         scale_factor = self.config.stride / BAND_RESOLUTIONS['B02']
-        transform = self.scene.transform * Affine.scale(scale_factor, scale_factor)
-        crs = self.scene.crs
+        transform = scene.transform * Affine.scale(scale_factor, scale_factor)
+        crs = scene.crs
         
         result_data = CloudHeightGridData(
-            data=self.final_gridded_heights,
+            data=final_gridded_heights,
             metadata=meta,
             transform=transform,
             crs=crs
@@ -158,8 +180,8 @@ class CloudHeightProcessor:
         along_track_stride = self.config.stride // self.config.along_track_resolution
         along_track_size = self.config.convolved_size_along_track // self.config.along_track_resolution
 
-        # Create a brightness mask if required
-        mask = column.getMask(self.config.threshold_band, self.config.cloudy_thresh) if brightness_mask else None
+        # Use the interpolated mask from the column if available
+        mask = column.mask if (brightness_mask and column.mask is not None) else None
 
         target_features = column.bands
 
@@ -251,13 +273,13 @@ class CloudHeightProcessor:
         kernel /= np.mean(kernel) # Normalize to have mean of 1, so pearson correlation is unaffected
         return kernel
 
-    def postprocess(self):         
+    def _smooth_and_grid(self, heights, coords, scene, mask_array=None):      
         """
-        Applies spatial smoothing to the retrieved height correlation scores.
+        Applies spatial smoothing to the retrieved height correlation scores and grids them.
         """
-        logger.info("Post-processing...")
+        logger.info("Smoothing and gridding points...")
 
-        retrievalcube = RetrievalCube(self.final_heights, self.final_coords, self.config)
+        retrievalcube = RetrievalCube(heights, coords, self.config)
         retrievalcube.createRtree()
 
         grid_stride = self.config.stride
@@ -266,24 +288,49 @@ class CloudHeightProcessor:
         # Use actual scene dimensions
         ref_band = self.config.reference_band
         ref_res = BAND_RESOLUTIONS[ref_band]
-        height_m = self.scene.bands[ref_band].shape[0] * ref_res
-        width_m = self.scene.bands[ref_band].shape[1] * ref_res
+        height_m = scene.bands[ref_band].shape[0] * ref_res
+        width_m = scene.bands[ref_band].shape[1] * ref_res
 
         grid_x, grid_y = np.meshgrid(np.arange(0, width_m, grid_stride), np.arange(0, height_m, grid_stride))
         grid_points = np.vstack([grid_x.ravel(), grid_y.ravel()]).T
 
         smoothed_scores_list = []
+
+        # Determine valid grid points based on mask
+        valid_mask_indices = np.ones(len(grid_points), dtype=bool)
+        if mask_array is not None:
+             mask_h, mask_w = mask_array.shape
+             res_y = height_m / mask_h
+             res_x = width_m / mask_w
+             
+             idx_x = (grid_points[:, 0] / res_x).astype(int)
+             idx_y = (grid_points[:, 1] / res_y).astype(int)
+             
+             idx_x = np.clip(idx_x, 0, mask_w - 1)
+             idx_y = np.clip(idx_y, 0, mask_h - 1)
+             
+             # Support both float (probability/confidence) and int/bool masks
+             if mask_array.dtype.kind == 'f':
+                  valid_mask_indices = mask_array[idx_y, idx_x] > 0.5
+             else:
+                  valid_mask_indices = mask_array[idx_y, idx_x] > 0
         
         with tqdm(total=len(grid_points), desc="Smoothing points") as pbar:
-            for point in grid_points:
-                coords, scores = retrievalcube.queryRadius(point, smoothing_sigma * 2)
-                
-                if len(coords) == 0:
+            for i, point in enumerate(grid_points):
+                # Skip if masked out (clear sky)
+                if not valid_mask_indices[i]:
                     smoothed_scores_list.append(np.nan * np.ones_like(self.config.heights))
                     pbar.update(1)
                     continue
 
-                dists = np.linalg.norm(coords - point, axis=1)
+                coords_found, scores = retrievalcube.queryRadius(point, smoothing_sigma * 2)
+                
+                if len(coords_found) == 0:
+                    smoothed_scores_list.append(np.nan * np.ones_like(self.config.heights))
+                    pbar.update(1)
+                    continue
+
+                dists = np.linalg.norm(coords_found - point, axis=1)
 
                 if np.min(dists) < smoothing_sigma * 1.5:
                     confs = np.max(scores, axis=1)**2
@@ -300,33 +347,21 @@ class CloudHeightProcessor:
                 pbar.update(1)
 
         smoothed_scores = np.array(smoothed_scores_list)
-        final_heights = self.config.heights[np.argmax(smoothed_scores, axis=1)]
         
-        # Remove NaNs that may have resulted from empty neighborhoods
-        valid_mask = ~np.isnan(final_heights) & (final_heights > 0)
-        self.final_heights = final_heights[valid_mask]
-        self.final_coords = grid_points[valid_mask]
-
-        final_gridded_heights = np.nan*np.ones_like(grid_x)
-        final_gridded_coords_stride = grid_points[valid_mask] // grid_stride
+        # Mask where all correlations were NaN (to avoid ValueError in nanargmax)
+        all_nan_mask = np.all(np.isnan(smoothed_scores), axis=1)
         
-
-        final_gridded_heights[final_gridded_coords_stride[:, 1], final_gridded_coords_stride[:, 0]] = self.final_heights
-        self.final_gridded_heights = final_gridded_heights
-
-if __name__ == '__main__':
-    # Barebones CLI for backward compatibility
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--scene_dir', required=True)
-    parser.add_argument('--config', required=True)
-    args = parser.parse_args()
-    
-    config = CloudHeightConfig(args.config, args.scene_dir)
-    processor = CloudHeightProcessor(config)
-    
-    # Create Scene manually here
-    scene = Sentinel2Scene.from_file(args.scene_dir)
-    result = processor.process(scene)
-    
-    print(f"Processed scene. Max Height: {np.nanmax(result.data)}")
+        # Temporarily fill all-NaN rows with 0 so nanargmax doesn't fail
+        # We don't care what index is chosen for these rows, as we'll set the height to NaN later
+        if np.any(all_nan_mask):
+            smoothed_scores[all_nan_mask] = 0.0
+        
+        # Final Height Selection (argmax of smoothed correlation)
+        final_height_indices = np.nanargmax(smoothed_scores, axis=1)
+        final_gridded_heights = self.config.heights[final_height_indices]
+        
+        final_gridded_heights = final_gridded_heights.astype(np.float32)
+        final_gridded_heights[all_nan_mask] = np.nan
+        
+        # Reshape to grid
+        return final_gridded_heights.reshape(grid_y.shape)
