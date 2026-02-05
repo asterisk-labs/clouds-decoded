@@ -41,6 +41,12 @@ class Sentinel2Scene(Data):
     def read(self, filepath: Union[str, Path], bands: List[str] = None, crop_window: Tuple[int, int, int, int] = None):
         """
         Read data from a Sentinel-2 scene directory.
+        
+        Args:
+            filepath: Path to .SAFE directory
+            bands: List of band names to load
+            crop_window: Optional tuple (col_off, row_off, width, height) in 10m pixels (B02 frame).
+                         If provided, effectively crops the scene to this window.
         """
         self.scene_directory = Path(filepath)
         if bands is None:
@@ -49,13 +55,28 @@ class Sentinel2Scene(Data):
         self.bands = self._get_bands(self.scene_directory, bands, crop_window)
 
         # Get Georeferencing from reference band (B02)
+        scene_width, scene_height = 0, 0
+        
         try:
              # Use B02 as reference for CRS and Transform (10m resolution)
              ref_paths = self._get_band_paths(self.scene_directory, ["B02"])
              if "B02" in ref_paths:
                   with rio.open(ref_paths["B02"]) as src:
                        self.crs = src.crs
-                       self.transform = src.transform
+                       base_transform = src.transform
+                       full_width, full_height = src.width, src.height
+                  
+                  if crop_window:
+                       col_off, row_off, width, height = crop_window
+                       self.transform = rio.windows.transform(
+                           Window(col_off, row_off, width, height),
+                           base_transform
+                       )
+                       scene_width, scene_height = width, height
+                  else:
+                       self.transform = base_transform
+                       scene_width, scene_height = full_width, full_height
+                       
         except Exception as e:
              # Just warn, don't crash if we can't extract CRS
              print(f"Warning: Could not extract CRS/Transform: {e}")
@@ -64,10 +85,31 @@ class Sentinel2Scene(Data):
         self.sun_zenith, self.sun_azimuth = self._get_sun_angle(self.scene_directory)
         self.view_zenith, self.view_azimuth = self._get_view_angle(self.scene_directory)
         self.image_azimuth = self._get_orbit_image_angle(self.scene_directory)
-        self.latitude = self._get_latitude(self.scene_directory)
-        self.longitude = self._get_longitude(self.scene_directory)
+        
+        # Calculate Lat/Lon center based on (potentially cropped) geometry
+        if self.transform is not None:
+             self.latitude, self.longitude = self._calculate_center_coords(scene_width, scene_height)
+        else:
+             # Fallback (though probably won't be accurate if cropped and transform failed)
+             self.latitude = self._get_latitude(self.scene_directory)
+             self.longitude = self._get_longitude(self.scene_directory)
+             
         self.orientation = self._get_scene_orientation(self.scene_directory)
         self.orbit_type = self._get_orbit_type(self.scene_directory)
+
+    def _calculate_center_coords(self, width: int, height: int) -> Tuple[float, float]:
+        """Calculate center latitude/longitude based on current transform and size."""
+        # Center in pixel coords
+        cx, cy = width / 2, height / 2
+        # Center in projected coords (X, Y)
+        px, py = self.transform * (cx, cy)
+        
+        # Reproject to EPSG:4326
+        transformer = pyproj.transformer.Transformer.from_crs(
+             self.crs, 'EPSG:4326', always_xy=True
+        )
+        lon, lat = transformer.transform(px, py)
+        return lat, lon
 
     def get_scene_size_meters(self) -> Tuple[float, float]:
         """
@@ -257,6 +299,12 @@ class Sentinel2Scene(Data):
         paths = self._get_footprint_paths(scene_directory, bands=['B02'])
         with rio.open(paths['B02']) as src:
             footprint = src.read(1)
+
+        # First, let's get rid of any rows and columns that are entirely zero (no data)
+        del_rows = np.where(np.all(footprint == 0, axis=1))[0]
+        del_cols = np.where(np.all(footprint == 0, axis=0))[0]
+        footprint = np.delete(footprint, del_rows, axis=0)
+        footprint = np.delete(footprint, del_cols, axis=1)
 
         # Vectorized approach or column search? Keeping original logic but cleaned up variables
         rows, cols = footprint.shape

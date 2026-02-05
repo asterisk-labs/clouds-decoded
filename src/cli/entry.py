@@ -216,6 +216,7 @@ def cloud_properties(
 @app.command()
 def workflow(
     scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
+    crop_window: Optional[str] = typer.Option(None, help="Crop window in format '<col_off,row_off,width,height>' (optional)"),
     model_path: str = typer.Option(..., help="Refl2Prop Model Path"),
     output_dir: str = typer.Option("output", help="Directory for outputs"),
     return_uncertainty: bool = typer.Option(False, help="Calculate and output uncertainty maps"),
@@ -233,7 +234,18 @@ def workflow(
     # 0. Load Scene (ONCE)
     logger.info(f"Loading Scene: {scene_path}")
     scene = Sentinel2Scene()
-    scene.read(scene_path)
+    if crop_window:
+        logger.info(f"Applying crop window: {crop_window}")
+        try:
+            col_off, row_off, width, height = map(int, crop_window.split(","))
+            # Sentinel2Scene expects a tuple (col_off, row_off, width, height)
+            # It handles creating the rasterio Window internally (and scaling it for different bands)
+            scene.read(scene_path, crop_window=(col_off, row_off, width, height))
+        except Exception as e:
+            logger.error(f"Failed to parse or apply crop window: {e}. Format should be 'col_off,row_off,width,height'. Processing full scene.")
+            scene.read(scene_path)
+    else:
+        scene.read(scene_path)
     
     # 1. Mask
     logger.info("Running Step 1: Cloud Mask")

@@ -343,3 +343,27 @@ Verify integration with CLI and full workflow.
 - ✅ **Fix**: Handled `ValueError` in Cloud Height when mask results in empty rows.
 - ✅ **Optim**: Updated Cloud Height to skip processing for masked (clear-sky) grid points.
 - ✅ **Feat**: Enabled LZW compression by default for all `GeoRasterData` writes.
+
+---
+
+## Phase 4 Addendum: Optimization & Quality of Life ✅ COMPLETE
+
+**Duration**: 30 minutes
+**Risk Level**: LOW
+
+### Features Added
+- **Sentinel-2 Spatial Cropping**: Added `crop_window` argument to `Sentinel2Scene.read()`.
+  - Allows loading only a sub-region of a scene (e.g., specific cloud formation).
+  - Automatically recalculates Affine transform and Scene Center (Lat/Lon).
+  - CLI support: `--crop-window "500,500,3000,3000"` added to `workflow`.
+  - **Benefit**: Significantly faster iteration on small regions without processing full 100km scenes.
+- **LZW Compression**: Enabled caching/compression for `GeoRasterData.write()` to reduce artifact size.
+
+### Fixes
+- **CLI Robustness**: Fixed a bug in `workflow` command where `crop_window` was passed as a `Window` object instead of the required `tuple`.
+- **Cloud Height Stability**: Fixed `ValueError` when processing scenes with all-masked rows (empty arrays).
+
+### Files Changed
+- `src/shared_utils/data/sentinel.py`: Reading logic + math for cropping.
+- `src/cli/entry.py`: Added parsing logic for crop window tuple.
+- `src/modules/cloud_height/processor.py`: Guard clauses for empty data.
