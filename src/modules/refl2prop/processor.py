@@ -43,11 +43,15 @@ class CloudPropertyInverter:
         # Init Model
         # TODO: Move input/output sizes to config or infer from checkpoint meta if available
         # Note: noise_output_size=6 matches the training configuration for model_ood.pth
-        core_model = InversionNet(input_size=17, output_size=4, noise_output_size=6)
+        core_model = InversionNet(
+             input_size=self.config.input_size, 
+             output_size=self.config.output_size, 
+             noise_output_size=self.config.noise_output_size
+        )
         
         # Reconstruct Normalization Wrapper using dummy stats (overwritten by load_state_dict)
-        dummy = {'min': [0]*17, 'max': [1]*17}
-        out_dummy = {'min': [0]*4, 'max': [1]*4}
+        dummy = {'min': [0]*self.config.input_size, 'max': [1]*self.config.input_size}
+        out_dummy = {'min': [0]*self.config.output_size, 'max': [1]*self.config.output_size}
         
         self.model = NormalizationWrapper(core_model, dummy, out_dummy)
         self.model.load_state_dict(state)

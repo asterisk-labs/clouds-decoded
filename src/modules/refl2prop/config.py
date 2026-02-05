@@ -90,6 +90,23 @@ class Refl2PropConfig(BaseProcessorConfig):
         description="Target spatial resolution in meters. If None, uses input resolution."
     )
 
+    # Model Architecture Params
+    input_size: int = Field(
+        default=17,
+        gt=0,
+        description="Number of input features for the neural network"
+    )
+    output_size: int = Field(
+        default=4,
+        gt=0,
+        description="Number of output targets (cloud properties)"
+    )
+    noise_output_size: int = Field(
+        default=6,
+        ge=0,
+        description="Number of noise outputs (for uncertainty estimation)"
+    )
+
     # Normalization Parameters (Raw -> Model Input)
     # Model expects: (value - offset) / scale
     # Default training used: (v - 1000) / 10000 for bands and albedo
