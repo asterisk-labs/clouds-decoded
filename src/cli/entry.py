@@ -6,7 +6,7 @@ import logging
 import rasterio
 
 # Standardized Imports
-from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData
+from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData
 
 # Direct imports to avoid stale package issues
 from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
@@ -28,7 +28,8 @@ app = typer.Typer(help="Clouds Decoded Command Line Interface")
 def run_cloud_height(
     scene: Sentinel2Scene,
     config_path: Optional[str] = None,
-    output_path: Optional[str] = None
+    output_path: Optional[str] = None,
+    cloud_mask: Optional[Union[CloudMaskData, str, Path]] = None
 ) -> CloudHeightGridData:
     logger.info(f"Processing Cloud Height...")
     
@@ -41,7 +42,7 @@ def run_cloud_height(
         config = CloudHeightConfig()
 
     processor = CloudHeightProcessor(config)
-    result = processor.process(scene)
+    result = processor.process(scene, cloud_mask=cloud_mask)
     
     if output_path:
         result.write(output_path)
@@ -134,6 +135,7 @@ def cloud_height(
     scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
     config_path: str = typer.Option(None, help="Path to config.yaml"),
     output_path: str = typer.Option("height_output.tif", help="Output path (e.g. .tif or .nc)"),
+    mask_path: str = typer.Option(None, help="Path to cloud mask file (optional if you want to mask calculation)"),
 ):
     """
     Calculate Cloud Height from Sentinel-2 data.
@@ -145,7 +147,7 @@ def cloud_height(
     scene.read(scene_path)
     
     # 2. Run
-    run_cloud_height(scene, config_path, output_path)
+    run_cloud_height(scene, config_path, output_path, cloud_mask=mask_path)
 
 @app.command()
 def cloud_mask(
@@ -235,17 +237,17 @@ def workflow(
     
     # 1. Mask
     logger.info("Running Step 1: Cloud Mask")
-    run_cloud_mask(
+    mask_result = run_cloud_mask(
         scene, 
         output_path=mask_out,
-        method="senseiv2",
+        method="threshold",
         resolution=10,
     )
 
     # 2. Height
     logger.info("Running Step 2: Cloud Height")
     # Store result in memory to pass to properties
-    height_result = run_cloud_height(scene, config_path=None, output_path=height_out)
+    height_result = run_cloud_height(scene, config_path=None, output_path=height_out, cloud_mask=mask_result)
 
     # 3. Properties
     logger.info("Running Step 3: Cloud Properties")
