@@ -7,6 +7,7 @@ from .base import GeoRasterData, Metadata
 logger = logging.getLogger(__name__)
 
 class CloudMaskMetadata(Metadata):
+    """Metadata for cloud mask outputs."""
     categorical: bool = True
     classes: Dict[int, str] = {
         0: 'Clear',
@@ -14,6 +15,33 @@ class CloudMaskMetadata(Metadata):
         2: 'Thin Cloud',
         3: 'Cloud Shadow'
     }
+    # Processing info
+    method: Optional[str] = Field(
+        default=None,
+        description="Detection method used ('senseiv2', 'simple_threshold', etc.)"
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Model name (for ML-based methods)"
+    )
+    resolution: Optional[float] = Field(
+        default=None,
+        description="Processing resolution in meters"
+    )
+    # Threshold-specific
+    threshold_band: Optional[str] = Field(
+        default=None,
+        description="Band used for thresholding"
+    )
+    threshold_value: Optional[float] = Field(
+        default=None,
+        description="Threshold value used"
+    )
+    # Post-processing
+    postprocessed: bool = Field(
+        default=False,
+        description="Whether post-processing was applied"
+    )
 
 class CloudMaskData(GeoRasterData):
     """

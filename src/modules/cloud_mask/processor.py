@@ -7,7 +7,7 @@ from skimage.transform import resize
 from skimage.morphology import disk, dilation
 import rasterio
 
-from clouds_decoded.data import Sentinel2Scene, CloudMaskData
+from clouds_decoded.data import Sentinel2Scene, CloudMaskData, CloudMaskMetadata
 from senseiv2.inference import CloudMask
 from senseiv2.utils import get_model_files
 from senseiv2.constants import SENTINEL2_BANDS, SENTINEL2_DESCRIPTORS
@@ -49,11 +49,13 @@ class ThresholdCloudMaskProcessor:
              data=mask,
              transform=scene.transform,
              crs=scene.crs,
-             metadata={
-                 "method": "simple_threshold", 
-                 "band": threshold_band, 
-                 "value": threshold_value
-             }
+             metadata=CloudMaskMetadata(
+                 categorical=True,
+                 classes={0: 'Clear', 1: 'Cloud'},
+                 method="simple_threshold",
+                 threshold_band=threshold_band,
+                 threshold_value=threshold_value
+             )
         )
         return out
 
@@ -225,11 +227,11 @@ class CloudMaskProcessor:
              data=mask_out,
              transform=new_affine,
              crs=scene.crs,
-             metadata={
-                 "method": "senseiv2", 
-                 "model": self.model_name,
-                 "resolution": target_res
-             }
+             metadata=CloudMaskMetadata(
+                 method="senseiv2",
+                 model=self.model_name,
+                 resolution=target_res
+             )
         )
         return out
 
@@ -290,14 +292,16 @@ class CloudMaskProcessor:
                   selem = disk(pixels)
                   mask = dilation(mask, selem)
         
-        # Merge metadata using dict unpacking (compatible with Pydantic)
-        meta_dict = mask_data.metadata.model_dump()
-        meta_dict.update({"postprocessed": True})
-          
+        # Create updated metadata with postprocessed flag
+        updated_metadata = CloudMaskMetadata(
+            **mask_data.metadata.model_dump(),
+            postprocessed=True
+        )
+
         return CloudMaskData(
              data=mask,
              transform=current_transform,
              crs=mask_data.crs,
-             metadata=meta_dict
+             metadata=updated_metadata
         )
 

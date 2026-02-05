@@ -2,9 +2,12 @@
 """
 Utilities for uncertainty quantification and out-of-distribution detection.
 """
+import logging
 import torch
 import numpy as np
 from typing import Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def compute_uncertainty_score(noise_output: torch.Tensor, method: str = 'l2') -> torch.Tensor:
@@ -148,15 +151,15 @@ def example_inference_with_uncertainty(model, input_data: torch.Tensor,
 
     # Get statistics
     stats = get_uncertainty_statistics(uncertainties_np)
-    print(f"Uncertainty statistics: {stats}")
+    logger.info(f"Uncertainty statistics: {stats}")
 
     # Flag OOD samples if threshold provided
     if uncertainty_threshold is not None:
         ood_indices, ood_mask = flag_ood_samples(
             uncertainties_np, uncertainty_threshold, return_mask=True
         )
-        print(f"Flagged {len(ood_indices)} / {len(uncertainties_np)} samples as OOD "
-              f"({100 * len(ood_indices) / len(uncertainties_np):.1f}%)")
+        logger.info(f"Flagged {len(ood_indices)} / {len(uncertainties_np)} samples as OOD "
+                    f"({100 * len(ood_indices) / len(uncertainties_np):.1f}%)")
         return predictions_np, uncertainties_np, ood_mask
 
     return predictions_np, uncertainties_np, None

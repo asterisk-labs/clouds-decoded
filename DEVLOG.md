@@ -266,3 +266,44 @@ config = CloudHeightConfig(max_height=50000)  # Error: le=25000
 Ready for Phase 6-8: Cleanup, testing, verification
 
 ---
+
+## Phase 6: Clean Up & Polish (Partial) ✅ IN PROGRESS
+
+**Duration**: 30 minutes
+**Risk Level**: LOW
+
+### Actions Completed
+- ✅ Fixed raw dict metadata in `cloud_mask/processor.py`
+  - Line 52: ThresholdCloudMaskProcessor now uses CloudMaskMetadata
+  - Line 228: CloudMaskProcessor now uses CloudMaskMetadata
+  - Line 301: postprocess() now uses CloudMaskMetadata
+- ✅ Extended `CloudMaskMetadata` with processing fields
+  - Added: method, model, resolution, threshold_band, threshold_value, postprocessed
+- ✅ Added Field() wrappers to `refl2prop/config.py`
+  - All 8 untyped fields now have Field() with descriptions
+  - Added validation bounds (ge, le, gt) where applicable
+
+### Key Achievements
+- **ARCHITECTURE.md compliance**: "No raw dictionaries crossing module boundaries" ✅
+- **Type safety**: CloudMaskMetadata now properly typed
+- **Validation**: refl2prop config has proper bounds (e.g., batch_size 1-1000000)
+
+### Smoke Tests
+```bash
+✓ All imports successful
+✓ CloudHeightProcessor: ran successfully
+✓ ThresholdCloudMaskProcessor: detected 600 cloudy pixels
+✓ AlbedoEstimator: shape (12, 100, 100), bands 12
+✓ Config YAML loading works
+✓ CloudMaskData.to_binary() works
+```
+
+### Remaining Phase 6 Tasks
+- Remove debug prints from refl2prop/processor.py
+- Standardize logging across modules
+- Move producer.py/worker.py to scripts/ (or document)
+
+### Next Steps
+Continue with Phase 6 cleanup or proceed to Phase 7 (Testing & Documentation)
+
+---

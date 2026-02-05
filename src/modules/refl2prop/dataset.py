@@ -1,3 +1,4 @@
+import logging
 import torch
 from torch.utils.data import Dataset
 import numpy as np
@@ -7,6 +8,8 @@ from zarr.storage import ZipStore
 from pathlib import Path
 import random
 from typing import List, Dict, Tuple, Any
+
+logger = logging.getLogger(__name__)
 
 # We use the strict feature order from our local config
 from .config import InputFeature, OutputFeature, INVERSION_BANDS
@@ -427,9 +430,9 @@ class InMemoryRefl2PropDataset(Refl2PropDataset):
         super().__init__(*args, **kwargs)
         # Handles are closed by super().__init__. Reopen just to load into RAM.
         self._open_file()
-        print("Loading LUT into memory...")
+        logger.info("Loading LUT into memory...")
         self.reflectance_cube = np.array(self.reflectance_cube[:])
-        print("LUT loaded.")
+        logger.info("LUT loaded.")
         # Close file handles to keep it picklable, but keep the numpy array
         self._close_file()
         # Ensure reflectance_cube is the numpy array
