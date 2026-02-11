@@ -3,6 +3,8 @@ import numpy as np
 
 ########### CONSTANTS ############
 
+METADATA_TAG = "clouds_decoded"
+
 BANDS = [
     "B01", "B02", "B03", "B04", "B05", "B06", "B07",
     "B08", "B8A", "B09", "B10", "B11", "B12"
@@ -38,6 +40,13 @@ BAND_RESOLUTIONS = { # In metres
     "B01": 60,
     "B09": 60,
     "B10": 60
+}
+
+DEFAULT_SURFACE_ALBEDO = {
+    "B01": 0.03, "B02": 0.05, "B03": 0.03, "B04": 0.03,
+    "B05": 0.02, "B06": 0.02, "B07": 0.02, "B08": 0.02,
+    "B8A": 0.02, "B09": 0.02, "B10": 0.0,  "B11": 0.02, 
+    "B12": 0.02,
 }
 
 ORBIT_INCLINATION = np.deg2rad(98.62) # degrees

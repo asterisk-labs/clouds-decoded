@@ -1,3 +1,4 @@
+import logging
 import torch
 from torch.utils.data import Dataset
 import numpy as np
@@ -8,12 +9,17 @@ from pathlib import Path
 import random
 from typing import List, Dict, Tuple, Any
 
+logger = logging.getLogger(__name__)
+
 # We use the strict feature order from our local config
-from .config import InputFeature, OutputFeature, INVERSION_BANDS
+from .config import OutputFeature, DEFAULT_BANDS
 
 # Local constants mapping to the LUT file keys
+# Note: TAU_ALIASES supports both old ("tau") and new ("tau_ref") LUT naming conventions
+TAU_ALIASES = ("tau", "tau_ref")
+
 class P_LUT:
-    TAU = "tau"
+    TAU = "tau"  # Canonical name used internally
     ICE_LIQ_RATIO = "ice_liq_ratio"
     R_EFF_LIQ = "r_eff_liq"
     R_EFF_ICE = "r_eff_ice"
@@ -25,6 +31,14 @@ class P_LUT:
     BAND = "band"
     MU = "mu"
     PHI = "phi"
+
+
+def _resolve_tau_name(available_keys: set) -> str:
+    """Return the tau dimension name present in the LUT (supports 'tau' or 'tau_ref')."""
+    for alias in TAU_ALIASES:
+        if alias in available_keys:
+            return alias
+    raise KeyError(f"No tau dimension found. Expected one of {TAU_ALIASES}, got {available_keys}")
 
 class Refl2PropDataset(Dataset):
     """
@@ -40,7 +54,7 @@ class Refl2PropDataset(Dataset):
 
         self.n_dims_interp = n_dims_interp
         self.spectral_mode = spectral_mode
-        self.selected_bands = selected_bands if selected_bands else INVERSION_BANDS
+        self.selected_bands = selected_bands if selected_bands else DEFAULT_BANDS
 
         # Initialize handles to None to ensure picklability
         self.dataset = None
@@ -61,6 +75,9 @@ class Refl2PropDataset(Dataset):
         else:
             self._close_file()
             raise ValueError(f"Unsupported LUT format: {self.lut_path.suffix}")
+
+        # Normalize tau_ref -> tau in dimension names for consistency
+        self.dims_in_array = [P_LUT.TAU if d in TAU_ALIASES else d for d in self.dims_in_array]
 
         # Store shape for __len__ so we don't need file open
         self.refl_shape = self.reflectance_cube.shape
@@ -120,8 +137,10 @@ class Refl2PropDataset(Dataset):
                 val = self.dataset.variables[dim][:]
                 if val.dtype.kind == 'S': # Decode bytes
                     val = [b.decode('utf-8') for b in val]
-                self.coords[dim] = val
-        
+                # Normalize tau_ref -> tau for compatibility
+                key = P_LUT.TAU if dim in TAU_ALIASES else dim
+                self.coords[key] = val
+
         # Ensure Mu/Phi exist
         if P_LUT.MU not in self.coords:
             self.coords[P_LUT.MU] = np.linspace(0, 1, self.reflectance_cube.shape[-2])
@@ -134,21 +153,23 @@ class Refl2PropDataset(Dataset):
         for dim in self.root.keys():
             if dim not in ['reflectance', 'r_hemi']:
                 val = self.root[dim][:]
-                self.coords[dim] = val
+                # Normalize tau_ref -> tau for compatibility
+                key = P_LUT.TAU if dim in TAU_ALIASES else dim
+                self.coords[key] = val
 
     def _compute_stats(self):
         """Computes min/max for all parameters to feed the NormalizationWrapper."""
         input_mins, input_maxs = [], []
         output_mins, output_maxs = [], []
 
-        # 1. Inputs (Order from config.InputFeature)
-        # Bands
-        input_mins.extend([0.0] * 6)
-        input_maxs.extend([1.5] * 6)
-        
-        # Albedos
-        input_mins.extend([0.0] * 6)
-        input_maxs.extend([1.0] * 6)
+        # 1. Inputs (Order: bands, albedos, geometry)
+        # Bands (reflectance values typically in [0, 1.5] after normalization)
+        input_mins.extend([0.0] * self.num_bands)
+        input_maxs.extend([1.5] * self.num_bands)
+
+        # Albedos (surface albedo in [0, 1])
+        input_mins.extend([0.0] * self.num_bands)
+        input_maxs.extend([1.0] * self.num_bands)
         
         # Geometry & Priors
         geo_keys = [P_LUT.INCIDENCE_ANGLE, P_LUT.SHADING_RATIO, P_LUT.CLOUD_TOP_HEIGHT, P_LUT.MU, P_LUT.PHI]
@@ -390,7 +411,7 @@ class Refl2PropDataset(Dataset):
                 # If interpolated, we calculated it:
                 if P_LUT.SURFACE_ALBEDO in interp_vals:
                      alb_val = interp_vals[P_LUT.SURFACE_ALBEDO]
-                inputs.extend([alb_val] * 6)
+                inputs.extend([alb_val] * self.num_bands)
             
             # Geometry & Priors
             geo_order = [P_LUT.INCIDENCE_ANGLE, P_LUT.SHADING_RATIO, P_LUT.CLOUD_TOP_HEIGHT, P_LUT.MU, P_LUT.PHI]
@@ -427,9 +448,9 @@ class InMemoryRefl2PropDataset(Refl2PropDataset):
         super().__init__(*args, **kwargs)
         # Handles are closed by super().__init__. Reopen just to load into RAM.
         self._open_file()
-        print("Loading LUT into memory...")
+        logger.info("Loading LUT into memory...")
         self.reflectance_cube = np.array(self.reflectance_cube[:])
-        print("LUT loaded.")
+        logger.info("LUT loaded.")
         # Close file handles to keep it picklable, but keep the numpy array
         self._close_file()
         # Ensure reflectance_cube is the numpy array

@@ -1,0 +1,14 @@
+# Albedo Estimator Configuration Example
+# Copy and modify this file to customize surface albedo estimation
+# Usage: Used internally by refl2prop, or manually via AlbedoEstimatorConfig
+
+# Estimation Method
+method: percentile  # Currently only 'percentile' supported
+
+# Percentile for dark object subtraction
+# Lower values (e.g., 1.0) estimate minimum surface reflectance
+# Higher values give brighter surface estimates
+percentile: 1.0
+
+# Fallback albedo if calculation fails (0-1 range)
+default_albedo: 0.05

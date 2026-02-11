@@ -1,0 +1,26 @@
+# Cloud Height Configuration Example
+# Copy and modify this file to customize cloud height retrieval parameters
+# Usage: clouds-decoded cloud-height scene.SAFE --config my_config.yaml
+
+ACROSS_TRACK_RESOLUTION: 10
+ALONG_TRACK_RESOLUTION: 5
+BANDS:
+# - B01
+- B02
+- B03
+- B04
+- B05
+- B07
+- B08
+# - B8A
+CLOUDY_THRESH: 1600
+THRESHOLD_BAND: B08
+CONVOLVED_SIZE_ACROSS_TRACK: 200
+CONVOLVED_SIZE_ALONG_TRACK: 200
+HEIGHT_STEP: 100
+MAX_HEIGHT: 18000
+N_WORKERS: 32
+STRIDE: 300
+OUTPUT_DIR:  /app/out_dir/   #to change out of docker
+SPATIAL_SMOOTHING_SIGMA: 200 # Standard deviation of Gaussian kernel for spatial smoothing, in metres
+CORRELATION_WEIGHTING: True 

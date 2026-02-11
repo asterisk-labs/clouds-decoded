@@ -1,0 +1,28 @@
+# Refl2Prop (Cloud Properties) Configuration Example
+# Copy and modify this file to customize cloud property inversion
+# Usage: clouds-decoded workflow scene.SAFE --model model.pth --config my_config.yaml
+
+# File Paths
+model_path: "./src/modules/refl2prop/model.pth"
+
+# Processing Options
+batch_size: 32768
+mask_invalid_height: true
+# output_resolution: 20  # Optional: force specific resolution
+
+# Input Bands
+required_bands:
+  - B01
+  - B02
+  - B04
+  - B08
+  - B11
+  - B12
+
+# Normalization (value - offset) / scale
+norm_bands_offset: 1000.0
+norm_bands_scale: 10000.0
+norm_height_scale: 1000.0
+
+default_albedo: 0.1
+default_shading_ratio: 0.5
