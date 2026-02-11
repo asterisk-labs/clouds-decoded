@@ -29,13 +29,9 @@ class ThresholdCloudMaskProcessor:
         threshold_band = self.config.threshold_band
         threshold_value = self.config.threshold_value
         
-        # Ensure bands are loaded
-        if threshold_band not in scene.bands:
-             raise ValueError(f"Required band {threshold_band} not loaded in scene.")
-             
-        # Get raw data
-        band_data = scene.bands[threshold_band]
-        
+        # Get raw DN data (threshold is in DN units)
+        band_data = scene.get_band(threshold_band, reflectance=False)
+
         # Ensure 2D
         if isinstance(band_data, np.ndarray) and band_data.ndim == 3:
              band_data = band_data[0]
@@ -131,64 +127,37 @@ class CloudMaskProcessor:
         target_w = int(base_arr.shape[1] * scale_factor)
         target_shape = (target_h, target_w)
         
-        logger.info(f"Input Resolution Processing: Native ~{current_res:.2f}m -> Target {target_res}m. Shape: {target_shape}")
-
-        # Determine Processing Baseline for Normalization
-        offset = 0.0
-        if scene.scene_directory:
-            try:
-                name = scene.scene_directory.name
-                import re
-                match = re.search(r'_N(\d{4})_', name)
-                if match:
-                    pb = int(match.group(1))
-                    if pb >= 400: # N0400
-                        offset = 1000.0
-            except Exception:
-                pass
+        logger.info(f"Input Resolution Processing: Native {current_res:.2f}m -> Target {target_res}m. Shape: {target_shape}")
 
         for band_def in SENTINEL2_BANDS:
             bname = band_def['name']
-            if bname not in scene.bands:
-                raise ValueError(f"Missing required band for SEnSeIv2: {bname}")
-            
-            band_arr = scene.bands[bname]
+
+            # get_band handles radiometric calibration (offset + quantification)
+            band_arr = scene.get_band(bname, reflectance=True)
             if band_arr.ndim == 3: band_arr = band_arr[0]
-            
+
             # Resize using bilinear interpolation (order=1) to target resolution
             if band_arr.shape != target_shape:
-                 band_arr = resize(band_arr, target_shape, preserve_range=True, order=1).astype(band_arr.dtype)
-            
-            # Normalize to 0-1
-            arr_float = band_arr.astype(np.float32)
-            if offset > 0:
-                 arr_float = (arr_float - offset) / 10000.0
-            else:
-                 arr_float = arr_float / 10000.0
-                 
-            data_list.append(arr_float)
+                 band_arr = resize(band_arr, target_shape, preserve_range=True, order=1).astype(np.float32)
+
+            data_list.append(band_arr)
             
         # Stack to (N_bands, H, W)
         input_data = np.stack(data_list, axis=0)
         
         # 2. Run Inference
         logger.info("Running SEnSeIv2 inference...")
-        mask_out = self.cm(input_data, descriptors=SENTINEL2_DESCRIPTORS)
+        mask_out = self.cm(input_data, descriptors=SENTINEL2_DESCRIPTORS, stride=self.config.stride)
         
         # 3. Process Output
-        if mask_out.ndim == 3 and mask_out.shape[0] == 1: 
-             mask_out = mask_out[0]
-             
-        # If float, we assume probabilities, but if output_style is 4-class, we expect ints?
-        # SEnSeIv2 returns argmax if categorise=True (which is default inside CloudMask if not specified differently).
-        # We want the raw classes (0,1,2,3) usually.
-        # If mask_out is float, maybe it's probabilities? 
-        # Let's ensure integer output for the "raw" mask if it looks like classes.
-        if "class" in self.output_style and np.issubdtype(mask_out.dtype, np.floating):
-            # If it's floating point but 4-class, it might be prob map?
-            # Or it might be just cast to float. 
-            # If max value <= 3, just cast.
-            mask_out = mask_out.astype(np.uint8)
+        # SEnSeIv2 returns (n_classes, H, W) probability maps when categorise=False.
+        # Convert to class indices via argmax for categorical output.
+        if mask_out.ndim == 3 and mask_out.shape[0] > 1 and np.issubdtype(mask_out.dtype, np.floating):
+            mask_out = np.argmax(mask_out, axis=0).astype(np.uint8)
+        elif mask_out.ndim == 3 and mask_out.shape[0] == 1:
+            mask_out = mask_out[0]
+            if np.issubdtype(mask_out.dtype, np.floating) and mask_out.max() <= 3:
+                mask_out = mask_out.astype(np.uint8)
 
         # Update transform for new resolution
         # scale transform
@@ -293,10 +262,9 @@ class CloudMaskProcessor:
                   mask = dilation(mask, selem)
         
         # Create updated metadata with postprocessed flag
-        updated_metadata = CloudMaskMetadata(
-            **mask_data.metadata.model_dump(),
-            postprocessed=True
-        )
+        meta_dict = mask_data.metadata.model_dump()
+        meta_dict['postprocessed'] = True
+        updated_metadata = CloudMaskMetadata(**meta_dict)
 
         return CloudMaskData(
              data=mask,

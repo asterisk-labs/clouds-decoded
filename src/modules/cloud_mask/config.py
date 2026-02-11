@@ -1,6 +1,7 @@
 from typing import Optional, Literal, List
 from pydantic import Field, field_validator
 from clouds_decoded.config import BaseProcessorConfig
+from clouds_decoded.constants import BANDS
 
 
 class PostProcessParams(BaseProcessorConfig):
@@ -67,16 +68,23 @@ class CloudMaskConfig(BaseProcessorConfig):
         description="Compute device ('cuda', 'cpu', or None=auto)"
     )
     batch_size: int = Field(
-        default=4,
+        default=8,
         ge=1,
         le=64,
         description="Batch size for model inference"
     )
     resolution: int = Field(
-        default=10,
+        default=20,
         ge=10,
         le=60,
         description="Input resolution for model (meters)"
+    )
+
+    stride: int = Field(
+        default=80,
+        ge=1,
+        le=256,
+        description="Stride for tiling inputs to model (pixels at model resolution)"
     )
 
     # Threshold Parameters
@@ -95,9 +103,7 @@ class CloudMaskConfig(BaseProcessorConfig):
     @classmethod
     def validate_threshold_band(cls, v):
         """Validate threshold band is a valid Sentinel-2 band."""
-        valid_bands = {'B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07',
-                       'B08', 'B8A', 'B09', 'B10', 'B11', 'B12'}
-        if v not in valid_bands:
-            raise ValueError(f"Invalid band: {v}. Must be one of {valid_bands}")
+        if v not in set(BANDS):
+            raise ValueError(f"Invalid band: {v}. Must be one of {BANDS}")
         return v
 

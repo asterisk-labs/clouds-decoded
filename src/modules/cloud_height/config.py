@@ -2,6 +2,7 @@ from typing import List, Optional
 import numpy as np
 from pydantic import Field, field_validator
 from clouds_decoded.config import BaseProcessorConfig
+from clouds_decoded.constants import BANDS
 
 class CloudHeightConfig(BaseProcessorConfig):
     """Configuration for Cloud Height Processor.
@@ -14,7 +15,7 @@ class CloudHeightConfig(BaseProcessorConfig):
         description="Reference band (fixed while others shift for parallax)"
     )
     bands: List[str] = Field(
-        default=['B02', 'B03', 'B04', 'B05', 'B07', 'B08'],
+        default=['B01','B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08'],
         description="Bands to use for correlation (minimum 2 required)"
     )
 
@@ -32,7 +33,7 @@ class CloudHeightConfig(BaseProcessorConfig):
 
     # Spatial / Convolution
     along_track_resolution: int = Field(
-        default=5,
+        default=3,
         ge=1,
         le=60,
         description="Pixel size along track during convolution (meters)"
@@ -44,7 +45,7 @@ class CloudHeightConfig(BaseProcessorConfig):
         description="Pixel size across track during convolution (meters)"
     )
     stride: int = Field(
-        default=300,
+        default=180,
         ge=10,
         le=5000,
         description="Stride between retrieval points (meters)"
@@ -68,7 +69,7 @@ class CloudHeightConfig(BaseProcessorConfig):
         description="Weight height estimates by correlation strength"
     )
     spatial_smoothing_sigma: float = Field(
-        default=200.0,
+        default=180.0,
         ge=0,
         le=5000,
         description="Gaussian smoothing kernel sigma (meters, 0=no smoothing)"
@@ -90,7 +91,7 @@ class CloudHeightConfig(BaseProcessorConfig):
 
     # System
     n_workers: int = Field(
-        default=32,
+        default=48,
         ge=1,
         le=64,
         description="Number of parallel workers for processing"
@@ -112,10 +113,8 @@ class CloudHeightConfig(BaseProcessorConfig):
     @classmethod
     def validate_reference_band(cls, v):
         """Validate reference band is a valid Sentinel-2 band."""
-        valid_bands = {'B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07',
-                       'B08', 'B8A', 'B09', 'B10', 'B11', 'B12'}
-        if v not in valid_bands:
-            raise ValueError(f"Invalid band: {v}. Must be one of {valid_bands}")
+        if v not in set(BANDS):
+            raise ValueError(f"Invalid band: {v}. Must be one of {BANDS}")
         return v
 
     @property

@@ -9,6 +9,7 @@ from typing import Optional, Any, Dict, List, Tuple, Union
 import rasterio as rio
 import pyarrow as pa
 import pyarrow.parquet as pq
+from clouds_decoded.constants import METADATA_TAG
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,10 @@ class Data(BaseModel, ABC):
 class Metadata(BaseModel):
     """Base model for metadata structures."""
     model_config = ConfigDict(extra='allow')
+    provenance: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Processing provenance (project name, version, git hash, config snapshot)"
+    )
 
 class GeoRasterData(Data):
     """
@@ -94,7 +99,7 @@ class GeoRasterData(Data):
             
             # Try to recover preserved types if they were JSON encoded, else use strings
             for k, v in tags.items():
-                if k == 'extra_metadata':
+                if k == METADATA_TAG:
                     try:
                         loaded_meta = json.loads(v)
                         if isinstance(loaded_meta, dict):
@@ -113,11 +118,7 @@ class GeoRasterData(Data):
                 meta_type = type(self.metadata)
                 try:
                     self.metadata = meta_type.model_validate(json_dict)
-                except Exception:
-                    # Fallback or partial update if strict validation fails?
-                    # For now just try to update common fields if validation fails?
-                    # Or just construct with what we have (BaseModel ignores extra by default if configured,
-                    # but Metadata has extra='allow')
+                except (ValueError, TypeError):
                     self.metadata = meta_type(**json_dict)
 
     def write(self, filepath: Union[str, Path], compression: str = 'lzw'):
@@ -168,7 +169,11 @@ class GeoRasterData(Data):
             return
 
         driver = 'GTiff'
-        
+
+        # Use tiled output with appropriate predictor for better compression
+        is_float = np.issubdtype(self.data.dtype, np.floating)
+        predictor = 3 if is_float else 2  # 3=float predictor, 2=horizontal differencing
+
         profile = {
             'driver': driver,
             'height': height,
@@ -177,7 +182,11 @@ class GeoRasterData(Data):
             'dtype': self.data.dtype,
             'crs': self.crs,
             'transform': self.transform,
-            'compress': compression
+            'compress': 'deflate',
+            'predictor': predictor,
+            'tiled': True,
+            'blockxsize': 512,
+            'blockysize': 512,
         }
 
         with rio.open(filepath, 'w', **profile) as dst:
@@ -188,10 +197,7 @@ class GeoRasterData(Data):
             meta_dict = self.metadata.model_dump(exclude_defaults=True)
             if meta_dict:
                  json_meta = json.dumps(meta_dict, cls=NumpyEncoder)
-                 # rasterio accepts string tags
-                 # Note: standard TIFF tags are restrictive, but 'extra_metadata' custom tag 
-                 # works in GDAL workflow usually, definitely works for NetCDF attributes.
-                 dst.update_tags(extra_metadata=json_meta)
+                 dst.update_tags(**{METADATA_TAG: json_meta})
                  
                  # Also write flattened simple keys for easier access in other tools if simple types
                  simple_tags = {}
@@ -294,7 +300,7 @@ class PointCloudData(Data):
         # Restore metadata
         if table.schema.metadata:
             # Metadata keys are bytes
-            meta_bytes = table.schema.metadata.get(b'extra_metadata')
+            meta_bytes = table.schema.metadata.get(METADATA_TAG.encode())
             if meta_bytes:
                 try:
                     json_dict = json.loads(meta_bytes.decode('utf-8'))
@@ -303,7 +309,7 @@ class PointCloudData(Data):
                          meta_type = type(self.metadata)
                          try:
                              self.metadata = meta_type.model_validate(json_dict)
-                         except:
+                         except (ValueError, TypeError):
                              self.metadata = meta_type(**json_dict)
                 except json.JSONDecodeError:
                     pass
@@ -321,11 +327,29 @@ class PointCloudData(Data):
             existing_meta = table.schema.metadata or {}
             # Update with our custom metadata as JSON string
             json_meta = json.dumps(meta_dict)
-            existing_meta[b'extra_metadata'] = json_meta.encode('utf-8')
+            existing_meta[METADATA_TAG.encode()] = json_meta.encode('utf-8')
             
             table = table.replace_schema_metadata(existing_meta)
             
         pq.write_table(table, filepath)
 
+class AlbedoMetadata(Metadata):
+    """Metadata for albedo estimation outputs."""
+    band_names: List[str] = Field(default_factory=list)
+    method: str = Field(default="polynomial", description="Estimation method used")
+    polynomial_order: int = Field(default=2, description="Order of 2D polynomial fit")
+    polynomial_coefficients: Dict[str, List[float]] = Field(
+        default_factory=dict,
+        description="Per-band polynomial coefficients (band_name -> flat coefficient list)"
+    )
+    clear_fraction: float = Field(default=0.0, description="Fraction of scene that was clear sky")
+    fallback_used: bool = Field(default=False, description="True if insufficient clear pixels triggered fallback")
+    fallback_values: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-band constant albedo values used in fallback mode"
+    )
+
+
 class AlbedoData(GeoRasterData):
-    pass
+    """Surface albedo raster data, typically at coarse resolution."""
+    metadata: AlbedoMetadata = Field(default_factory=AlbedoMetadata)

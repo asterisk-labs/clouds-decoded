@@ -1,21 +1,23 @@
 import typer
-from pathlib import Path
-from typing import Optional, Dict, Union
+import yaml
 import numpy as np
+from pathlib import Path
+from typing import Optional, Dict, List, Union
 import logging
-import rasterio
 
 # Standardized Imports
-from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData
+from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData, AlbedoData
 
-# Direct imports to avoid stale package issues
 from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
 from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
-from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter
-# No Refl2PropConfig import needed here as we use it inside function or assume it's available
+from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter, ShadingPropertyInverter
+from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
 from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor, ThresholdCloudMaskProcessor
 from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
-
+from clouds_decoded.modules.refocus.processor import RefocusProcessor
+from clouds_decoded.modules.refocus.config import RefocusConfig
+from clouds_decoded.modules.albedo_estimator.processor import AlbedoEstimator
+from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
 
 # Setup Logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -23,253 +25,668 @@ logger = logging.getLogger("CLI")
 
 app = typer.Typer(help="Clouds Decoded Command Line Interface")
 
-# --- Core Processing Logic (Decoupled from CLI) ---
 
-def run_cloud_height(
-    scene: Sentinel2Scene,
-    config_path: Optional[str] = None,
-    output_path: Optional[str] = None,
-    cloud_mask: Optional[Union[CloudMaskData, str, Path]] = None
-) -> CloudHeightGridData:
-    logger.info(f"Processing Cloud Height...")
-    
-    # Configure
-    from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
+# --- Private Helpers ---
 
-    if config_path:
-        config = CloudHeightConfig.from_yaml(config_path)
-    else:
-        config = CloudHeightConfig()
-
-    processor = CloudHeightProcessor(config)
-    result = processor.process(scene, cloud_mask=cloud_mask)
-    
-    if output_path:
-        result.write(output_path)
-        logger.info(f"Cloud Height saved to {output_path}")
-        
-    return result
-
-def run_cloud_mask(
-    scene: Sentinel2Scene,
-    output_path: Optional[str] = None,
-    method: str = "senseiv2",
-    threshold_band: str = "B08",
-    threshold_value: float = 1600,
-    resolution: int = 10,
-    postprocess: bool = True,
-    buffer_size: int = 0,
-    output_resolution: Optional[int] = None,
-    classes: str = "1,2,3"
-):
-    logger.info(f"Processing Cloud Mask (Method: {method})...")
-    
-    if method == "threshold":
-        config = CloudMaskConfig(
-            method="threshold", 
-            threshold_band=threshold_band, 
-            threshold_value=threshold_value
-        )
-        processor = ThresholdCloudMaskProcessor(config)
-        result = processor.process(scene)
-    else:
-        # SEnSeIv2
-        config = CloudMaskConfig(
-            method="senseiv2", 
-            resolution=resolution
-        )
-        processor = CloudMaskProcessor(config)
-        
-        # Raw inference
-        result = processor.process(scene)
-        
-        # Post-processing
-        if postprocess:
-            classes_list = [int(x) for x in classes.split(",")]
-            pp_params = PostProcessParams(
-                output_resolution=output_resolution,
-                buffer_size=buffer_size,
-                classes_to_mask=classes_list,
-                binary_mask=True
-            )
-            result = processor.postprocess(result, pp_params)
-    
-    if output_path:
-        result.write(output_path)
-        logger.info(f"Cloud Mask saved to {output_path}")
-        
-    return result
-
-def run_cloud_properties(
-    scene: Sentinel2Scene,
-    height_input: Union[str, CloudHeightGridData],
-    model_path: str,
-    output_path: Optional[str] = None,
-    return_uncertainty: bool = False
-):
-    logger.info(f"Processing Cloud Properties...")
-    
-    # Load Heights if path provided
-    if isinstance(height_input, (str, Path)):
-        height_data = CloudHeightGridData.from_file(str(height_input))
-        if height_data.data is None:
-            raise ValueError("Could not read height data")
-    else:
-        height_data = height_input
-        
-    from clouds_decoded.modules.refl2prop.config import Refl2PropConfig
-    config = Refl2PropConfig(model_path=model_path, return_uncertainty=return_uncertainty)
-        
-    processor = CloudPropertyInverter(config)
-    result = processor.process(scene, height_data)
-    
-    if output_path:
-        result.write(output_path)
-        logger.info(f"Cloud Properties saved to {output_path}")
-        
-    return result
-
-
-@app.command()
-def cloud_height(
-    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
-    config_path: str = typer.Option(None, help="Path to config.yaml"),
-    output_path: str = typer.Option("height_output.tif", help="Output path (e.g. .tif or .nc)"),
-    mask_path: str = typer.Option(None, help="Path to cloud mask file (optional if you want to mask calculation)"),
-):
-    """
-    Calculate Cloud Height from Sentinel-2 data.
-    """
-    logger.info(f"Starting Cloud Height processing for: {scene_path}")
-    
-    # 1. Load Data
-    scene = Sentinel2Scene()
-    scene.read(scene_path)
-    
-    # 2. Run
-    run_cloud_height(scene, config_path, output_path, cloud_mask=mask_path)
-
-@app.command()
-def cloud_mask(
-    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
-    output_path: str = typer.Option("mask_output.tif", help="Output path (e.g. .tif)"),
-    method: str = typer.Option("senseiv2", help="Method: 'senseiv2' or 'threshold'"),
-    threshold_band: str = typer.Option("B08", help="Band used for thresholding"),
-    threshold_value: float = typer.Option(1600, help="Reflectance threshold (Raw DN)"),
-    resolution: int = typer.Option(10, help="Model input resolution in meters (for SEnSeIv2)"),
-    # Post-processing options
-    postprocess: bool = typer.Option(True, help="Apply post-processing (resizing, buffering)"),
-    buffer_size: int = typer.Option(0, help="Buffer size in meters"),
-    output_resolution: Optional[int] = typer.Option(None, help="Output resolution in meters. If None, uses model resolution."),
-    classes: str = typer.Option("1,2,3", help="Comma-separated class indices to consider as cloud (e.g. '1,2,3')"),
-):
-    """
-    Calculate Cloud Mask from Sentinel-2 data.
-    Supports SEnSeIv2 (Deep Learning) and simple thresholding.
-    """
-    logger.info(f"Starting Cloud Mask processing for: {scene_path}")
-    
-    # 1. Load Data
-    scene = Sentinel2Scene()
-    scene.read(scene_path)
-
-    # 2. Run
-    run_cloud_mask(
-        scene, 
-        output_path, 
-        method, 
-        threshold_band, 
-        threshold_value, 
-        resolution, 
-        postprocess, 
-        buffer_size, 
-        output_resolution, 
-        classes
-    )
-
-@app.command()
-def cloud_properties(
-    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
-    height_path: str = typer.Option(..., help="Path to Cloud Height raster (.tif/.nc) matching the scene"),
-    model_path: str = typer.Option(..., help="Path to trained .pth model"),
-    output_path: str = typer.Option("properties_output.nc", help="Output NetCDF path"),
-    return_uncertainty: bool = typer.Option(False, help="Calculate and include OOD uncertainty"),
-):
-    """
-    Run Cloud Property Inversion (Refl2Prop). Requires pre-calculated cloud heights.
-    """
-    logger.info(f"Starting Cloud Properties Inversion for: {scene_path}")
-    
-    # 1. Load Scene
-    scene = Sentinel2Scene()
-    scene.read(scene_path)
-    
-    # 2. Run
-    run_cloud_properties(
-        scene,
-        height_path,
-        model_path,
-        output_path,
-        return_uncertainty
-    )
-
-@app.command()
-def workflow(
-    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
-    crop_window: Optional[str] = typer.Option(None, help="Crop window in format '<col_off,row_off,width,height>' (optional)"),
-    model_path: str = typer.Option(..., help="Refl2Prop Model Path"),
-    output_dir: str = typer.Option("output", help="Directory for outputs"),
-    return_uncertainty: bool = typer.Option(False, help="Calculate and output uncertainty maps"),
-):
-    """
-    End-to-end workflow: Cloud Mask -> Cloud Height -> Cloud Properties
-    """
-    out = Path(output_dir)
-    out.mkdir(exist_ok=True, parents=True)
-    
-    mask_out = str(out / "cloud_mask.tif")
-    height_out = str(out / "cloud_height.tif")
-    props_out = str(out / "properties.tif")
-    
-    # 0. Load Scene (ONCE)
+def _load_scene(scene_path: str, crop_window: Optional[str] = None) -> Sentinel2Scene:
+    """Load a Sentinel2Scene, optionally applying a spatial crop."""
     logger.info(f"Loading Scene: {scene_path}")
     scene = Sentinel2Scene()
     if crop_window:
         logger.info(f"Applying crop window: {crop_window}")
         try:
             col_off, row_off, width, height = map(int, crop_window.split(","))
-            # Sentinel2Scene expects a tuple (col_off, row_off, width, height)
-            # It handles creating the rasterio Window internally (and scaling it for different bands)
             scene.read(scene_path, crop_window=(col_off, row_off, width, height))
         except Exception as e:
-            logger.error(f"Failed to parse or apply crop window: {e}. Format should be 'col_off,row_off,width,height'. Processing full scene.")
+            logger.error(f"Failed to parse crop window: {e}. Format: 'col_off,row_off,width,height'. Processing full scene.")
             scene.read(scene_path)
     else:
         scene.read(scene_path)
-    
-    # 1. Mask
-    logger.info("Running Step 1: Cloud Mask")
+    return scene
+
+
+def _resolve_height_input(height_input: Union[str, Path, CloudHeightGridData]) -> CloudHeightGridData:
+    """Load height data from file path, or pass through if already in memory."""
+    if isinstance(height_input, (str, Path)):
+        height_data = CloudHeightGridData.from_file(str(height_input))
+        if height_data.data is None:
+            raise ValueError(f"Could not read height data from {height_input}")
+        return height_data
+    return height_input
+
+
+def _load_pipeline_config(config_path: str) -> Dict:
+    """Load pipeline YAML config with optional sections: cloud_mask, cloud_height, cloud_properties."""
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    with open(path, 'r') as f:
+        data = yaml.safe_load(f) or {}
+    return data
+
+
+# --- Core Processing Logic (Config-Driven) ---
+
+def run_cloud_mask(
+    scene: Sentinel2Scene,
+    config: CloudMaskConfig,
+    output_path: Optional[str] = None,
+    pp_params: Optional[PostProcessParams] = None,
+) -> CloudMaskData:
+    """Run cloud masking with explicit config."""
+    logger.info(f"Processing Cloud Mask (Method: {config.method})...")
+
+    if config.method == "threshold":
+        processor = ThresholdCloudMaskProcessor(config)
+        result = processor.process(scene)
+    else:
+        processor = CloudMaskProcessor(config)
+        result = processor.process(scene)
+
+    if pp_params:
+        # postprocess() lives on CloudMaskProcessor; reuse if already that type,
+        # otherwise create one with the user's config.
+        postprocessor = processor if isinstance(processor, CloudMaskProcessor) else CloudMaskProcessor(config)
+        result = postprocessor.postprocess(result, pp_params)
+
+    if output_path:
+        result.write(output_path)
+        logger.info(f"Cloud Mask saved to {output_path}")
+
+    return result
+
+
+def run_cloud_height(
+    scene: Sentinel2Scene,
+    config: CloudHeightConfig,
+    output_path: Optional[str] = None,
+    cloud_mask: Optional[Union[CloudMaskData, str, Path]] = None,
+) -> CloudHeightGridData:
+    """Run cloud height retrieval with explicit config."""
+    logger.info("Processing Cloud Height...")
+
+    processor = CloudHeightProcessor(config)
+    result = processor.process(scene, cloud_mask=cloud_mask)
+
+    if output_path:
+        result.write(output_path)
+        logger.info(f"Cloud Height saved to {output_path}")
+
+    return result
+
+
+def run_cloud_properties(
+    scene: Sentinel2Scene,
+    height_input: Union[str, Path, CloudHeightGridData],
+    config: Refl2PropConfig,
+    output_path: Optional[str] = None,
+    albedo_data: Optional[AlbedoData] = None,
+) -> 'CloudPropertiesData':
+    """Run standard cloud property inversion with explicit config."""
+    logger.info("Processing Cloud Properties...")
+    height_data = _resolve_height_input(height_input)
+
+    processor = CloudPropertyInverter(config)
+    result = processor.process(scene, height_data, albedo_data=albedo_data)
+
+    if output_path:
+        result.write(output_path)
+        logger.info(f"Cloud Properties saved to {output_path}")
+
+    return result
+
+
+def run_shading_cloud_properties(
+    scene: Sentinel2Scene,
+    height_input: Union[str, Path, CloudHeightGridData],
+    config: ShadingRefl2PropConfig,
+    output_path: Optional[str] = None,
+    albedo_data: Optional[AlbedoData] = None,
+) -> 'CloudPropertiesData':
+    """Run shading-aware cloud property inversion with explicit config."""
+    logger.info("Processing Shading-Aware Cloud Properties...")
+    height_data = _resolve_height_input(height_input)
+
+    processor = ShadingPropertyInverter(config)
+    result = processor.process(scene, height_data, albedo_data=albedo_data)
+
+    if output_path:
+        result.write(output_path)
+        logger.info(f"Shading Cloud Properties saved to {output_path}")
+
+    return result
+
+
+def run_albedo(
+    scene: Sentinel2Scene,
+    config: AlbedoEstimatorConfig,
+    cloud_mask: Optional[CloudMaskData] = None,
+    output_path: Optional[str] = None,
+) -> 'AlbedoData':
+    """Run albedo estimation with explicit config."""
+    logger.info(f"Processing Albedo (method={config.method}, order={config.polynomial_order})...")
+
+    processor = AlbedoEstimator(config)
+    result = processor.process(scene, cloud_mask=cloud_mask)
+
+    if output_path:
+        result.write(output_path)
+        logger.info(f"Albedo saved to {output_path}")
+
+    return result
+
+
+def run_refocus(
+    scene: Sentinel2Scene,
+    height_input: Union[str, Path, CloudHeightGridData],
+    config: RefocusConfig,
+) -> Sentinel2Scene:
+    """Run parallax correction (refocusing) with explicit config."""
+    logger.info("Processing Refocus (parallax correction)...")
+    height_data = _resolve_height_input(height_input)
+
+    processor = RefocusProcessor(config)
+    result = processor.process(scene, height_data)
+
+    logger.info("Refocus complete")
+    return result
+
+
+# --- CLI Commands ---
+
+@app.command()
+def cloud_height(
+    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
+    output_path: str = typer.Option("height_output.tif", help="Output path"),
+    config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
+    mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file"),
+    crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+):
+    """Calculate Cloud Height from Sentinel-2 data."""
+    scene = _load_scene(scene_path, crop_window)
+
+    if config_path:
+        config = CloudHeightConfig.from_yaml(config_path)
+    else:
+        config = CloudHeightConfig()
+
+    run_cloud_height(scene, config, output_path, cloud_mask=mask_path)
+
+
+@app.command()
+def cloud_mask(
+    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
+    output_path: str = typer.Option("mask_output.tif", help="Output path"),
+    config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
+    method: str = typer.Option("senseiv2", help="Method: 'senseiv2' or 'threshold'"),
+    threshold_band: str = typer.Option("B08", help="Band for thresholding"),
+    threshold_value: float = typer.Option(1600, help="Reflectance threshold (DN)"),
+    resolution: int = typer.Option(10, help="Model resolution in meters (SEnSeIv2)"),
+    crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+):
+    """
+    Calculate Cloud Mask from Sentinel-2 data.
+    Supports SEnSeIv2 (Deep Learning) and simple thresholding.
+    """
+    scene = _load_scene(scene_path, crop_window)
+
+    if config_path:
+        mask_config = CloudMaskConfig.from_yaml(config_path)
+    else:
+        mask_config = CloudMaskConfig(
+            method=method,
+            threshold_band=threshold_band,
+            threshold_value=threshold_value,
+            resolution=resolution,
+        )
+
+    run_cloud_mask(scene, mask_config, output_path)
+
+
+@app.command()
+def cloud_properties(
+    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
+    height_path: str = typer.Option(..., help="Path to Cloud Height raster (.tif)"),
+    model_path: str = typer.Option(..., help="Path to trained .pth model"),
+    output_path: str = typer.Option("properties_output.tif", help="Output path"),
+    properties_method: str = typer.Option("standard", help="Properties method: 'standard' or 'shading'"),
+    return_uncertainty: bool = typer.Option(False, help="Include OOD uncertainty (standard only)"),
+    crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+):
+    """Run Cloud Property Inversion (Refl2Prop). Requires pre-calculated cloud heights."""
+    scene = _load_scene(scene_path, crop_window)
+
+    if properties_method == "shading":
+        config = ShadingRefl2PropConfig(model_path=model_path)
+        run_shading_cloud_properties(scene, height_path, config, output_path)
+    else:
+        config = Refl2PropConfig(model_path=model_path, return_uncertainty=return_uncertainty)
+        run_cloud_properties(scene, height_path, config, output_path)
+
+
+@app.command()
+def refocus(
+    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
+    height_path: str = typer.Option(..., help="Path to Cloud Height raster (.tif)"),
+    output_dir: str = typer.Option("refocused", help="Output directory for refocused bands"),
+    output_resolution: Optional[int] = typer.Option(None, help="Common output resolution (meters). None=native."),
+    interpolation_order: int = typer.Option(1, help="Interpolation order (0=nearest, 1=bilinear, 3=cubic)"),
+    crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+):
+    """
+    Refocus (parallax-correct) Sentinel-2 bands using cloud height data.
+
+    Removes height-dependent misalignment between bands caused by push-broom
+    acquisition. The reference band (B02) is unchanged; all other bands are
+    warped to align with it.
+    """
+    scene = _load_scene(scene_path, crop_window)
+
+    config = RefocusConfig(
+        output_resolution=output_resolution,
+        interpolation_order=interpolation_order,
+    )
+
+    refocused = run_refocus(scene, height_path, config)
+
+    # Save individual bands as GeoTIFFs
+    out = Path(output_dir)
+    out.mkdir(exist_ok=True, parents=True)
+
+    import rasterio as rio
+    from clouds_decoded.constants import BAND_RESOLUTIONS
+    for band_name, band_data in refocused.bands.items():
+        band_res = output_resolution or BAND_RESOLUTIONS.get(band_name, 10)
+        band_transform = rio.transform.Affine(
+            band_res, 0, refocused.transform.c,
+            0, -band_res, refocused.transform.f
+        ) if refocused.transform else None
+
+        band_path = out / f"{band_name}_refocused.tif"
+        is_float = np.issubdtype(band_data.dtype, np.floating)
+        profile = {
+            'driver': 'GTiff',
+            'height': band_data.shape[0],
+            'width': band_data.shape[1],
+            'count': 1,
+            'dtype': band_data.dtype,
+            'crs': refocused.crs,
+            'transform': band_transform,
+            'compress': 'deflate',
+            'predictor': 3 if is_float else 2,
+            'tiled': True,
+            'blockxsize': 512,
+            'blockysize': 512,
+        }
+        with rio.open(band_path, 'w', **profile) as dst:
+            dst.write(band_data[np.newaxis, ...] if band_data.ndim == 2 else band_data)
+
+        logger.info(f"  Saved {band_path}")
+
+    logger.info(f"Refocused bands saved to {output_dir}/")
+
+
+@app.command()
+def albedo(
+    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
+    output_path: str = typer.Option("albedo_output.tif", help="Output path"),
+    mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file (.tif). Enables polynomial fitting."),
+    config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
+    method: str = typer.Option("polynomial", help="Method: 'polynomial' (needs mask) or 'percentile'"),
+    polynomial_order: int = typer.Option(2, help="Polynomial order (1=linear, 2=quadratic, 3=cubic)"),
+    output_resolution: int = typer.Option(300, help="Output resolution in meters/pixel"),
+    crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+):
+    """
+    Estimate surface albedo from Sentinel-2 data.
+
+    Fits a 2D polynomial to clear-sky pixels (when a cloud mask is provided),
+    or falls back to a simple percentile method.
+    """
+    scene = _load_scene(scene_path, crop_window)
+
+    if config_path:
+        albedo_config = AlbedoEstimatorConfig.from_yaml(config_path)
+    else:
+        albedo_config = AlbedoEstimatorConfig(
+            method=method,
+            polynomial_order=polynomial_order,
+            output_resolution=output_resolution,
+        )
+
+    cloud_mask = None
+    if mask_path:
+        cloud_mask = CloudMaskData.from_file(mask_path)
+        logger.info(f"Loaded cloud mask from {mask_path}")
+
+    run_albedo(scene, albedo_config, cloud_mask=cloud_mask, output_path=output_path)
+
+
+@app.command()
+def workflow(
+    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
+    model_path: str = typer.Option(..., help="Path to trained .pth model"),
+    output_dir: str = typer.Option("output", help="Directory for outputs"),
+    crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    mask_method: str = typer.Option("threshold", help="Mask method: 'threshold' or 'senseiv2'"),
+    properties_method: str = typer.Option("standard", help="Properties method: 'standard' or 'shading'"),
+    return_uncertainty: bool = typer.Option(False, help="Include uncertainty maps (standard only)"),
+    config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides flags)"),
+):
+    """
+    End-to-end pipeline: Cloud Mask -> Cloud Height -> Cloud Properties.
+
+    Simple usage:
+        cd-workflow workflow scene.SAFE --model-path model.pth
+
+    Shading variant:
+        cd-workflow workflow scene.SAFE --model-path shading.pth --properties-method shading
+
+    Full config:
+        cd-workflow workflow scene.SAFE --model-path model.pth --config pipeline.yaml
+    """
+    out = Path(output_dir)
+    out.mkdir(exist_ok=True, parents=True)
+
+    # Load pipeline config sections (if provided)
+    mask_cfg_dict: Dict = {}
+    height_cfg_dict: Dict = {}
+    props_cfg_dict: Dict = {}
+
+    if config:
+        pipeline = _load_pipeline_config(config)
+        mask_cfg_dict = pipeline.get("cloud_mask", {})
+        height_cfg_dict = pipeline.get("cloud_height", {})
+        props_cfg_dict = pipeline.get("cloud_properties", {})
+        # Allow YAML to override CLI flags
+        mask_method = mask_cfg_dict.pop("method", mask_method)
+        properties_method = props_cfg_dict.pop("properties_method", properties_method)
+
+    # Build configs
+    cloud_mask_config = CloudMaskConfig(method=mask_method, **mask_cfg_dict)
+    cloud_height_config = CloudHeightConfig(**height_cfg_dict)
+
+    # Load scene once
+    scene = _load_scene(scene_path, crop_window)
+
+    # Step 1: Mask (postprocess to binary for downstream consumers)
+    logger.info("Step 1/3: Cloud Mask")
     mask_result = run_cloud_mask(
-        scene, 
-        output_path=mask_out,
-        method="threshold",
-        resolution=10,
+        scene, cloud_mask_config,
+        output_path=str(out / "cloud_mask.tif"),
+        pp_params=PostProcessParams(),
     )
 
-    # 2. Height
-    logger.info("Running Step 2: Cloud Height")
-    # Store result in memory to pass to properties
-    height_result = run_cloud_height(scene, config_path=None, output_path=height_out, cloud_mask=mask_result)
-
-    # 3. Properties
-    logger.info("Running Step 3: Cloud Properties")
-    run_cloud_properties(
-        scene, 
-        height_input=height_result,  # Pass in-memory result
-        model_path=model_path, 
-        output_path=props_out,
-        return_uncertainty=return_uncertainty
+    # Step 2: Height
+    logger.info("Step 2/3: Cloud Height")
+    height_result = run_cloud_height(
+        scene, cloud_height_config,
+        output_path=str(out / "cloud_height.tif"),
+        cloud_mask=mask_result,
     )
+
+    # Step 3: Properties (dispatch by method)
+    logger.info("Step 3/3: Cloud Properties")
+    if properties_method == "shading":
+        props_config = ShadingRefl2PropConfig(model_path=model_path, **props_cfg_dict)
+        run_shading_cloud_properties(
+            scene, height_result, props_config,
+            output_path=str(out / "properties_shading.tif"),
+        )
+    else:
+        props_config = Refl2PropConfig(
+            model_path=model_path, return_uncertainty=return_uncertainty, **props_cfg_dict
+        )
+        run_cloud_properties(
+            scene, height_result, props_config,
+            output_path=str(out / "properties.tif"),
+        )
+
+    logger.info(f"Pipeline complete. Outputs in {output_dir}/")
+
+
+@app.command()
+def full_workflow(
+    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
+    model_path: str = typer.Option(..., help="Path to trained .pth model"),
+    output_dir: str = typer.Option("output", help="Directory for outputs"),
+    crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    mask_method: str = typer.Option("senseiv2", help="Mask method: 'senseiv2' or 'threshold'"),
+    properties_method: str = typer.Option("standard", help="Properties method: 'standard' or 'shading'"),
+    return_uncertainty: bool = typer.Option(False, help="Include uncertainty maps (standard only)"),
+    save_refocused: bool = typer.Option(False, help="Save refocused bands as GeoTIFFs"),
+    config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides flags)"),
+):
+    """
+    Full pipeline with refocusing and albedo estimation.
+
+    Cloud Mask -> Cloud Height + Albedo -> Refocus -> Cloud Properties.
+
+    Uses the cloud mask to fit spatially-varying albedo, refocuses bands
+    to correct parallax, then runs cloud property inversion on the
+    refocused scene with the pre-computed albedo.
+
+    Usage:
+        cd-workflow full-workflow scene.SAFE --model-path model.pth
+        cd-workflow full-workflow scene.SAFE --model-path shading.pth --properties-method shading
+        cd-workflow full-workflow scene.SAFE --model-path model.pth --save-refocused
+    """
+    out = Path(output_dir)
+    out.mkdir(exist_ok=True, parents=True)
+
+    # Load pipeline config sections (if provided)
+    mask_cfg_dict: Dict = {}
+    height_cfg_dict: Dict = {}
+    props_cfg_dict: Dict = {}
+    albedo_cfg_dict: Dict = {}
+    refocus_cfg_dict: Dict = {}
+
+    if config:
+        pipeline = _load_pipeline_config(config)
+        mask_cfg_dict = pipeline.get("cloud_mask", {})
+        height_cfg_dict = pipeline.get("cloud_height", {})
+        props_cfg_dict = pipeline.get("cloud_properties", {})
+        albedo_cfg_dict = pipeline.get("albedo", {})
+        refocus_cfg_dict = pipeline.get("refocus", {})
+        mask_method = mask_cfg_dict.pop("method", mask_method)
+        properties_method = props_cfg_dict.pop("properties_method", properties_method)
+
+    # Build configs
+    cloud_mask_config = CloudMaskConfig(method=mask_method, **mask_cfg_dict)
+    cloud_height_config = CloudHeightConfig(**height_cfg_dict)
+    albedo_config = AlbedoEstimatorConfig(method="polynomial", **albedo_cfg_dict)
+    refocus_config = RefocusConfig(**refocus_cfg_dict)
+
+    # Load scene once
+    scene = _load_scene(scene_path, crop_window)
+
+    # Step 1: Cloud Mask
+    logger.info("Step 1/5: Cloud Mask")
+    # Save the raw categorical mask (4-class)
+    raw_mask = run_cloud_mask(
+        scene, cloud_mask_config,
+        output_path=str(out / "cloud_mask.tif"),
+    )
+    # Postprocess to binary for downstream consumers (height, albedo, etc.)
+    postprocessor = CloudMaskProcessor()
+    mask_result = postprocessor.postprocess(raw_mask, PostProcessParams())
+
+    # Step 2: Cloud Height
+    logger.info("Step 2/5: Cloud Height")
+    height_result = run_cloud_height(
+        scene, cloud_height_config,
+        output_path=str(out / "cloud_height.tif"),
+        cloud_mask=mask_result,
+    )
+
+    # Step 3: Albedo (uses cloud mask for clear-sky polynomial fit)
+    logger.info("Step 3/5: Albedo Estimation")
+    albedo_result = run_albedo(
+        scene, albedo_config,
+        cloud_mask=mask_result,
+        output_path=str(out / "albedo.tif"),
+    )
+
+    # Step 4: Refocus (parallax correction using cloud height)
+    logger.info("Step 4/5: Refocus")
+    refocused_scene = run_refocus(scene, height_result, refocus_config)
+
+    if save_refocused:
+        import rasterio as rio
+        from clouds_decoded.constants import BAND_RESOLUTIONS
+        refocus_dir = out / "refocused"
+        refocus_dir.mkdir(exist_ok=True)
+        for band_name, band_data in refocused_scene.bands.items():
+            band_res = BAND_RESOLUTIONS.get(band_name, 10)
+            if refocus_config.output_resolution:
+                band_res = refocus_config.output_resolution
+            band_transform = rio.transform.Affine(
+                band_res, 0, refocused_scene.transform.c,
+                0, -band_res, refocused_scene.transform.f
+            ) if refocused_scene.transform else None
+
+            band_path = refocus_dir / f"{band_name}_refocused.tif"
+            is_float = np.issubdtype(band_data.dtype, np.floating)
+            profile = {
+                'driver': 'GTiff',
+                'height': band_data.shape[0],
+                'width': band_data.shape[1],
+                'count': 1,
+                'dtype': band_data.dtype,
+                'crs': refocused_scene.crs,
+                'transform': band_transform,
+                'compress': 'deflate',
+                'predictor': 3 if is_float else 2,
+                'tiled': True,
+                'blockxsize': 512,
+                'blockysize': 512,
+            }
+            with rio.open(band_path, 'w', **profile) as dst:
+                dst.write(band_data[np.newaxis, ...] if band_data.ndim == 2 else band_data)
+        logger.info(f"Refocused bands saved to {refocus_dir}/")
+
+    # Step 5: Cloud Properties (on refocused scene, with pre-computed albedo)
+    logger.info("Step 5/5: Cloud Properties")
+    if properties_method == "shading":
+        props_config = ShadingRefl2PropConfig(model_path=model_path, **props_cfg_dict)
+        run_shading_cloud_properties(
+            refocused_scene, height_result, props_config,
+            output_path=str(out / "properties_shading.tif"),
+            albedo_data=albedo_result,
+        )
+    else:
+        props_config = Refl2PropConfig(
+            model_path=model_path, return_uncertainty=return_uncertainty, **props_cfg_dict
+        )
+        run_cloud_properties(
+            refocused_scene, height_result, props_config,
+            output_path=str(out / "properties.tif"),
+            albedo_data=albedo_result,
+        )
+
+    logger.info(f"Full pipeline complete. Outputs in {output_dir}/")
+
+
+# --- Project Commands ---
+
+project_app = typer.Typer(help="Project management: configs, outputs, resumability")
+app.add_typer(project_app, name="project")
+
+
+@project_app.command("init")
+def project_init(
+    project_dir: str = typer.Argument(..., help="Directory for the new project"),
+    name: Optional[str] = typer.Option(None, help="Project name (defaults to directory name)"),
+    pipeline: str = typer.Option("full-workflow", help="Pipeline: 'workflow' or 'full-workflow'"),
+    clone: Optional[str] = typer.Option(None, help="Clone configs from an existing project directory"),
+):
+    """
+    Initialize a new project directory with default configs.
+
+    Creates the directory, writes editable config YAMLs for each module,
+    and sets up the project metadata. Edit configs in <dir>/configs/ before running.
+
+    Example:
+        cd-workflow project init ./my_analysis
+        cd-workflow project init ./new_analysis --clone ./existing_analysis
+    """
+    from clouds_decoded.project import Project
+
+    try:
+        project = Project.init(
+            project_dir,
+            name=name,
+            pipeline=pipeline,
+            clone_from=clone,
+        )
+        logger.info(f"\nEdit configs in {project.configs_dir}/ then run:")
+        logger.info(f"  cd-workflow project run {project_dir}")
+    except FileExistsError as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
+
+
+@project_app.command("run")
+def project_run(
+    project_dir: str = typer.Argument(..., help="Path to project directory"),
+    scenes: Optional[List[str]] = typer.Argument(None, help="Scene .SAFE path(s) to process (auto-registered)"),
+    force: bool = typer.Option(False, help="Reprocess all steps (ignore cache)"),
+    unsafe: bool = typer.Option(False, help="Skip file provenance validation on cached outputs"),
+    crop_window: Optional[str] = typer.Option(None, help="Spatial crop: 'col_off,row_off,width,height'"),
+):
+    """
+    Run the project pipeline on one or more scenes.
+
+    Pass scene paths directly — they are auto-registered in the project.
+    If no scenes are given, all previously registered scenes are processed.
+    Skips steps that are already complete (output exists, config unchanged).
+
+    Example:
+        cd-workflow project run ./my_analysis /data/S2A_scene.SAFE
+        cd-workflow project run ./my_analysis /data/scene1.SAFE /data/scene2.SAFE
+        cd-workflow project run ./my_analysis --force
+    """
+    from clouds_decoded.project import Project
+
+    try:
+        project = Project.load(project_dir)
+        project.run(scenes=scenes, force=force, unsafe=unsafe, crop_window=crop_window)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
+
+
+@project_app.command("status")
+def project_status(
+    project_dir: str = typer.Argument(..., help="Path to project directory"),
+):
+    """Show processing status for all scenes in the project."""
+    from clouds_decoded.project import Project
+
+    try:
+        project = Project.load(project_dir)
+        print(project.status())
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
+
+
+@project_app.command("add-scene")
+def project_add_scene(
+    project_dir: str = typer.Argument(..., help="Path to project directory"),
+    scene: List[str] = typer.Option(..., help="Path(s) to .SAFE scene(s) to add"),
+):
+    """Add one or more scenes to an existing project."""
+    from clouds_decoded.project import Project
+
+    try:
+        project = Project.load(project_dir)
+        for s in scene:
+            project.add_scene(s)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
+
 
 if __name__ == "__main__":
     app()

@@ -1,7 +1,6 @@
 import numpy as np
 from tqdm import tqdm
 import multiprocessing
-from multiprocessing import Pool
 import os
 import tempfile
 import pickle
@@ -121,9 +120,13 @@ class CloudHeightProcessor:
                 
             if count == 0:
                  logger.warning("No valid points retrieved. Process aborting.")
-                 # Return empty result
-                 scale_factor = self.config.stride / BAND_RESOLUTIONS['B02']
-                 t = scene.transform * Affine.scale(scale_factor, scale_factor)
+                 # Return empty result with correct transform
+                 ref_band = self.config.reference_band
+                 ref_shape = scene.bands[ref_band].shape
+                 actual_res = abs(scene.transform.a)
+                 ref_res = BAND_RESOLUTIONS[ref_band]
+                 geo_pixel_size = self.config.stride * actual_res / ref_res
+                 t = Affine(geo_pixel_size, 0, scene.transform.c, 0, -geo_pixel_size, scene.transform.f)
                  return CloudHeightGridData(data=None, transform=t, crs=scene.crs)
 
             final_heights = heights_buffer[:count]
@@ -142,9 +145,14 @@ class CloudHeightProcessor:
         if scene.transform is None:
              raise ValueError("Scene transform is missing. Ensure input scene is georeferenced.")
 
-        # Calculate scaling factor based on ratio of output stride to reference band resolution
-        scale_factor = self.config.stride / BAND_RESOLUTIONS['B02']
-        transform = scene.transform * Affine.scale(scale_factor, scale_factor)
+        # Construct output transform: map grid pixels to actual geographic extent
+        # The grid is built in "internal meters" (BAND_RESOLUTIONS-based) but
+        # the transform must map to actual geographic coordinates (scene.transform-based).
+        ref_band = self.config.reference_band
+        actual_res = abs(scene.transform.a)
+        ref_res = BAND_RESOLUTIONS[ref_band]
+        geo_pixel_size = self.config.stride * actual_res / ref_res
+        transform = Affine(geo_pixel_size, 0, scene.transform.c, 0, -geo_pixel_size, scene.transform.f)
         crs = scene.crs
         
         result_data = CloudHeightGridData(
@@ -243,12 +251,12 @@ class CloudHeightProcessor:
                  
             patches.append(patch)
             
-        # Correlate
+        # Gaussian-weighted cross-correlation
         corr = 0
         n = 0
         for i, patch in enumerate(patches):
             for other_patch in patches[i+1:]:
-                corr += np.mean(patch * other_patch)
+                corr += np.mean(patch * other_patch * self.gaussian_kernel)
                 n += 1
         return corr / n if n > 0 else 0
 
@@ -259,7 +267,7 @@ class CloudHeightProcessor:
         along_size = self.config.convolved_size_along_track // self.config.along_track_resolution
         across_size = self.config.convolved_size_across_track // self.config.across_track_resolution
 
-        print(f"Constructing Gaussian kernel of size {along_size} x {across_size}...")
+        logger.info(f"Constructing Gaussian kernel of size {along_size} x {across_size}")
 
         x = np.linspace(-across_size // 2, across_size // 2, across_size)
         y = np.linspace(-along_size // 2, along_size // 2, along_size)
@@ -309,11 +317,7 @@ class CloudHeightProcessor:
              idx_x = np.clip(idx_x, 0, mask_w - 1)
              idx_y = np.clip(idx_y, 0, mask_h - 1)
              
-             # Support both float (probability/confidence) and int/bool masks
-             if mask_array.dtype.kind == 'f':
-                  valid_mask_indices = mask_array[idx_y, idx_x] > 0.5
-             else:
-                  valid_mask_indices = mask_array[idx_y, idx_x] > 0
+             valid_mask_indices = mask_array[idx_y, idx_x] > 0
         
         with tqdm(total=len(grid_points), desc="Smoothing points") as pbar:
             for i, point in enumerate(grid_points):

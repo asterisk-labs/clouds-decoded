@@ -10,6 +10,7 @@ from tqdm import tqdm
 from .dataset import InMemoryRefl2PropDataset, Refl2PropDataset, collate_fn
 from .model import InversionNet, NormalizationWrapper, NoiseGenerator
 from .loss import physics_masked_loss, combined_loss
+from .config import Refl2PropConfig
 
 
 def validate_and_plot(model, iterator, device, epoch, output_dir, val_batches=20):
@@ -121,17 +122,29 @@ def validate_and_plot(model, iterator, device, epoch, output_dir, val_batches=20
     plt.close()
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='Train Refl2Prop cloud property inversion model')
     parser.add_argument('--lut', type=str, required=True, help='Path to .nc/.zip LUT file')
     parser.add_argument('--output', type=str, default='model.pth', help='Path to save model')
+    parser.add_argument('--bands', type=str, nargs='+', default=None,
+                        help='Bands to use for training (e.g., --bands B01 B02 B04 B08 B11 B12). '
+                             'If not specified, uses all 11 default bands.')
     parser.add_argument('--plot_dir', type=str, default='plots', help='Directory to save validation plots')
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--lr', type=float, default=5e-3)
     parser.add_argument('--in_memory', action='store_true', help='Load dataset into RAM')
     parser.add_argument('--num_workers', type=int, default=1)
-    parser.add_argument('--noise_min', type=float, default=0.001, help='Min noise magnitude (fraction of range)')
-    parser.add_argument('--noise_max', type=float, default=0.02, help='Max noise magnitude (fraction of range)')
+    # Structured noise parameters
+    parser.add_argument('--gain_global_std', type=float, default=0.05,
+                        help='Std of global gain factor (scene brightness mismatch, default 0.05 = 5%%)')
+    parser.add_argument('--gain_band_std', type=float, default=0.01,
+                        help='Std of per-band gain factors (calibration variations, default 0.01 = 1%%)')
+    parser.add_argument('--offset_global_std', type=float, default=0.01,
+                        help='Std of global offset as fraction of reflectance (atmospheric path radiance)')
+    parser.add_argument('--offset_band_min', type=float, default=0.0001,
+                        help='Min per-band offset noise magnitude (fraction of range)')
+    parser.add_argument('--offset_band_max', type=float, default=0.01,
+                        help='Max per-band offset noise magnitude (fraction of range)')
     parser.add_argument('--physics_weight', type=float, default=1.0, help='Weight for physics loss')
     parser.add_argument('--noise_weight', type=float, default=1.0, help='Weight for noise reconstruction loss')
     args = parser.parse_args()
@@ -144,7 +157,9 @@ def main():
     # 1. Load Data
     DatasetClass = InMemoryRefl2PropDataset if args.in_memory else Refl2PropDataset
     print(f"Loading Dataset: {args.lut}")
-    dataset = DatasetClass(args.lut, n_dims_interp=4, spectral_mode='variable')
+    if args.bands:
+        print(f"Using bands: {args.bands}")
+    dataset = DatasetClass(args.lut, n_dims_interp=4, spectral_mode='variable', selected_bands=args.bands)
     
     # 2. Setup Persistent Loader
     loader = DataLoader(
@@ -156,13 +171,34 @@ def main():
         persistent_workers=True 
     )
 
-    # 3. Init Model
-    input_size = len(dataset.input_stats['min'])
-    core_model = InversionNet(input_size=input_size, output_size=4, noise_output_size=6).to(device)
+    # 3. Create config from dataset bands (computes input_size, noise_output_size, noise_indices)
+    config = Refl2PropConfig(
+        bands=dataset.selected_bands,
+        model_path=args.output  # Placeholder - we're training, not loading
+    )
+    print(f"Model architecture: {config.num_bands} bands -> input_size={config.input_size}, "
+          f"noise_output_size={config.noise_output_size}")
+
+    # 4. Init Model using computed sizes from config
+    core_model = InversionNet(
+        input_size=config.input_size,
+        output_size=config.output_size,
+        noise_output_size=config.noise_output_size
+    ).to(device)
     model = NormalizationWrapper(core_model, dataset.input_stats, dataset.output_stats).to(device)
 
-    # 4. Init Noise Generator
-    noise_generator = NoiseGenerator(dataset.input_stats, noise_min=args.noise_min, noise_max=args.noise_max)
+    # 5. Init Noise Generator with structured noise parameters
+    noise_generator = NoiseGenerator(
+        dataset.input_stats,
+        noise_indices=config.noise_indices,
+        gain_global_std=args.gain_global_std,
+        gain_band_std=args.gain_band_std,
+        offset_global_std=args.offset_global_std,
+        offset_band_min=args.offset_band_min,
+        offset_band_max=args.offset_band_max,
+    )
+    print(f"Noise model: gain_global_std={args.gain_global_std}, gain_band_std={args.gain_band_std}, "
+          f"offset_global_std={args.offset_global_std}, offset_band=[{args.offset_band_min}, {args.offset_band_max}]")
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
@@ -193,8 +229,8 @@ def main():
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
 
-            # Generate and add noise
-            noise_to_add, target_noise = noise_generator.generate(inputs.size(0), device)
+            # Generate and add structured noise (pass inputs for input-dependent scaling)
+            noise_to_add, target_noise = noise_generator.generate(inputs.size(0), device, inputs=inputs)
             noisy_inputs = inputs + noise_to_add
 
             # Forward pass with noisy inputs

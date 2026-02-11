@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from pydantic import Field
 import pyproj
@@ -8,6 +9,8 @@ from rasterio.windows import Window
 from typing import Optional, Any, Dict, List, Tuple, Union, ClassVar
 
 from .base import Data
+
+logger = logging.getLogger(__name__)
 from ..constants import BANDS, BAND_RESOLUTIONS
 
 class Sentinel2Scene(Data):
@@ -30,6 +33,20 @@ class Sentinel2Scene(Data):
     orbit_type: Optional[str] = None
     crs: Optional[Any] = None
     transform: Optional[Any] = None
+
+    # Product identification (from MTD_MSIL1C.xml)
+    product_uri: Optional[str] = Field(
+        default=None,
+        description="ESA product URI, e.g. 'S2B_MSIL1C_20250104T185019_N0511_R127_T09KVQ_20250104T220125.SAFE'"
+    )
+
+    # Radiometric calibration (read from product metadata)
+    quantification_value: float = Field(default=10000.0)
+    radio_add_offset: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-band radiometric offset keyed by band name. "
+                    "Empty dict means offset=0 for all bands (older products)."
+    )
 
     # Constants for SAFE format
     GRANULE_DIR: ClassVar[str] = "GRANULE"
@@ -79,7 +96,7 @@ class Sentinel2Scene(Data):
                        
         except Exception as e:
              # Just warn, don't crash if we can't extract CRS
-             print(f"Warning: Could not extract CRS/Transform: {e}")
+             logger.warning(f"Could not extract CRS/Transform: {e}")
 
         self.footprints = self._get_footprints(self.scene_directory, bands, crop_window)
         self.sun_zenith, self.sun_azimuth = self._get_sun_angle(self.scene_directory)
@@ -96,6 +113,12 @@ class Sentinel2Scene(Data):
              
         self.orientation = self._get_scene_orientation(self.scene_directory)
         self.orbit_type = self._get_orbit_type(self.scene_directory)
+
+        # Read product metadata
+        self.product_uri = self._get_product_uri(self.scene_directory)
+        self.quantification_value, self.radio_add_offset = self._get_radiometric_params(
+            self.scene_directory
+        )
 
     def _calculate_center_coords(self, width: int, height: int) -> Tuple[float, float]:
         """Calculate center latitude/longitude based on current transform and size."""
@@ -146,6 +169,25 @@ class Sentinel2Scene(Data):
              raise ValueError(f"Invalid shape for band {band_name}: {band_data.shape}")
              
         return (float(width * resolution), float(height * resolution))
+
+    def get_band(self, band_name: str, reflectance: bool = True) -> np.ndarray:
+        """Retrieve a band array, optionally converted to TOA reflectance.
+
+        Args:
+            band_name: Band identifier (e.g. 'B02', 'B8A').
+            reflectance: If True, return TOA reflectance as float32.
+                If False, return raw DN values as stored.
+
+        Returns:
+            2-D numpy array of the band data.
+        """
+        if band_name not in self.bands:
+            raise KeyError(f"Band '{band_name}' not loaded. Available: {list(self.bands.keys())}")
+        data = self.bands[band_name]
+        if not reflectance:
+            return data
+        offset = self.radio_add_offset.get(band_name, 0.0)
+        return (data.astype(np.float32) + offset) / self.quantification_value
 
     def write(self, filepath: str):
 
@@ -419,3 +461,40 @@ class Sentinel2Scene(Data):
         if node is None:
              raise ValueError("SENSING_ORBIT_DIRECTION not found")
         return node.text
+
+    def _get_product_uri(self, scene_directory: Path) -> Optional[str]:
+        """Read PRODUCT_URI from MTD_MSIL1C.xml."""
+        try:
+            root = self._read_xml_root(scene_directory / self.METADATA_MTD)
+            node = root.find(".//PRODUCT_URI")
+            return node.text if node is not None else None
+        except Exception:
+            return None
+
+    def _get_radiometric_params(self, scene_directory: Path) -> Tuple[float, Dict[str, float]]:
+        """Read QUANTIFICATION_VALUE and per-band RADIO_ADD_OFFSET from MTD_MSIL1C.xml.
+
+        Returns:
+            (quantification_value, radio_add_offset_dict). Falls back to
+            (10000.0, {}) for older products that lack Radiometric_Offset_List.
+        """
+        try:
+            root = self._read_xml_root(scene_directory / self.METADATA_MTD)
+
+            quant_node = root.find(".//QUANTIFICATION_VALUE")
+            quantification = float(quant_node.text) if quant_node is not None else 10000.0
+
+            # Per-band offsets: <RADIO_ADD_OFFSET band_id="0">-1000</RADIO_ADD_OFFSET>
+            # band_id is an integer index into the BANDS list
+            offsets: Dict[str, float] = {}
+            for node in root.findall(".//RADIO_ADD_OFFSET"):
+                band_id = node.get("band_id")
+                if band_id is not None:
+                    idx = int(band_id)
+                    if idx < len(BANDS):
+                        offsets[BANDS[idx]] = float(node.text)
+
+            return quantification, offsets
+        except Exception as e:
+            logger.warning(f"Could not read radiometric params: {e}. Using defaults.")
+            return 10000.0, {}

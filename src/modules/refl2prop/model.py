@@ -5,14 +5,14 @@ from typing import Dict, Tuple
 import numpy as np
 
 class InversionNet(nn.Module):
-    def __init__(self, input_size: int = 17, output_size: int = 4, noise_output_size: int = 11, hidden_dim: int = 512):
+    def __init__(self, input_size: int, output_size: int = 4, noise_output_size: int = 11, hidden_dim: int = 512):
         """
         Neural network with dual heads for physics prediction and noise reconstruction.
 
         Args:
-            input_size: Number of input features (default 17)
+            input_size: Number of input features (computed from config.input_size)
             output_size: Number of physical outputs (default 4)
-            noise_output_size: Number of noise components to reconstruct (default 11)
+            noise_output_size: Number of noise components to reconstruct (from config.noise_output_size)
             hidden_dim: Hidden layer dimension (default 512)
         """
         super().__init__()
@@ -76,24 +76,50 @@ class InversionNet(nn.Module):
 
 class NoiseGenerator:
     """
-    Generates normalized noise for OOD detection training.
+    Generates structured noise for OOD detection training that simulates
+    realistic differences between forward model outputs and measured reflectances.
 
-    Noise is applied only to:
-    - Indices [0:6]: Reflectance bands
-    - Indices [12:17]: Geometry (incidence_angle, shading_ratio, cloud_top_height, mu, phi)
+    Noise model: R_noisy = R_clean * (gain_global * gain_band) + offset_global + offset_band
 
-    No noise on indices [6:12]: Albedos
+    Components:
+        - Global gain: Scene brightness mismatch (affects all bands similarly)
+        - Per-band gain: Calibration/atmospheric variations per wavelength
+        - Global offset: Atmospheric path radiance (correlated across bands)
+        - Per-band offset: Independent measurement noise
+
+    Noise is applied to reflectance bands only (indices [0:num_bands]).
+    No noise is applied to albedos or geometry features.
     """
-    # Indices where noise is applied
-    NOISE_INDICES = list(range(6))  # [0,1,2,3,4,5,12,13,14,15,16]
-    NOISE_SIZE = 6  # Total number of noise components
 
-    def __init__(self, input_stats: Dict[str, list], noise_min: float = 0.001, noise_max: float = 0.2):
+    def __init__(
+        self,
+        input_stats: Dict[str, list],
+        noise_indices: list,
+        noise_min: float = 0.001,
+        noise_max: float = 0.02,
+        # Global gain: scene brightness mismatch
+        gain_global_mean: float = 1.0,
+        gain_global_std: float = 0.05,
+        # Per-band gain: calibration/spectral variations
+        gain_band_std: float = 0.02,
+        # Global offset: atmospheric path radiance (as fraction of mean reflectance)
+        offset_global_std: float = 0.01,
+        # Per-band offset: independent noise (legacy behavior, scaled by range)
+        offset_band_min: float = 0.001,
+        offset_band_max: float = 0.01,
+    ):
         """
         Args:
             input_stats: Dictionary with 'min' and 'max' lists for input normalization
-            noise_min: Minimum noise magnitude as fraction of variable range
-            noise_max: Maximum noise magnitude as fraction of variable range
+            noise_indices: List of input indices where noise should be applied
+            noise_min: (deprecated) Min noise magnitude - use offset_band_min instead
+            noise_max: (deprecated) Max noise magnitude - use offset_band_max instead
+            gain_global_mean: Mean of global gain factor (default 1.0)
+            gain_global_std: Std of global gain factor (default 0.05 = 5% brightness variation)
+            gain_band_std: Std of per-band gain factors around 1.0 (default 0.02 = 2%)
+            offset_global_std: Std of global offset as fraction of typical reflectance (default 0.01)
+            offset_band_min: Min per-band offset noise magnitude (fraction of range)
+            offset_band_max: Max per-band offset noise magnitude (fraction of range)
         """
         self.in_min = torch.tensor(input_stats['min'], dtype=torch.float32)
         self.in_max = torch.tensor(input_stats['max'], dtype=torch.float32)
@@ -102,45 +128,74 @@ class NoiseGenerator:
         # Avoid division by zero
         self.ranges[self.ranges == 0] = 1.0
 
-        self.noise_min = noise_min
-        self.noise_max = noise_max
+        self.noise_indices = noise_indices
+        self.noise_size = len(noise_indices)
 
-    def generate(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Structured noise parameters
+        self.gain_global_mean = gain_global_mean
+        self.gain_global_std = gain_global_std
+        self.gain_band_std = gain_band_std
+        self.offset_global_std = offset_global_std
+        self.offset_band_min = offset_band_min
+        self.offset_band_max = offset_band_max
+
+    def generate(self, batch_size: int, device: torch.device, inputs: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Generate noise to add to inputs and the corresponding target noise vector.
+        Generate structured noise and corresponding target vector.
 
         Args:
             batch_size: Number of samples in the batch
             device: Device to create tensors on
+            inputs: Optional input tensor for input-dependent noise scaling
 
         Returns:
-            noise_to_add: Full-size noise vector (batch_size, 17) with zeros for albedo indices
-            target_noise: Ground truth noise in normalized space (batch_size, 11)
+            noise_to_add: Full-size noise vector (additive form for compatibility)
+            target_noise: Ground truth total perturbation in normalized space [-1, 1]
         """
-        # Create full-size noise tensor (all zeros initially)
-        noise_to_add = torch.zeros(batch_size, len(self.in_min), device=device)
-
-        # Sample noise magnitude for each component (uniform between noise_min and noise_max)
-        noise_scales = torch.rand(batch_size, self.NOISE_SIZE, device=device) * (self.noise_max - self.noise_min) + self.noise_min
-
-        # Generate Gaussian noise
-        raw_noise = torch.randn(batch_size, self.NOISE_SIZE, device=device)
-
-        # Move stats to device if needed
+        # Move stats to device
         ranges_device = self.ranges.to(device)
+        in_min_device = self.in_min.to(device)
+        noise_ranges = ranges_device[self.noise_indices]
 
-        # Scale noise by variable ranges and noise magnitude
-        # Extract ranges for noise indices
-        noise_ranges = ranges_device[self.NOISE_INDICES]
-        scaled_noise = raw_noise * noise_scales * noise_ranges.unsqueeze(0)
+        # Extract reflectance values if inputs provided (for input-dependent noise)
+        if inputs is not None:
+            refl_values = inputs[:, self.noise_indices]
+        else:
+            # Use midpoint of range as typical value
+            refl_values = (in_min_device[self.noise_indices] + ranges_device[self.noise_indices] / 2).unsqueeze(0).expand(batch_size, -1)
 
-        # Place scaled noise into the appropriate indices
-        noise_to_add[:, self.NOISE_INDICES] = scaled_noise
+        # 1. Global gain: single scalar per sample, affects all bands similarly
+        #    Simulates scene brightness mismatch
+        gain_global = torch.randn(batch_size, 1, device=device) * self.gain_global_std + self.gain_global_mean
 
-        # Create target noise in normalized space [-1, 1]
-        # Normalize the scaled noise by the ranges
-        target_noise = 2 * scaled_noise / noise_ranges.unsqueeze(0)
-        target_noise = torch.clamp(target_noise, -1, 1)  # Ensure within bounds
+        # 2. Per-band gain: different for each band, simulates calibration/atmospheric variations
+        gain_band = torch.randn(batch_size, self.noise_size, device=device) * self.gain_band_std + 1.0
+
+        # Combined multiplicative factor
+        gain_total = gain_global * gain_band  # (batch, n_bands)
+
+        # 3. Global offset: single value per sample, simulates atmospheric path radiance
+        #    Scale by typical reflectance magnitude
+        typical_refl = refl_values.mean(dim=1, keepdim=True)
+        offset_global = torch.randn(batch_size, 1, device=device) * self.offset_global_std * typical_refl
+
+        # 4. Per-band offset: independent noise for each band (original behavior)
+        offset_scales = torch.rand(batch_size, self.noise_size, device=device) * (self.offset_band_max - self.offset_band_min) + self.offset_band_min
+        offset_band = torch.randn(batch_size, self.noise_size, device=device) * offset_scales * noise_ranges.unsqueeze(0)
+
+        # Compute noisy reflectances: R_noisy = R_clean * gain_total + offset_global + offset_band
+        noisy_refl = refl_values * gain_total + offset_global + offset_band
+
+        # Total additive perturbation (for compatibility with existing training loop)
+        total_perturbation = noisy_refl - refl_values  # (batch, n_bands)
+
+        # Create full-size noise tensor
+        noise_to_add = torch.zeros(batch_size, len(self.in_min), device=device)
+        noise_to_add[:, self.noise_indices] = total_perturbation
+
+        # Normalize target to [-1, 1] range per band
+        target_noise = 2 * total_perturbation / noise_ranges.unsqueeze(0)
+        target_noise = torch.clamp(target_noise, -1, 1)
 
         return noise_to_add, target_noise
 
