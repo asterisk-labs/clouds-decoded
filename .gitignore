@@ -208,3 +208,8 @@ marimo/_lsp/
 __marimo__/
 scratch*/
 plots/
+
+# Internal dev notes (not for distribution)
+ARCHITECTURE.md
+CODEBASE_ANALYSIS.md
+DEVLOG.md
