@@ -87,7 +87,7 @@ class Refl2PropConfig(BaseProcessorConfig):
 
     # Processing Parameters
     return_uncertainty: bool = Field(
-        default=False,
+        default=True,
         description="If True, calculates and appends uncertainty channel"
     )
     mask_invalid_height: bool = Field(
