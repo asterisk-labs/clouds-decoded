@@ -36,7 +36,8 @@ dependencies = [
 "clouds_decoded.modules.cloud_height" = "src/modules/cloud_height"
 "clouds_decoded.modules.albedo_estimator" = "src/modules/albedo_estimator"
 "clouds_decoded.modules.refl2prop" = "src/modules/refl2prop"
+"clouds_decoded.modules.refocus" = "src/modules/refocus"
 "clouds_decoded.cli" = "src/cli"
 
 [project.scripts]
-cd-workflow = "clouds_decoded.cli.entry:app"
+clouds-decoded = "clouds_decoded.cli.entry:app"

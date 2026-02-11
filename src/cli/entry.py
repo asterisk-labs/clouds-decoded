@@ -180,16 +180,66 @@ def run_refocus(
     scene: Sentinel2Scene,
     height_input: Union[str, Path, CloudHeightGridData],
     config: RefocusConfig,
+    output_dir: Optional[str] = None,
 ) -> Sentinel2Scene:
-    """Run parallax correction (refocusing) with explicit config."""
+    """Run parallax correction (refocusing) with explicit config.
+
+    Args:
+        output_dir: If provided, save refocused bands as individual GeoTIFFs
+            in this directory.
+    """
     logger.info("Processing Refocus (parallax correction)...")
     height_data = _resolve_height_input(height_input)
 
     processor = RefocusProcessor(config)
     result = processor.process(scene, height_data)
 
+    if output_dir:
+        _save_refocused_bands(result, config, output_dir)
+
     logger.info("Refocus complete")
     return result
+
+
+def _save_refocused_bands(
+    refocused_scene: Sentinel2Scene,
+    config: RefocusConfig,
+    output_dir: str,
+):
+    """Save refocused bands as individual GeoTIFFs."""
+    import rasterio as rio
+    from clouds_decoded.constants import BAND_RESOLUTIONS
+
+    out = Path(output_dir)
+    out.mkdir(exist_ok=True, parents=True)
+
+    for band_name, band_data in refocused_scene.bands.items():
+        band_res = config.output_resolution or BAND_RESOLUTIONS.get(band_name, 10)
+        band_transform = rio.transform.Affine(
+            band_res, 0, refocused_scene.transform.c,
+            0, -band_res, refocused_scene.transform.f,
+        ) if refocused_scene.transform else None
+
+        band_path = out / f"{band_name}_refocused.tif"
+        is_float = np.issubdtype(band_data.dtype, np.floating)
+        profile = {
+            'driver': 'GTiff',
+            'height': band_data.shape[0],
+            'width': band_data.shape[1],
+            'count': 1,
+            'dtype': band_data.dtype,
+            'crs': refocused_scene.crs,
+            'transform': band_transform,
+            'compress': 'deflate',
+            'predictor': 3 if is_float else 2,
+            'tiled': True,
+            'blockxsize': 512,
+            'blockysize': 512,
+        }
+        with rio.open(band_path, 'w', **profile) as dst:
+            dst.write(band_data[np.newaxis, ...] if band_data.ndim == 2 else band_data)
+
+    logger.info(f"Refocused bands saved to {output_dir}/")
 
 
 # --- CLI Commands ---
@@ -247,20 +297,19 @@ def cloud_mask(
 def cloud_properties(
     scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
     height_path: str = typer.Option(..., help="Path to Cloud Height raster (.tif)"),
-    model_path: str = typer.Option(..., help="Path to trained .pth model"),
     output_path: str = typer.Option("properties_output.tif", help="Output path"),
+    config_path: Optional[str] = typer.Option(None, help="Refl2Prop config YAML (sets model_path, bands, etc.)"),
     properties_method: str = typer.Option("standard", help="Properties method: 'standard' or 'shading'"),
-    return_uncertainty: bool = typer.Option(False, help="Include OOD uncertainty (standard only)"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
 ):
     """Run Cloud Property Inversion (Refl2Prop). Requires pre-calculated cloud heights."""
     scene = _load_scene(scene_path, crop_window)
 
     if properties_method == "shading":
-        config = ShadingRefl2PropConfig(model_path=model_path)
+        config = ShadingRefl2PropConfig.from_yaml(config_path)
         run_shading_cloud_properties(scene, height_path, config, output_path)
     else:
-        config = Refl2PropConfig(model_path=model_path, return_uncertainty=return_uncertainty)
+        config = Refl2PropConfig.from_yaml(config_path)
         run_cloud_properties(scene, height_path, config, output_path)
 
 
@@ -287,43 +336,7 @@ def refocus(
         interpolation_order=interpolation_order,
     )
 
-    refocused = run_refocus(scene, height_path, config)
-
-    # Save individual bands as GeoTIFFs
-    out = Path(output_dir)
-    out.mkdir(exist_ok=True, parents=True)
-
-    import rasterio as rio
-    from clouds_decoded.constants import BAND_RESOLUTIONS
-    for band_name, band_data in refocused.bands.items():
-        band_res = output_resolution or BAND_RESOLUTIONS.get(band_name, 10)
-        band_transform = rio.transform.Affine(
-            band_res, 0, refocused.transform.c,
-            0, -band_res, refocused.transform.f
-        ) if refocused.transform else None
-
-        band_path = out / f"{band_name}_refocused.tif"
-        is_float = np.issubdtype(band_data.dtype, np.floating)
-        profile = {
-            'driver': 'GTiff',
-            'height': band_data.shape[0],
-            'width': band_data.shape[1],
-            'count': 1,
-            'dtype': band_data.dtype,
-            'crs': refocused.crs,
-            'transform': band_transform,
-            'compress': 'deflate',
-            'predictor': 3 if is_float else 2,
-            'tiled': True,
-            'blockxsize': 512,
-            'blockysize': 512,
-        }
-        with rio.open(band_path, 'w', **profile) as dst:
-            dst.write(band_data[np.newaxis, ...] if band_data.ndim == 2 else band_data)
-
-        logger.info(f"  Saved {band_path}")
-
-    logger.info(f"Refocused bands saved to {output_dir}/")
+    run_refocus(scene, height_path, config, output_dir=output_dir)
 
 
 @app.command()
@@ -362,100 +375,15 @@ def albedo(
     run_albedo(scene, albedo_config, cloud_mask=cloud_mask, output_path=output_path)
 
 
-@app.command()
-def workflow(
-    scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
-    model_path: str = typer.Option(..., help="Path to trained .pth model"),
-    output_dir: str = typer.Option("output", help="Directory for outputs"),
-    crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
-    mask_method: str = typer.Option("threshold", help="Mask method: 'threshold' or 'senseiv2'"),
-    properties_method: str = typer.Option("standard", help="Properties method: 'standard' or 'shading'"),
-    return_uncertainty: bool = typer.Option(False, help="Include uncertainty maps (standard only)"),
-    config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides flags)"),
-):
-    """
-    End-to-end pipeline: Cloud Mask -> Cloud Height -> Cloud Properties.
-
-    Simple usage:
-        cd-workflow workflow scene.SAFE --model-path model.pth
-
-    Shading variant:
-        cd-workflow workflow scene.SAFE --model-path shading.pth --properties-method shading
-
-    Full config:
-        cd-workflow workflow scene.SAFE --model-path model.pth --config pipeline.yaml
-    """
-    out = Path(output_dir)
-    out.mkdir(exist_ok=True, parents=True)
-
-    # Load pipeline config sections (if provided)
-    mask_cfg_dict: Dict = {}
-    height_cfg_dict: Dict = {}
-    props_cfg_dict: Dict = {}
-
-    if config:
-        pipeline = _load_pipeline_config(config)
-        mask_cfg_dict = pipeline.get("cloud_mask", {})
-        height_cfg_dict = pipeline.get("cloud_height", {})
-        props_cfg_dict = pipeline.get("cloud_properties", {})
-        # Allow YAML to override CLI flags
-        mask_method = mask_cfg_dict.pop("method", mask_method)
-        properties_method = props_cfg_dict.pop("properties_method", properties_method)
-
-    # Build configs
-    cloud_mask_config = CloudMaskConfig(method=mask_method, **mask_cfg_dict)
-    cloud_height_config = CloudHeightConfig(**height_cfg_dict)
-
-    # Load scene once
-    scene = _load_scene(scene_path, crop_window)
-
-    # Step 1: Mask (postprocess to binary for downstream consumers)
-    logger.info("Step 1/3: Cloud Mask")
-    mask_result = run_cloud_mask(
-        scene, cloud_mask_config,
-        output_path=str(out / "cloud_mask.tif"),
-        pp_params=PostProcessParams(),
-    )
-
-    # Step 2: Height
-    logger.info("Step 2/3: Cloud Height")
-    height_result = run_cloud_height(
-        scene, cloud_height_config,
-        output_path=str(out / "cloud_height.tif"),
-        cloud_mask=mask_result,
-    )
-
-    # Step 3: Properties (dispatch by method)
-    logger.info("Step 3/3: Cloud Properties")
-    if properties_method == "shading":
-        props_config = ShadingRefl2PropConfig(model_path=model_path, **props_cfg_dict)
-        run_shading_cloud_properties(
-            scene, height_result, props_config,
-            output_path=str(out / "properties_shading.tif"),
-        )
-    else:
-        props_config = Refl2PropConfig(
-            model_path=model_path, return_uncertainty=return_uncertainty, **props_cfg_dict
-        )
-        run_cloud_properties(
-            scene, height_result, props_config,
-            output_path=str(out / "properties.tif"),
-        )
-
-    logger.info(f"Pipeline complete. Outputs in {output_dir}/")
 
 
 @app.command()
 def full_workflow(
     scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
-    model_path: str = typer.Option(..., help="Path to trained .pth model"),
     output_dir: str = typer.Option("output", help="Directory for outputs"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
     mask_method: str = typer.Option("senseiv2", help="Mask method: 'senseiv2' or 'threshold'"),
-    properties_method: str = typer.Option("standard", help="Properties method: 'standard' or 'shading'"),
-    return_uncertainty: bool = typer.Option(False, help="Include uncertainty maps (standard only)"),
-    save_refocused: bool = typer.Option(False, help="Save refocused bands as GeoTIFFs"),
-    config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides flags)"),
+    config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides defaults)"),
 ):
     """
     Full pipeline with refocusing and albedo estimation.
@@ -466,10 +394,12 @@ def full_workflow(
     to correct parallax, then runs cloud property inversion on the
     refocused scene with the pre-computed albedo.
 
+    All module settings (model_path, method, bands, etc.) come from the
+    pipeline config YAML or their defaults. Use --config to customize.
+
     Usage:
-        cd-workflow full-workflow scene.SAFE --model-path model.pth
-        cd-workflow full-workflow scene.SAFE --model-path shading.pth --properties-method shading
-        cd-workflow full-workflow scene.SAFE --model-path model.pth --save-refocused
+        clouds-decoded full-workflow scene.SAFE
+        clouds-decoded full-workflow scene.SAFE --config pipeline.yaml
     """
     out = Path(output_dir)
     out.mkdir(exist_ok=True, parents=True)
@@ -489,7 +419,6 @@ def full_workflow(
         albedo_cfg_dict = pipeline.get("albedo", {})
         refocus_cfg_dict = pipeline.get("refocus", {})
         mask_method = mask_cfg_dict.pop("method", mask_method)
-        properties_method = props_cfg_dict.pop("properties_method", properties_method)
 
     # Build configs
     cloud_mask_config = CloudMaskConfig(method=mask_method, **mask_cfg_dict)
@@ -502,7 +431,6 @@ def full_workflow(
 
     # Step 1: Cloud Mask
     logger.info("Step 1/5: Cloud Mask")
-    # Save the raw categorical mask (4-class)
     raw_mask = run_cloud_mask(
         scene, cloud_mask_config,
         output_path=str(out / "cloud_mask.tif"),
@@ -529,55 +457,21 @@ def full_workflow(
 
     # Step 4: Refocus (parallax correction using cloud height)
     logger.info("Step 4/5: Refocus")
-    refocused_scene = run_refocus(scene, height_result, refocus_config)
-
-    if save_refocused:
-        import rasterio as rio
-        from clouds_decoded.constants import BAND_RESOLUTIONS
-        refocus_dir = out / "refocused"
-        refocus_dir.mkdir(exist_ok=True)
-        for band_name, band_data in refocused_scene.bands.items():
-            band_res = BAND_RESOLUTIONS.get(band_name, 10)
-            if refocus_config.output_resolution:
-                band_res = refocus_config.output_resolution
-            band_transform = rio.transform.Affine(
-                band_res, 0, refocused_scene.transform.c,
-                0, -band_res, refocused_scene.transform.f
-            ) if refocused_scene.transform else None
-
-            band_path = refocus_dir / f"{band_name}_refocused.tif"
-            is_float = np.issubdtype(band_data.dtype, np.floating)
-            profile = {
-                'driver': 'GTiff',
-                'height': band_data.shape[0],
-                'width': band_data.shape[1],
-                'count': 1,
-                'dtype': band_data.dtype,
-                'crs': refocused_scene.crs,
-                'transform': band_transform,
-                'compress': 'deflate',
-                'predictor': 3 if is_float else 2,
-                'tiled': True,
-                'blockxsize': 512,
-                'blockysize': 512,
-            }
-            with rio.open(band_path, 'w', **profile) as dst:
-                dst.write(band_data[np.newaxis, ...] if band_data.ndim == 2 else band_data)
-        logger.info(f"Refocused bands saved to {refocus_dir}/")
+    refocus_out = str(out / "refocused") if refocus_config.save_refocused else None
+    refocused_scene = run_refocus(scene, height_result, refocus_config, output_dir=refocus_out)
 
     # Step 5: Cloud Properties (on refocused scene, with pre-computed albedo)
     logger.info("Step 5/5: Cloud Properties")
-    if properties_method == "shading":
-        props_config = ShadingRefl2PropConfig(model_path=model_path, **props_cfg_dict)
+    props_method = props_cfg_dict.get("method", "standard")
+    if props_method == "shading":
+        props_config = ShadingRefl2PropConfig(**props_cfg_dict)
         run_shading_cloud_properties(
             refocused_scene, height_result, props_config,
             output_path=str(out / "properties_shading.tif"),
             albedo_data=albedo_result,
         )
     else:
-        props_config = Refl2PropConfig(
-            model_path=model_path, return_uncertainty=return_uncertainty, **props_cfg_dict
-        )
+        props_config = Refl2PropConfig(**props_cfg_dict)
         run_cloud_properties(
             refocused_scene, height_result, props_config,
             output_path=str(out / "properties.tif"),
@@ -597,7 +491,7 @@ app.add_typer(project_app, name="project")
 def project_init(
     project_dir: str = typer.Argument(..., help="Directory for the new project"),
     name: Optional[str] = typer.Option(None, help="Project name (defaults to directory name)"),
-    pipeline: str = typer.Option("full-workflow", help="Pipeline: 'workflow' or 'full-workflow'"),
+    pipeline: str = typer.Option("full-workflow", help="Pipeline type"),
     clone: Optional[str] = typer.Option(None, help="Clone configs from an existing project directory"),
 ):
     """
@@ -607,8 +501,8 @@ def project_init(
     and sets up the project metadata. Edit configs in <dir>/configs/ before running.
 
     Example:
-        cd-workflow project init ./my_analysis
-        cd-workflow project init ./new_analysis --clone ./existing_analysis
+        clouds-decoded project init ./my_analysis
+        clouds-decoded project init ./new_analysis --clone ./existing_analysis
     """
     from clouds_decoded.project import Project
 
@@ -620,7 +514,7 @@ def project_init(
             clone_from=clone,
         )
         logger.info(f"\nEdit configs in {project.configs_dir}/ then run:")
-        logger.info(f"  cd-workflow project run {project_dir}")
+        logger.info(f"  clouds-decoded project run {project_dir}")
     except FileExistsError as e:
         logger.error(str(e))
         raise typer.Exit(1)
@@ -642,9 +536,9 @@ def project_run(
     Skips steps that are already complete (output exists, config unchanged).
 
     Example:
-        cd-workflow project run ./my_analysis /data/S2A_scene.SAFE
-        cd-workflow project run ./my_analysis /data/scene1.SAFE /data/scene2.SAFE
-        cd-workflow project run ./my_analysis --force
+        clouds-decoded project run ./my_analysis /data/S2A_scene.SAFE
+        clouds-decoded project run ./my_analysis /data/scene1.SAFE /data/scene2.SAFE
+        clouds-decoded project run ./my_analysis --force
     """
     from clouds_decoded.project import Project
 

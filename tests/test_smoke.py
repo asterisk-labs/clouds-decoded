@@ -96,27 +96,49 @@ def test_albedo_estimator(dummy_scene):
     """Smoke test: AlbedoEstimator can run with new interface."""
     from clouds_decoded.modules.albedo_estimator import AlbedoEstimator, AlbedoEstimatorConfig
 
+    # Test 1: Percentile fallback (no cloud mask)
     config = AlbedoEstimatorConfig(
         percentile=1.0,
-        default_albedo=0.05
     )
 
     estimator = AlbedoEstimator(config)
     result = estimator.process(dummy_scene)
 
-    # Verify new interface
     assert result is not None
     assert result.data is not None
     assert result.data.ndim == 3  # (n_bands, h, w)
     assert result.data.shape[0] == len(dummy_scene.bands)  # One per band
-    assert result.data.shape[1:] == (100, 100)
 
     # Verify metadata
     assert hasattr(result.metadata, 'band_names')
     assert len(result.metadata.band_names) == result.data.shape[0]
-    assert hasattr(result.metadata, 'albedo_values')
+    assert result.metadata.fallback_used is True
 
-    print(f"✓ AlbedoEstimator: shape {result.data.shape}, "
+    # Test 2: Polynomial fit with cloud mask
+    from clouds_decoded.data import CloudMaskData, CloudMaskMetadata
+    # Create a mask where top half is clear (0), bottom half is cloud (1)
+    mask_arr = np.zeros((100, 100), dtype=np.uint8)
+    mask_arr[50:, :] = 1
+    cloud_mask = CloudMaskData(
+        data=mask_arr,
+        transform=dummy_scene.transform,
+        crs=dummy_scene.crs,
+        metadata=CloudMaskMetadata(categorical=True, classes={0: 'Clear', 1: 'Cloud'}),
+    )
+
+    poly_config = AlbedoEstimatorConfig(method="polynomial", polynomial_order=2)
+    poly_estimator = AlbedoEstimator(poly_config)
+    poly_result = poly_estimator.process(dummy_scene, cloud_mask=cloud_mask)
+
+    assert poly_result.data.ndim == 3
+    assert poly_result.data.shape[0] == len(dummy_scene.bands)
+    assert poly_result.metadata.method == "polynomial"
+    assert poly_result.metadata.fallback_used is False
+    assert poly_result.metadata.clear_fraction > 0
+    assert len(poly_result.metadata.polynomial_coefficients) > 0
+
+    print(f"✓ AlbedoEstimator: percentile shape {result.data.shape}, "
+          f"polynomial shape {poly_result.data.shape}, "
           f"bands {len(result.metadata.band_names)}")
 
 
@@ -137,6 +159,32 @@ def test_imports_work():
     assert CHP is not None
     assert CMP is not None
     assert AE is not None
+
+
+def test_get_band_reflectance(dummy_scene):
+    """Smoke test: get_band() with reflectance conversion."""
+    # Default quantification_value=10000, radio_add_offset={} (empty = offset 0)
+    raw = dummy_scene.get_band('B02', reflectance=False)
+    refl = dummy_scene.get_band('B02', reflectance=True)
+
+    assert raw.shape == refl.shape
+    assert refl.dtype == np.float32
+    # With empty offset dict, quant=10000: reflectance = raw / 10000
+    np.testing.assert_allclose(refl, raw / 10000.0, rtol=1e-5)
+
+    # With per-band offset (typical for N0400+ products)
+    dummy_scene.radio_add_offset = {'B02': -1000.0, 'B04': -1000.0}
+    refl_offset = dummy_scene.get_band('B02', reflectance=True)
+    np.testing.assert_allclose(refl_offset, (raw - 1000.0) / 10000.0, rtol=1e-5)
+
+    # Band without an explicit offset still gets offset=0
+    raw_b03 = dummy_scene.get_band('B03', reflectance=False)
+    refl_b03 = dummy_scene.get_band('B03', reflectance=True)
+    np.testing.assert_allclose(refl_b03, raw_b03 / 10000.0, rtol=1e-5)
+
+    # Missing band raises KeyError
+    with pytest.raises(KeyError):
+        dummy_scene.get_band('B99')
 
 
 def test_config_from_yaml(tmp_path):

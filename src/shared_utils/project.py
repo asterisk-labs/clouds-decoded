@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 # Step order for each pipeline type
 PIPELINE_STEPS = {
-    "workflow": ["cloud_mask", "cloud_height", "cloud_properties"],
     "full-workflow": ["cloud_mask", "cloud_height", "albedo", "refocus", "cloud_properties"],
 }
 
@@ -61,7 +60,7 @@ STEP_OUTPUT_FILE = {
 class ProjectConfig(BaseModel):
     """Root project configuration, stored as project.yaml."""
     name: str = Field(..., description="User-friendly project name")
-    pipeline: Literal["workflow", "full-workflow"] = Field(
+    pipeline: Literal["full-workflow"] = Field(
         default="full-workflow", description="Pipeline type to run"
     )
     scenes: List[str] = Field(default_factory=list, description="Absolute paths to .SAFE directories")
@@ -771,11 +770,8 @@ class Project:
         elif step == "refocus":
             if height_result is None:
                 raise ValueError("Refocus requires cloud height data")
-            result_scene = run_refocus(scene, height_result, step_config)
-
-            if step_config.save_refocused:
-                self._save_refocused_bands(result_scene, scene_out, step_config)
-
+            refocus_out = str(scene_out / "refocused") if step_config.save_refocused else None
+            result_scene = run_refocus(scene, height_result, step_config, output_dir=refocus_out)
             return result_scene  # Return scene object, not path
 
         elif step == "cloud_properties":
@@ -809,45 +805,6 @@ class Project:
         if method == "shading":
             return "properties_shading.tif"
         return STEP_OUTPUT_FILE["cloud_properties"]
-
-    def _save_refocused_bands(self, refocused_scene, scene_out: Path, refocus_config):
-        """Save refocused bands as individual GeoTIFFs."""
-        import numpy as np
-        import rasterio as rio
-        from clouds_decoded.constants import BAND_RESOLUTIONS
-
-        refocus_dir = scene_out / "refocused"
-        refocus_dir.mkdir(exist_ok=True)
-
-        for band_name, band_data in refocused_scene.bands.items():
-            band_res = BAND_RESOLUTIONS.get(band_name, 10)
-            if refocus_config.output_resolution:
-                band_res = refocus_config.output_resolution
-            band_transform = rio.transform.Affine(
-                band_res, 0, refocused_scene.transform.c,
-                0, -band_res, refocused_scene.transform.f,
-            ) if refocused_scene.transform else None
-
-            band_path = refocus_dir / f"{band_name}_refocused.tif"
-            is_float = np.issubdtype(band_data.dtype, np.floating)
-            profile = {
-                'driver': 'GTiff',
-                'height': band_data.shape[0],
-                'width': band_data.shape[1],
-                'count': 1,
-                'dtype': band_data.dtype,
-                'crs': refocused_scene.crs,
-                'transform': band_transform,
-                'compress': 'deflate',
-                'predictor': 3 if is_float else 2,
-                'tiled': True,
-                'blockxsize': 512,
-                'blockysize': 512,
-            }
-            with rio.open(band_path, 'w', **profile) as dst:
-                dst.write(band_data[np.newaxis, ...] if band_data.ndim == 2 else band_data)
-
-        logger.info(f"  Refocused bands saved to {refocus_dir}/")
 
     def _load_intermediates(self, scene_out: Path, completed_steps: List[str]):
         """Load intermediate results from completed steps for data flow."""
