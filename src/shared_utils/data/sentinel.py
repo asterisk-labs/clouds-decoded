@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from pydantic import Field
 import pyproj
@@ -8,6 +9,8 @@ from rasterio.windows import Window
 from typing import Optional, Any, Dict, List, Tuple, Union, ClassVar
 
 from .base import Data
+
+logger = logging.getLogger(__name__)
 from ..constants import BANDS, BAND_RESOLUTIONS
 
 class Sentinel2Scene(Data):
@@ -31,6 +34,20 @@ class Sentinel2Scene(Data):
     crs: Optional[Any] = None
     transform: Optional[Any] = None
 
+    # Product identification (from MTD_MSIL1C.xml)
+    product_uri: Optional[str] = Field(
+        default=None,
+        description="ESA product URI, e.g. 'S2B_MSIL1C_20250104T185019_N0511_R127_T09KVQ_20250104T220125.SAFE'"
+    )
+
+    # Radiometric calibration (read from product metadata)
+    quantification_value: float = Field(default=10000.0)
+    radio_add_offset: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-band radiometric offset keyed by band name. "
+                    "Empty dict means offset=0 for all bands (older products)."
+    )
+
     # Constants for SAFE format
     GRANULE_DIR: ClassVar[str] = "GRANULE"
     IMG_DATA_DIR: ClassVar[str] = "IMG_DATA"
@@ -41,6 +58,12 @@ class Sentinel2Scene(Data):
     def read(self, filepath: Union[str, Path], bands: List[str] = None, crop_window: Tuple[int, int, int, int] = None):
         """
         Read data from a Sentinel-2 scene directory.
+        
+        Args:
+            filepath: Path to .SAFE directory
+            bands: List of band names to load
+            crop_window: Optional tuple (col_off, row_off, width, height) in 10m pixels (B02 frame).
+                         If provided, effectively crops the scene to this window.
         """
         self.scene_directory = Path(filepath)
         if bands is None:
@@ -49,27 +72,125 @@ class Sentinel2Scene(Data):
         self.bands = self._get_bands(self.scene_directory, bands, crop_window)
 
         # Get Georeferencing from reference band (B02)
+        scene_width, scene_height = 0, 0
+        
         try:
              # Use B02 as reference for CRS and Transform (10m resolution)
              ref_paths = self._get_band_paths(self.scene_directory, ["B02"])
              if "B02" in ref_paths:
                   with rio.open(ref_paths["B02"]) as src:
                        self.crs = src.crs
-                       self.transform = src.transform
+                       base_transform = src.transform
+                       full_width, full_height = src.width, src.height
+                  
+                  if crop_window:
+                       col_off, row_off, width, height = crop_window
+                       self.transform = rio.windows.transform(
+                           Window(col_off, row_off, width, height),
+                           base_transform
+                       )
+                       scene_width, scene_height = width, height
+                  else:
+                       self.transform = base_transform
+                       scene_width, scene_height = full_width, full_height
+                       
         except Exception as e:
              # Just warn, don't crash if we can't extract CRS
-             print(f"Warning: Could not extract CRS/Transform: {e}")
+             logger.warning(f"Could not extract CRS/Transform: {e}")
 
         self.footprints = self._get_footprints(self.scene_directory, bands, crop_window)
         self.sun_zenith, self.sun_azimuth = self._get_sun_angle(self.scene_directory)
         self.view_zenith, self.view_azimuth = self._get_view_angle(self.scene_directory)
         self.image_azimuth = self._get_orbit_image_angle(self.scene_directory)
-        self.latitude = self._get_latitude(self.scene_directory)
-        self.longitude = self._get_longitude(self.scene_directory)
+        
+        # Calculate Lat/Lon center based on (potentially cropped) geometry
+        if self.transform is not None:
+             self.latitude, self.longitude = self._calculate_center_coords(scene_width, scene_height)
+        else:
+             # Fallback (though probably won't be accurate if cropped and transform failed)
+             self.latitude = self._get_latitude(self.scene_directory)
+             self.longitude = self._get_longitude(self.scene_directory)
+             
         self.orientation = self._get_scene_orientation(self.scene_directory)
         self.orbit_type = self._get_orbit_type(self.scene_directory)
 
+        # Read product metadata
+        self.product_uri = self._get_product_uri(self.scene_directory)
+        self.quantification_value, self.radio_add_offset = self._get_radiometric_params(
+            self.scene_directory
+        )
+
+    def _calculate_center_coords(self, width: int, height: int) -> Tuple[float, float]:
+        """Calculate center latitude/longitude based on current transform and size."""
+        # Center in pixel coords
+        cx, cy = width / 2, height / 2
+        # Center in projected coords (X, Y)
+        px, py = self.transform * (cx, cy)
+        
+        # Reproject to EPSG:4326
+        transformer = pyproj.transformer.Transformer.from_crs(
+             self.crs, 'EPSG:4326', always_xy=True
+        )
+        lon, lat = transformer.transform(px, py)
+        return lat, lon
+
+    def get_scene_size_meters(self) -> Tuple[float, float]:
+        """
+        Calculates the scene dimensions in meters based on a loaded band and its resolution.
+        Attempts to use 'B02' (10m) first, then falls back to any available band.
+        
+        Returns:
+            Tuple[float, float]: (width_meters, height_meters)
+        
+        Raises:
+            ValueError: If no bands are loaded or if resolution is unknown for available bands.
+        """
+        # Try finding a resolution from available bands
+        band_name = None
+        if "B02" in self.bands:
+            band_name = "B02"
+        elif self.bands:
+            band_name = list(self.bands.keys())[0]
+        else:
+            raise ValueError("No bands loaded to determine scene size.")
+
+        if band_name not in BAND_RESOLUTIONS:
+             raise ValueError(f"Unknown resolution for band {band_name}")
+
+        resolution = BAND_RESOLUTIONS[band_name]
+        band_data = self.bands[band_name]
+        
+        # Band data might be (C, H, W) or (H, W)
+        if band_data.ndim == 3:
+             height, width = band_data.shape[1], band_data.shape[2]
+        elif band_data.ndim == 2:
+             height, width = band_data.shape[0], band_data.shape[1]
+        else:
+             raise ValueError(f"Invalid shape for band {band_name}: {band_data.shape}")
+             
+        return (float(width * resolution), float(height * resolution))
+
+    def get_band(self, band_name: str, reflectance: bool = True) -> np.ndarray:
+        """Retrieve a band array, optionally converted to TOA reflectance.
+
+        Args:
+            band_name: Band identifier (e.g. 'B02', 'B8A').
+            reflectance: If True, return TOA reflectance as float32.
+                If False, return raw DN values as stored.
+
+        Returns:
+            2-D numpy array of the band data.
+        """
+        if band_name not in self.bands:
+            raise KeyError(f"Band '{band_name}' not loaded. Available: {list(self.bands.keys())}")
+        data = self.bands[band_name]
+        if not reflectance:
+            return data
+        offset = self.radio_add_offset.get(band_name, 0.0)
+        return (data.astype(np.float32) + offset) / self.quantification_value
+
     def write(self, filepath: str):
+
         """Writing Sentinel-2 scenes is not supported."""
         raise NotImplementedError("Writing Sentinel-2 scenes is not supported.")
 
@@ -221,6 +342,12 @@ class Sentinel2Scene(Data):
         with rio.open(paths['B02']) as src:
             footprint = src.read(1)
 
+        # First, let's get rid of any rows and columns that are entirely zero (no data)
+        del_rows = np.where(np.all(footprint == 0, axis=1))[0]
+        del_cols = np.where(np.all(footprint == 0, axis=0))[0]
+        footprint = np.delete(footprint, del_rows, axis=0)
+        footprint = np.delete(footprint, del_cols, axis=1)
+
         # Vectorized approach or column search? Keeping original logic but cleaned up variables
         rows, cols = footprint.shape
         lower_id, upper_id = None, None
@@ -334,3 +461,40 @@ class Sentinel2Scene(Data):
         if node is None:
              raise ValueError("SENSING_ORBIT_DIRECTION not found")
         return node.text
+
+    def _get_product_uri(self, scene_directory: Path) -> Optional[str]:
+        """Read PRODUCT_URI from MTD_MSIL1C.xml."""
+        try:
+            root = self._read_xml_root(scene_directory / self.METADATA_MTD)
+            node = root.find(".//PRODUCT_URI")
+            return node.text if node is not None else None
+        except Exception:
+            return None
+
+    def _get_radiometric_params(self, scene_directory: Path) -> Tuple[float, Dict[str, float]]:
+        """Read QUANTIFICATION_VALUE and per-band RADIO_ADD_OFFSET from MTD_MSIL1C.xml.
+
+        Returns:
+            (quantification_value, radio_add_offset_dict). Falls back to
+            (10000.0, {}) for older products that lack Radiometric_Offset_List.
+        """
+        try:
+            root = self._read_xml_root(scene_directory / self.METADATA_MTD)
+
+            quant_node = root.find(".//QUANTIFICATION_VALUE")
+            quantification = float(quant_node.text) if quant_node is not None else 10000.0
+
+            # Per-band offsets: <RADIO_ADD_OFFSET band_id="0">-1000</RADIO_ADD_OFFSET>
+            # band_id is an integer index into the BANDS list
+            offsets: Dict[str, float] = {}
+            for node in root.findall(".//RADIO_ADD_OFFSET"):
+                band_id = node.get("band_id")
+                if band_id is not None:
+                    idx = int(band_id)
+                    if idx < len(BANDS):
+                        offsets[BANDS[idx]] = float(node.text)
+
+            return quantification, offsets
+        except Exception as e:
+            logger.warning(f"Could not read radiometric params: {e}. Using defaults.")
+            return 10000.0, {}

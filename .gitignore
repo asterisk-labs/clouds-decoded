@@ -206,3 +206,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Internal stuff
+scratch*/
+plots/
+ARCHITECTURE.md
+CODEBASE_ANALYSIS.md
+DEVLOG.md

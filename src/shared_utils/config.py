@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, Dict, Any, List
 import yaml
 from pathlib import Path
@@ -11,6 +11,7 @@ class BaseProcessorConfig(BaseModel):
     Base configuration class for all processors.
     Utilizes Pydantic for validation and type checking.
     """
+    model_config = ConfigDict(extra='forbid')
     output_dir: Optional[str] = Field(None, description="Directory to save outputs")
     n_workers: int = Field(1, description="Number of parallel workers where applicable")
     
@@ -18,8 +19,11 @@ class BaseProcessorConfig(BaseModel):
     debug_mode: bool = False
 
     @classmethod
-    def load_yaml(cls, config_path: str):
-        """Loads configuration from a YAML file."""
+    def from_yaml(cls, config_path: Optional[str] = None):
+        """Loads configuration from a YAML file. If path is None, returns default config."""
+        if config_path is None:
+            return cls()
+
         config_path = Path(config_path)
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -32,3 +36,17 @@ class BaseProcessorConfig(BaseModel):
             data = {}
             
         return cls(**data)
+
+    def to_yaml(self, config_path: str):
+        """Write configuration to a YAML file.
+
+        Computed fields (@computed_field) are excluded since they are derived
+        from other fields and should not be edited directly.
+        """
+        config_path = Path(config_path)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        computed = type(self).model_computed_fields
+        exclude = set(computed.keys()) if computed else set()
+        data = self.model_dump(exclude=exclude)
+        with open(config_path, 'w') as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)

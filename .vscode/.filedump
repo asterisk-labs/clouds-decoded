@@ -1,0 +1,6 @@
+
+		begin
+      f = addfile("/home/ali/projects/clouds-decoded/scratch/properties.nc","r")
+      print(f)
+		end
+    

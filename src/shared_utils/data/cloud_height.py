@@ -24,27 +24,3 @@ class CloudHeightGridData(GeoRasterData):
         if np.nanmin(self.data) < 0:
             return False
         return True
-
-class CloudHeightPointsData(PointCloudData):
-    """
-    Data model for Cloud Height as sparse points.
-    Expected columns: x, y, height
-    Optional columns: correlation, etc.
-    """
-    REQUIRED_COLUMNS: ClassVar[list[str]] = ['x', 'y', 'height']
-    metadata: CloudHeightMetadata = Field(default_factory=CloudHeightMetadata)
-
-    def validate(self) -> bool:
-        """Validate dataframe columns and value ranges."""
-        if self.data is None or self.data.empty:
-            return True
-            
-        # Check columns
-        if not all(col in self.data.columns for col in self.REQUIRED_COLUMNS):
-            return False
-            
-        # Check heights are non-negative
-        if self.data['height'].min() < 0:
-            return False
-            
-        return True
