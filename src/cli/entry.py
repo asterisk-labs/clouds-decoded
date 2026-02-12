@@ -582,5 +582,50 @@ def project_add_scene(
         raise typer.Exit(1)
 
 
+@app.command()
+def view(
+    scene_dir: str = typer.Argument(..., help="Path to project scene output directory"),
+    scene_path: Optional[str] = typer.Option(None, help="Path to .SAFE directory for RGB composites"),
+):
+    """Open an interactive viewer for a processed scene's outputs."""
+    from clouds_decoded.visualisation import InteractiveViewer, load_scene_layers
+
+    layers = load_scene_layers(scene_dir, scene_path=scene_path)
+    if not layers:
+        logger.error(f"No layers found in {scene_dir}")
+        raise typer.Exit(1)
+
+    logger.info(f"Loaded {len(layers)} layers from {scene_dir}")
+    viewer = InteractiveViewer(layers)
+    viewer.show()
+
+
+@app.command()
+def serve(
+    scene_dir: str = typer.Argument(..., help="Path to project scene output directory"),
+    scene_path: Optional[str] = typer.Option(None, help="Path to .SAFE directory for RGB composites"),
+    port: int = typer.Option(5006, help="Port to serve on"),
+    show: bool = typer.Option(False, help="Open browser automatically (disable for remote)"),
+):
+    """Launch a web-based viewer for a processed scene (Panel + Bokeh).
+
+    Ideal for remote servers — port-forward with:
+        ssh -L 5006:localhost:5006 user@server
+
+    Then open http://localhost:5006 in your browser.
+    """
+    from clouds_decoded.visualisation import load_scene_layers
+    from clouds_decoded.visualisation.web_viewer import WebViewer
+
+    layers = load_scene_layers(scene_dir, scene_path=scene_path)
+    if not layers:
+        logger.error(f"No layers found in {scene_dir}")
+        raise typer.Exit(1)
+
+    logger.info(f"Loaded {len(layers)} layers — serving on port {port}")
+    viewer = WebViewer(layers)
+    viewer.serve(port=port, show=show)
+
+
 if __name__ == "__main__":
     app()
