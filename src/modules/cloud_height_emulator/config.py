@@ -6,7 +6,7 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
     """Configuration for Cloud Height Emulator Processor."""
     
     pth_path: Optional[str] = Field(
-        default=None,
+        default="/home/paul/clouds-decoded/src/modules/cloud_height_emulator/model/model_height_emulator.pth",
         description="Path to the model weights file."
     )
     bands: List[str] = Field(
@@ -37,7 +37,7 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
     )
 
     device: Optional[str] = Field(
-        default="cpu",
+        default="cuda",
         description="Device to run inference on (e.g., 'cuda', 'cpu'). If None, auto-detects."
     )
 

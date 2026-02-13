@@ -10,6 +10,9 @@ import logging
 # imported lazily inside the functions that need them so that
 # --help / autocomplete stay fast.
 from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
+from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
+from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
+from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter, ShadingPropertyInverter
 from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
 from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
 from clouds_decoded.modules.refocus.config import RefocusConfig
@@ -100,17 +103,25 @@ def run_cloud_mask(
 
 def run_cloud_height(
     scene: Sentinel2Scene,
-    config: CloudHeightConfig,
+    config: Union[CloudHeightConfig, CloudHeightEmulatorConfig],
     output_path: Optional[str] = None,
     cloud_mask: Optional[Union[CloudMaskData, str, Path]] = None,
+    use_emulator: bool = False,
 ) -> CloudHeightGridData:
     """Run cloud height retrieval with explicit config."""
-    from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
+    logger.info(f"Processing Cloud Height (Emulator: {use_emulator})...")
 
-    logger.info("Processing Cloud Height...")
-
-    processor = CloudHeightProcessor(config)
-    result = processor.process(scene, cloud_mask=cloud_mask)
+    if use_emulator:
+        # Emulator does not use cloud mask argument in process()
+        if not isinstance(config, CloudHeightEmulatorConfig):
+             logger.warning("Config is not CloudHeightEmulatorConfig but use_emulator=True. Instantiating default emulator config.")
+             config = CloudHeightEmulatorConfig()
+        
+        processor = CloudHeightEmulatorProcessor(config)
+        result = processor.process(scene)
+    else:
+        processor = CloudHeightProcessor(config)
+        result = processor.process(scene, cloud_mask=cloud_mask)
 
     if output_path:
         result.write(output_path)
@@ -264,16 +275,23 @@ def cloud_height(
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
     mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    use_emulator: bool = typer.Option(False, help="Use Deep Learning Emulator for height retrieval"),
 ):
     """Calculate Cloud Height from Sentinel-2 data."""
     scene = _load_scene(scene_path, crop_window)
 
     if config_path:
-        config = CloudHeightConfig.from_yaml(config_path)
+        if use_emulator:
+            config = CloudHeightEmulatorConfig.from_yaml(config_path)
+        else:
+            config = CloudHeightConfig.from_yaml(config_path)
     else:
-        config = CloudHeightConfig()
+        if use_emulator:
+            config = CloudHeightEmulatorConfig()
+        else:
+            config = CloudHeightConfig()
 
-    run_cloud_height(scene, config, output_path, cloud_mask=mask_path)
+    run_cloud_height(scene, config, output_path, cloud_mask=mask_path, use_emulator=use_emulator)
 
 
 @app.command()

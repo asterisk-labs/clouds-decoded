@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Optional, Dict
 from skimage.transform import resize
+from tqdm import tqdm
 
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeightMetadata
 from rasterio.transform import Affine
@@ -134,6 +135,9 @@ class CloudHeightEmulatorProcessor:
              output_data = output_data[0]
         if output_cloud.ndim == 3:
              output_cloud = output_cloud[0]
+        
+        # Clip negative values to 0
+        output_data = np.clip(output_data, 0, None)
              
         # Create Metadata
         meta = CloudHeightMetadata(
@@ -213,7 +217,7 @@ class CloudHeightEmulatorProcessor:
         
         # Iterate
         with torch.no_grad():
-            for i in range(h_steps):
+            for i in tqdm(range(h_steps), desc="Rows"):
                 for j in range(w_steps):
                     h_start = i * stride_h
                     w_start = j * stride_w
