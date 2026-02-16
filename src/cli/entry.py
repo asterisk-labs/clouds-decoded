@@ -1,22 +1,18 @@
+from __future__ import annotations
+
 import typer
 import yaml
-import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, List, Union
 import logging
 
-# Standardized Imports
-from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData, AlbedoData
-
-from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
+# Lightweight config imports only — processors and data classes are
+# imported lazily inside the functions that need them so that
+# --help / autocomplete stay fast.
 from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
-from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter, ShadingPropertyInverter
 from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
-from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor, ThresholdCloudMaskProcessor
 from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
-from clouds_decoded.modules.refocus.processor import RefocusProcessor
 from clouds_decoded.modules.refocus.config import RefocusConfig
-from clouds_decoded.modules.albedo_estimator.processor import AlbedoEstimator
 from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
 
 # Setup Logger
@@ -30,6 +26,8 @@ app = typer.Typer(help="Clouds Decoded Command Line Interface")
 
 def _load_scene(scene_path: str, crop_window: Optional[str] = None) -> Sentinel2Scene:
     """Load a Sentinel2Scene, optionally applying a spatial crop."""
+    from clouds_decoded.data import Sentinel2Scene
+
     logger.info(f"Loading Scene: {scene_path}")
     scene = Sentinel2Scene()
     if crop_window:
@@ -47,6 +45,8 @@ def _load_scene(scene_path: str, crop_window: Optional[str] = None) -> Sentinel2
 
 def _resolve_height_input(height_input: Union[str, Path, CloudHeightGridData]) -> CloudHeightGridData:
     """Load height data from file path, or pass through if already in memory."""
+    from clouds_decoded.data import CloudHeightGridData
+
     if isinstance(height_input, (str, Path)):
         height_data = CloudHeightGridData.from_file(str(height_input))
         if height_data.data is None:
@@ -74,6 +74,8 @@ def run_cloud_mask(
     pp_params: Optional[PostProcessParams] = None,
 ) -> CloudMaskData:
     """Run cloud masking with explicit config."""
+    from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor, ThresholdCloudMaskProcessor
+
     logger.info(f"Processing Cloud Mask (Method: {config.method})...")
 
     if config.method == "threshold":
@@ -103,6 +105,8 @@ def run_cloud_height(
     cloud_mask: Optional[Union[CloudMaskData, str, Path]] = None,
 ) -> CloudHeightGridData:
     """Run cloud height retrieval with explicit config."""
+    from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
+
     logger.info("Processing Cloud Height...")
 
     processor = CloudHeightProcessor(config)
@@ -123,6 +127,8 @@ def run_cloud_properties(
     albedo_data: Optional[AlbedoData] = None,
 ) -> 'CloudPropertiesData':
     """Run standard cloud property inversion with explicit config."""
+    from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter
+
     logger.info("Processing Cloud Properties...")
     height_data = _resolve_height_input(height_input)
 
@@ -144,6 +150,8 @@ def run_shading_cloud_properties(
     albedo_data: Optional[AlbedoData] = None,
 ) -> 'CloudPropertiesData':
     """Run shading-aware cloud property inversion with explicit config."""
+    from clouds_decoded.modules.refl2prop.processor import ShadingPropertyInverter
+
     logger.info("Processing Shading-Aware Cloud Properties...")
     height_data = _resolve_height_input(height_input)
 
@@ -164,6 +172,8 @@ def run_albedo(
     output_path: Optional[str] = None,
 ) -> 'AlbedoData':
     """Run albedo estimation with explicit config."""
+    from clouds_decoded.modules.albedo_estimator.processor import AlbedoEstimator
+
     logger.info(f"Processing Albedo (method={config.method}, order={config.polynomial_order})...")
 
     processor = AlbedoEstimator(config)
@@ -188,6 +198,8 @@ def run_refocus(
         output_dir: If provided, save refocused bands as individual GeoTIFFs
             in this directory.
     """
+    from clouds_decoded.modules.refocus.processor import RefocusProcessor
+
     logger.info("Processing Refocus (parallax correction)...")
     height_data = _resolve_height_input(height_input)
 
@@ -207,6 +219,7 @@ def _save_refocused_bands(
     output_dir: str,
 ):
     """Save refocused bands as individual GeoTIFFs."""
+    import numpy as np
     import rasterio as rio
     from clouds_decoded.constants import BAND_RESOLUTIONS
 
@@ -369,6 +382,7 @@ def albedo(
 
     cloud_mask = None
     if mask_path:
+        from clouds_decoded.data import CloudMaskData
         cloud_mask = CloudMaskData.from_file(mask_path)
         logger.info(f"Loaded cloud mask from {mask_path}")
 
@@ -436,6 +450,7 @@ def full_workflow(
         output_path=str(out / "cloud_mask.tif"),
     )
     # Postprocess to binary for downstream consumers (height, albedo, etc.)
+    from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor
     postprocessor = CloudMaskProcessor()
     mask_result = postprocessor.postprocess(raw_mask, PostProcessParams())
 
