@@ -185,7 +185,7 @@ class CloudPropertyInverter:
         mu = to_grid(np.cos(vza_rad))
         
         # Relative Azimuth (phi)
-        rel_az = np.abs(scene.sun_azimuth - scene.view_azimuth)
+        rel_az = np.radians(np.abs(scene.sun_azimuth - scene.view_azimuth))
         phi = to_grid(rel_az)
         
         geometry = {
