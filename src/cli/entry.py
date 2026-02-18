@@ -10,7 +10,6 @@ import logging
 # imported lazily inside the functions that need them so that
 # --help / autocomplete stay fast.
 from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
-from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter, ShadingPropertyInverter
 from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
@@ -117,6 +116,7 @@ def run_cloud_height(
              logger.warning("Config is not CloudHeightEmulatorConfig but use_emulator=True. Instantiating default emulator config.")
              config = CloudHeightEmulatorConfig()
         
+        from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
         processor = CloudHeightEmulatorProcessor(config)
         result = processor.process(scene)
     else:
