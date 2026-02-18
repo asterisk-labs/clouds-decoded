@@ -1,3 +1,4 @@
+from torch.utils.data import Dataset, DataLoader
 import torch
 import numpy as np
 import logging
@@ -6,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Dict
 from skimage.transform import resize
 from tqdm import tqdm
+import time
 
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeightMetadata
 from rasterio.transform import Affine
@@ -18,6 +20,29 @@ import matplotlib.pyplot as plt
 
 
 logger = logging.getLogger(__name__)
+class WindowDataset(Dataset):
+    def __init__(self, input_padded, h_steps, w_steps, stride_h, stride_w, h_win, w_win):
+        self.input_padded = input_padded
+        self.h_steps = h_steps
+        self.w_steps = w_steps
+        self.stride_h = stride_h
+        self.stride_w = stride_w
+        self.h_win = h_win
+        self.w_win = w_win
+
+    def __len__(self):
+        return self.h_steps * self.w_steps
+
+    def __getitem__(self, idx):
+        i = idx // self.w_steps
+        j = idx % self.w_steps
+        h_start = i * self.stride_h
+        w_start = j * self.stride_w
+        h_end = h_start + self.h_win
+        w_end = w_start + self.w_win
+        
+        window = self.input_padded[:, :, h_start:h_end, w_start:w_end]
+        return window.squeeze(0), i, j
 
 class CloudHeightEmulatorProcessor:
     def __init__(self, config: Optional[CloudHeightEmulatorConfig] = None):
@@ -50,13 +75,6 @@ class CloudHeightEmulatorProcessor:
                     logger.info(f"Loading checkpoint from {pth_path}")
                     checkpoint = torch.load(pth_path, map_location=self.device)
                     self.model.load_state_dict(checkpoint, strict=True)
-                    # check if all keys are present
-                    missing_keys = self.model.load_state_dict(checkpoint, strict=False)
-                    if missing_keys.missing_keys:
-                        raise ValueError(f"Missing keys: {missing_keys.missing_keys}, did you use the correct checkpoint?")
-                    # check if all keys are present
-                    if missing_keys.unexpected_keys:
-                        raise ValueError(f"Unexpected keys: {missing_keys.unexpected_keys}, did you use the correct checkpoint?") 
                 else:
                     logger.warning(f"Checkpoint {pth_path} not found. Using initialized weights.")
 
@@ -87,6 +105,7 @@ class CloudHeightEmulatorProcessor:
             self.model.eval()
 
     def process(self, scene: Sentinel2Scene) -> CloudHeightGridData:
+        starting_time = time.time()
         """
         Runs cloud height emulation on a Sentinel-2 scene.
         """
@@ -143,7 +162,8 @@ class CloudHeightEmulatorProcessor:
         meta = CloudHeightMetadata(
              processing_config=self.config.model_dump()
         )
-        
+        ending_time = time.time()
+        logger.info(f"Inference completed in {ending_time - starting_time} seconds")
         return CloudHeightGridData(
              data=output_data,
              transform=scene.transform,
@@ -158,6 +178,7 @@ class CloudHeightEmulatorProcessor:
         """
         window_size = self.config.window_size
         overlap = window_size[0] // 2
+        batch_size = self.config.batch_size
         device = self.device
 
         C, H, W = input_bands.shape
@@ -176,85 +197,82 @@ class CloudHeightEmulatorProcessor:
         h_steps = (H + stride_h - 1) // stride_h
         w_steps = (W + stride_w - 1) // stride_w
         
-        # Calculate required padded size
-        # The last window starts at (h_steps - 1) * stride_h
-        # It has length h_win.
-        # So total required size = (h_steps - 1) * stride_h + h_win
+        pad_top = win_pad_h
+        pad_left = win_pad_w
         
         required_H = (h_steps - 1) * stride_h + h_win
         required_W = (w_steps - 1) * stride_w + w_win
         
-        # Current size with just context padding would be:
-        # H + 2 * win_pad
-        # But we pad specifically:
-        # Left/Top: win_pad
-        # Right/Bottom: remainder
-        
-        pad_top = win_pad_h
-        pad_left = win_pad_w
-        
         pad_bottom = required_H - (H + pad_top)
         pad_right = required_W - (W + pad_left)
         
-        # Ensure non-negative (should be if logic is correct, but safer to clip)
-        pad_bottom = max(pad_bottom, win_pad_h) # At least win_pad context
+        pad_bottom = max(pad_bottom, win_pad_h)
         pad_right = max(pad_right, win_pad_w)
 
-        # input_tensor needs to be 4D (B, C, H, W)
-        input_tensor = input_bands.unsqueeze(0).to(device)
-
-        # Pad input
+        input_tensor = input_bands.unsqueeze(0) # Keep on CPU for Dataset
         input_padded = torch.nn.functional.pad(
             input_tensor, (pad_left, pad_right, pad_top, pad_bottom), mode='reflect')
 
         _, _, H_pad, W_pad = input_padded.shape
 
-        # Initialize output container
-        # We'll make it large enough to hold all predictions, then crop
         output_padded = torch.zeros((1, H_pad, W_pad), device=device)
         output_padded_cloud = torch.zeros((1, H_pad, W_pad), device=device)
         count_map = torch.zeros((1, H_pad, W_pad), device=device)
         
-        # Iterate
+        dataset = WindowDataset(input_padded, h_steps, w_steps, stride_h, stride_w, h_win, w_win)
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=batch_size, 
+            num_workers=min(os.cpu_count(), self.config.batch_size+4), 
+            shuffle=False,
+            pin_memory=(device == "cuda")
+        )
+
         with torch.no_grad():
-            for i in tqdm(range(h_steps), desc="Rows"):
-                for j in range(w_steps):
+            for batch_windows, batch_i, batch_j in tqdm(dataloader, desc="Inference Batches"):
+                batch_windows = batch_windows.to(device)
+                
+                # Inference
+                outputs = self.model(batch_windows)
+                
+                if isinstance(outputs, dict):
+                    preds = outputs["regression"]
+                    preds_cloud = outputs.get("segmentation")
+                    if preds_cloud is not None:
+                        cloud_masks = torch.sigmoid(preds_cloud)
+                        # Ensure preds and cloud_masks have same shape for masking
+                        if preds.dim() == 3:
+                            preds = preds.unsqueeze(1)
+                        if cloud_masks.dim() == 3:
+                            cloud_masks = cloud_masks.unsqueeze(1)
+                        preds[cloud_masks < 0.5] = 0
+                else:
+                    preds = outputs
+                    cloud_masks = None
+
+                if preds.dim() == 3:
+                    preds = preds.unsqueeze(1)
+                
+                # Process each item in batch
+                for idx in range(preds.shape[0]):
+                    i = batch_i[idx].item()
+                    j = batch_j[idx].item()
                     h_start = i * stride_h
                     w_start = j * stride_w
-                    h_end = h_start + h_win
-                    w_end = w_start + w_win
-
-                    # Check bounds (should be safe by calculation)
-                    if h_end > H_pad or w_end > W_pad:
-                        continue
-
-                    window = input_padded[:, :, h_start:h_end, w_start:w_end]
-
-                    # Inference
-                    output = self.model(window)                    
-                    # Handle output format
-                    if isinstance(output, dict):
-                        pred = output["regression"]
-                        pred_cloud = output.get("segmentation")
-                        if pred_cloud is not None:
-                             cloud_mask = torch.sigmoid(pred_cloud)
-                             pred[cloud_mask < 0.5] = 0
-                    else:
-                        pred = output
-
-                    if pred.dim() == 3:
-                        pred = pred.unsqueeze(1)
                     
-                    output_window = pred[:, :, win_pad_h : win_pad_h + window_size[0], 
-                                               win_pad_w : win_pad_w + window_size[1]]
-                    output_window_cloud = cloud_mask[ :, win_pad_h : win_pad_h + window_size[0], 
-                                               win_pad_w : win_pad_w + window_size[1]]
+                    output_window = preds[idx, :, win_pad_h : win_pad_h + window_size[0], 
+                                                win_pad_w : win_pad_w + window_size[1]]
                     
                     h_end_out = h_start + window_size[0]
                     w_end_out = w_start + window_size[1]
                     
-                    output_padded[:, h_start:h_end_out, w_start:w_end_out] += output_window[0]
-                    output_padded_cloud[:, h_start:h_end_out, w_start:w_end_out] += output_window_cloud[0]
+                    output_padded[:, h_start:h_end_out, w_start:w_end_out] += output_window
+                    
+                    if cloud_masks is not None:
+                        output_window_cloud = cloud_masks[idx, :, win_pad_h : win_pad_h + window_size[0], 
+                                                        win_pad_w : win_pad_w + window_size[1]]
+                        output_padded_cloud[:, h_start:h_end_out, w_start:w_end_out] += output_window_cloud
+                    
                     count_map[:, h_start:h_end_out, w_start:w_end_out] += 1.0
 
         # Average
@@ -262,14 +280,14 @@ class CloudHeightEmulatorProcessor:
         output_padded_cloud /= torch.clamp(count_map, min=1.0)
 
         # Crop to original size
-        # Since output_padded[0] <-> orig[0], we just take :H, :W
-        output_full = output_padded[:, :H, :W]*20_000
+        output_full = output_padded[:, :H, :W] * 20_000
         output_full_cloud = output_padded_cloud[:, :H, :W]
 
         return output_full.cpu().numpy(), output_full_cloud.cpu().numpy()
 
 
 if __name__ == "__main__":
+    import time
     scene = Sentinel2Scene()
     scene.read(
         "/data/CTH_emulator_dataset/Fiji/Sentinel-2/MSI/L1C/2024/01/24/S2B_MSIL1C_20240124T232839_N0510_R044_T58LDN_20240125T002811.SAFE/"
@@ -279,7 +297,10 @@ if __name__ == "__main__":
         "/home/paul/clouds-decoded/my_analysis/configs/cloud_height_emulator.yaml"
     )
     processor = CloudHeightEmulatorProcessor(config)
+    start = time.time()
     result = processor.process(scene)
+    end = time.time()
+    print(f"Inference time: {end - start}")
     print(result.data.shape)
     print(result.data.min())
     print(result.data.max())
@@ -298,7 +319,7 @@ if __name__ == "__main__":
         if band_data.shape != target_shape:
             band_data = resize(band_data, target_shape, preserve_range=True, order=1).astype(np.float32)
         input_bands.append(band_data)
-    ice_image = np.stack([input_bands[0]/0.18635, input_bands[1]/0.21484999, input_bands[2] / 0.6243],  # B12, B11, B4, hard coded max values
+    ice_image = np.stack([input_bands[0]/0.18635, input_bands[1]/0.21484999, input_bands[2] / 0.6243],  # B12, B11, B4, hard coded max values change to better values
                              0)
     ice_image = np.moveaxis(ice_image, 0, 2)
     ax[0].imshow(ice_image)

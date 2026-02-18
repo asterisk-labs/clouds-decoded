@@ -415,6 +415,7 @@ def full_workflow(
     output_dir: str = typer.Option("output", help="Directory for outputs"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
     mask_method: str = typer.Option("senseiv2", help="Mask method: 'senseiv2' or 'threshold'"),
+    use_emulator: bool = typer.Option(False, help="Use Deep Learning Emulator for height retrieval"),
     config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides defaults)"),
 ):
     """
@@ -454,7 +455,10 @@ def full_workflow(
 
     # Build configs
     cloud_mask_config = CloudMaskConfig(method=mask_method, **mask_cfg_dict)
-    cloud_height_config = CloudHeightConfig(**height_cfg_dict)
+    if use_emulator:
+        cloud_height_config = CloudHeightEmulatorConfig(**height_cfg_dict)
+    else:
+        cloud_height_config = CloudHeightConfig(**height_cfg_dict)
     albedo_config = AlbedoEstimatorConfig(method="polynomial", **albedo_cfg_dict)
     refocus_config = RefocusConfig(**refocus_cfg_dict)
 
@@ -478,6 +482,7 @@ def full_workflow(
         scene, cloud_height_config,
         output_path=str(out / "cloud_height.tif"),
         cloud_mask=mask_result,
+        use_emulator=use_emulator,
     )
 
     # Step 3: Albedo (uses cloud mask for clear-sky polynomial fit)
@@ -525,6 +530,7 @@ def project_init(
     project_dir: str = typer.Argument(..., help="Directory for the new project"),
     name: Optional[str] = typer.Option(None, help="Project name (defaults to directory name)"),
     pipeline: str = typer.Option("full-workflow", help="Pipeline type"),
+    use_emulator: bool = typer.Option(False, help="Use emulator for cloud height retrieval"),
     clone: Optional[str] = typer.Option(None, help="Clone configs from an existing project directory"),
 ):
     """
@@ -545,6 +551,7 @@ def project_init(
             name=name,
             pipeline=pipeline,
             clone_from=clone,
+            use_emulator=use_emulator,
         )
         logger.info(f"\nEdit configs in {project.configs_dir}/ then run:")
         logger.info(f"  clouds-decoded project run {project_dir}")
