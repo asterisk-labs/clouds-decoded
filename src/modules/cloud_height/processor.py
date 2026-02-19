@@ -210,7 +210,7 @@ class CloudHeightProcessor:
         retrievals = []
         retrieved_coords = []
         for centre, coord in zip(centres, extracted_coords):
-            if brightness_mask and mask[centre, centre_x] == 0:
+            if mask is not None and mask[centre, centre_x] == 0:
                 continue
             
             # Call to _correlateAtHeights is now cleaner
@@ -366,6 +366,10 @@ class CloudHeightProcessor:
         
         final_gridded_heights = final_gridded_heights.astype(np.float32)
         final_gridded_heights[all_nan_mask] = np.nan
-        
+
+        # Mark zero-height pixels as invalid — height=0 is the search lower
+        # bound, not a physically meaningful cloud height.
+        final_gridded_heights[final_gridded_heights <= 0] = np.nan
+
         # Reshape to grid
         return final_gridded_heights.reshape(grid_y.shape)

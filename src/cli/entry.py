@@ -10,6 +10,7 @@ import logging
 # imported lazily inside the functions that need them so that
 # --help / autocomplete stay fast.
 from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
+from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
 from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
 from clouds_decoded.modules.refocus.config import RefocusConfig
@@ -100,17 +101,26 @@ def run_cloud_mask(
 
 def run_cloud_height(
     scene: Sentinel2Scene,
-    config: CloudHeightConfig,
+    config: Union[CloudHeightConfig, CloudHeightEmulatorConfig],
     output_path: Optional[str] = None,
     cloud_mask: Optional[Union[CloudMaskData, str, Path]] = None,
+    use_emulator: bool = False,
 ) -> CloudHeightGridData:
     """Run cloud height retrieval with explicit config."""
-    from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
+    logger.info(f"Processing Cloud Height (Emulator: {use_emulator})...")
 
-    logger.info("Processing Cloud Height...")
+    if use_emulator:
+        if not isinstance(config, CloudHeightEmulatorConfig):
+             logger.warning("Config is not CloudHeightEmulatorConfig but use_emulator=True. Instantiating default emulator config.")
+             config = CloudHeightEmulatorConfig()
 
-    processor = CloudHeightProcessor(config)
-    result = processor.process(scene, cloud_mask=cloud_mask)
+        from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
+        processor = CloudHeightEmulatorProcessor(config)
+        result = processor.process(scene, cloud_mask=cloud_mask)
+    else:
+        from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
+        processor = CloudHeightProcessor(config)
+        result = processor.process(scene, cloud_mask=cloud_mask)
 
     if output_path:
         result.write(output_path)
@@ -264,16 +274,23 @@ def cloud_height(
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
     mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    use_emulator: bool = typer.Option(False, help="Use Deep Learning Emulator for height retrieval"),
 ):
     """Calculate Cloud Height from Sentinel-2 data."""
     scene = _load_scene(scene_path, crop_window)
 
     if config_path:
-        config = CloudHeightConfig.from_yaml(config_path)
+        if use_emulator:
+            config = CloudHeightEmulatorConfig.from_yaml(config_path)
+        else:
+            config = CloudHeightConfig.from_yaml(config_path)
     else:
-        config = CloudHeightConfig()
+        if use_emulator:
+            config = CloudHeightEmulatorConfig()
+        else:
+            config = CloudHeightConfig()
 
-    run_cloud_height(scene, config, output_path, cloud_mask=mask_path)
+    run_cloud_height(scene, config, output_path, cloud_mask=mask_path, use_emulator=use_emulator)
 
 
 @app.command()
@@ -397,6 +414,7 @@ def full_workflow(
     output_dir: str = typer.Option("output", help="Directory for outputs"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
     mask_method: str = typer.Option("senseiv2", help="Mask method: 'senseiv2' or 'threshold'"),
+    use_emulator: bool = typer.Option(False, help="Use Deep Learning Emulator for height retrieval"),
     config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides defaults)"),
 ):
     """
@@ -436,7 +454,10 @@ def full_workflow(
 
     # Build configs
     cloud_mask_config = CloudMaskConfig(method=mask_method, **mask_cfg_dict)
-    cloud_height_config = CloudHeightConfig(**height_cfg_dict)
+    if use_emulator:
+        cloud_height_config = CloudHeightEmulatorConfig(**height_cfg_dict)
+    else:
+        cloud_height_config = CloudHeightConfig(**height_cfg_dict)
     albedo_config = AlbedoEstimatorConfig(method="polynomial", **albedo_cfg_dict)
     refocus_config = RefocusConfig(**refocus_cfg_dict)
 
@@ -460,6 +481,7 @@ def full_workflow(
         scene, cloud_height_config,
         output_path=str(out / "cloud_height.tif"),
         cloud_mask=mask_result,
+        use_emulator=use_emulator,
     )
 
     # Step 3: Albedo (uses cloud mask for clear-sky polynomial fit)
@@ -507,6 +529,7 @@ def project_init(
     project_dir: str = typer.Argument(..., help="Directory for the new project"),
     name: Optional[str] = typer.Option(None, help="Project name (defaults to directory name)"),
     pipeline: str = typer.Option("full-workflow", help="Pipeline type"),
+    use_emulator: bool = typer.Option(False, help="Use emulator for cloud height retrieval"),
     clone: Optional[str] = typer.Option(None, help="Clone configs from an existing project directory"),
 ):
     """
@@ -527,6 +550,7 @@ def project_init(
             name=name,
             pipeline=pipeline,
             clone_from=clone,
+            use_emulator=use_emulator,
         )
         logger.info(f"\nEdit configs in {project.configs_dir}/ then run:")
         logger.info(f"  clouds-decoded project run {project_dir}")

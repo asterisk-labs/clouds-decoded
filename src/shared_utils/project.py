@@ -65,6 +65,7 @@ class ProjectConfig(BaseModel):
     )
     scenes: List[str] = Field(default_factory=list, description="Absolute paths to .SAFE directories")
     created_at: str = Field(default="", description="ISO timestamp of project creation")
+    use_emulator: bool = Field(default=False, description="Use emulator for cloud height retrieval")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "ProjectConfig":
@@ -182,6 +183,7 @@ class Project:
         name: Optional[str] = None,
         pipeline: str = "full-workflow",
         clone_from: Optional[str] = None,
+        use_emulator: bool = False,
     ) -> "Project":
         """Create a new project directory with default config YAMLs.
 
@@ -209,6 +211,7 @@ class Project:
                 )
             source_project = cls(source_dir)
             pipeline = source_project.config.pipeline
+            use_emulator = source_project.config.use_emulator
 
         project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -216,6 +219,7 @@ class Project:
             name=name,
             pipeline=pipeline,
             created_at=datetime.now().isoformat(),
+            use_emulator=use_emulator,
         )
         config.to_yaml(project_dir / "project.yaml")
 
@@ -319,6 +323,7 @@ class Project:
         """Load the appropriate config object for a step."""
         from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
         from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
+        from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
         from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
         from clouds_decoded.modules.refocus.config import RefocusConfig
         from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
@@ -328,6 +333,8 @@ class Project:
         if step == "cloud_mask":
             return CloudMaskConfig.from_yaml(config_path)
         elif step == "cloud_height":
+            if self.config.use_emulator:
+                return CloudHeightEmulatorConfig.from_yaml(config_path)
             return CloudHeightConfig.from_yaml(config_path)
         elif step == "albedo":
             return AlbedoEstimatorConfig.from_yaml(config_path)
@@ -346,6 +353,7 @@ class Project:
         """Write default YAML configs for each module."""
         from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
         from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
+        from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
         from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
         from clouds_decoded.modules.refocus.config import RefocusConfig
         from clouds_decoded.modules.refl2prop.config import Refl2PropConfig
@@ -353,7 +361,10 @@ class Project:
         self.configs_dir.mkdir(parents=True, exist_ok=True)
 
         CloudMaskConfig().to_yaml(str(self.configs_dir / "cloud_mask.yaml"))
-        CloudHeightConfig().to_yaml(str(self.configs_dir / "cloud_height.yaml"))
+        if self.config.use_emulator:
+            CloudHeightEmulatorConfig().to_yaml(str(self.configs_dir / "cloud_height.yaml"))
+        else:
+            CloudHeightConfig().to_yaml(str(self.configs_dir / "cloud_height.yaml"))
         AlbedoEstimatorConfig().to_yaml(str(self.configs_dir / "albedo.yaml"))
         RefocusConfig().to_yaml(str(self.configs_dir / "refocus.yaml"))
         Refl2PropConfig().to_yaml(
@@ -751,6 +762,7 @@ class Project:
                 scene, step_config,
                 output_path=output_path,
                 cloud_mask=mask_result,
+                use_emulator=self.config.use_emulator,
             )
             result.metadata.provenance = provenance.model_dump()
             result.write(output_path)

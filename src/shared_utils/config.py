@@ -47,6 +47,8 @@ class BaseProcessorConfig(BaseModel):
         config_path.parent.mkdir(parents=True, exist_ok=True)
         computed = type(self).model_computed_fields
         exclude = set(computed.keys()) if computed else set()
-        data = self.model_dump(exclude=exclude)
+        # Use mode='json' to ensure tuples are converted to lists, 
+        # avoiding !!python/tuple tags that safe_load cannot handle.
+        data = self.model_dump(exclude=exclude, mode='json')
         with open(config_path, 'w') as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
