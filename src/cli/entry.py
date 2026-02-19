@@ -110,14 +110,13 @@ def run_cloud_height(
     logger.info(f"Processing Cloud Height (Emulator: {use_emulator})...")
 
     if use_emulator:
-        # Emulator does not use cloud mask argument in process()
         if not isinstance(config, CloudHeightEmulatorConfig):
              logger.warning("Config is not CloudHeightEmulatorConfig but use_emulator=True. Instantiating default emulator config.")
              config = CloudHeightEmulatorConfig()
-        
+
         from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
         processor = CloudHeightEmulatorProcessor(config)
-        result = processor.process(scene)
+        result = processor.process(scene, cloud_mask=cloud_mask)
     else:
         from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
         processor = CloudHeightProcessor(config)

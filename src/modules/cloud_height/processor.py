@@ -210,7 +210,7 @@ class CloudHeightProcessor:
         retrievals = []
         retrieved_coords = []
         for centre, coord in zip(centres, extracted_coords):
-            if brightness_mask and mask[centre, centre_x] == 0:
+            if mask is not None and mask[centre, centre_x] == 0:
                 continue
             
             # Call to _correlateAtHeights is now cleaner
