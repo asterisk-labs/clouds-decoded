@@ -12,7 +12,6 @@ class CloudHeightGridData(GeoRasterData):
     Values represent cloud top height in meters.
     """
     metadata: CloudHeightMetadata = Field(default_factory=CloudHeightMetadata)
-    cloud_mask: Optional[np.ndarray] = Field(default=None, description="Binary cloud mask (1=cloud, 0=clear)")
     
     def validate(self) -> bool:
         """Validate that heights are non-negative."""

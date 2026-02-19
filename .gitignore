@@ -207,6 +207,9 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Model weights
+*.pth
+
 # Internal stuff
 scratch*/
 plots/

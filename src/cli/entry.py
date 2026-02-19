@@ -11,7 +11,6 @@ import logging
 # --help / autocomplete stay fast.
 from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
-from clouds_decoded.modules.refl2prop.processor import CloudPropertyInverter, ShadingPropertyInverter
 from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
 from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
 from clouds_decoded.modules.refocus.config import RefocusConfig
@@ -120,6 +119,7 @@ def run_cloud_height(
         processor = CloudHeightEmulatorProcessor(config)
         result = processor.process(scene)
     else:
+        from clouds_decoded.modules.cloud_height.processor import CloudHeightProcessor
         processor = CloudHeightProcessor(config)
         result = processor.process(scene, cloud_mask=cloud_mask)
 
