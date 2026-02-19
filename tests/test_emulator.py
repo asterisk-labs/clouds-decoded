@@ -6,7 +6,10 @@ from pathlib import Path
 import yaml
 from rasterio.transform import Affine
 
-from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
+from clouds_decoded.modules.cloud_height_emulator.processor import (
+    CloudHeightEmulatorProcessor,
+    HeightEmulatorNormWrapper,
+)
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData, AlbedoData
 from clouds_decoded.project import Project
@@ -118,6 +121,50 @@ def test_emulator_no_cloud_mask_on_output(mock_unet, mock_scene):
     result = processor.process(mock_scene)
 
     assert not hasattr(result, 'cloud_mask') or getattr(result, 'cloud_mask', None) is None
+
+
+def test_height_emulator_norm_wrapper():
+    """Verify HeightEmulatorNormWrapper normalize/denormalize and state_dict roundtrip."""
+    from clouds_decoded.modules.cloud_height_emulator.resunet import Res34_Unet
+
+    max_reflectance = 20_000.0
+    scale = max_reflectance / 40_000  # 0.5
+
+    core = Res34_Unet(in_channels=6, out_channels=[1, 1],
+                      heads=["regression", "segmentation"],
+                      heads_hidden_channels=[48, 48], pretrained=False)
+
+    wrapper = HeightEmulatorNormWrapper(
+        model=core,
+        input_stats={"min": [0.0], "max": [scale]},
+        output_stats={"min": [0.0], "max": [max_reflectance]},
+    )
+
+    # Check normalize_input: reflectance * 0.5
+    x = torch.tensor([0.4, 0.8, 1.0])
+    normed = wrapper.normalize_input(x)
+    assert torch.allclose(normed, x * scale)
+
+    # Check denormalize_output: y * max_reflectance
+    y = torch.tensor([0.1, 0.5])
+    denormed = wrapper.denormalize_output(y)
+    assert torch.allclose(denormed, y * max_reflectance)
+
+    # State dict roundtrip — buffers must persist
+    sd = wrapper.state_dict()
+    assert "in_max" in sd
+    assert "out_max" in sd
+
+    wrapper2 = HeightEmulatorNormWrapper(
+        model=Res34_Unet(in_channels=6, out_channels=[1, 1],
+                         heads=["regression", "segmentation"],
+                         heads_hidden_channels=[48, 48], pretrained=False),
+        input_stats={"min": [0.0], "max": [0.0]},  # dummy values
+        output_stats={"min": [0.0], "max": [0.0]},
+    )
+    wrapper2.load_state_dict(sd)
+    assert torch.allclose(wrapper2.in_max, torch.tensor([scale]))
+    assert torch.allclose(wrapper2.out_max, torch.tensor([max_reflectance]))
 
 
 # ---------------------------------------------------------------------------

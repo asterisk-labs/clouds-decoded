@@ -1,0 +1,44 @@
+output_dir: null
+n_workers: 1
+debug_mode: false
+method: standard
+bands:
+- B01
+- B02
+- B03
+- B04
+- B05
+- B06
+- B07
+- B08
+- B8A
+- B11
+- B12
+model_path: /home/ali/projects/clouds-decoded/src/modules/refl2prop/models/model.pth
+return_uncertainty: true
+mask_invalid_height: true
+batch_size: 32768
+output_resolution: 20
+output_size: 4
+norm_height_offset: 0.0
+norm_height_scale: 1000.0
+default_albedo:
+  B01: 0.03
+  B02: 0.05
+  B03: 0.03
+  B04: 0.03
+  B05: 0.02
+  B06: 0.02
+  B07: 0.02
+  B08: 0.02
+  B8A: 0.02
+  B09: 0.02
+  B10: 0.0
+  B11: 0.02
+  B12: 0.02
+default_shading_ratio: 0.5
+output_feature_names:
+- tau
+- ice_liq_ratio
+- r_eff_liq
+- r_eff_ice
