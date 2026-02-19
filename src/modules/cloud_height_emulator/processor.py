@@ -123,8 +123,9 @@ class CloudHeightEmulatorProcessor:
         if output_data.ndim == 3:
             output_data = output_data[0]
 
-        # Height = 0 means no valid cloud height (clear sky or untrusted)
-        output_data = np.clip(output_data, 0, None)
+        # Mark invalid pixels (zero or negative height) as NaN to match
+        # the original cloud height processor's convention.
+        output_data[output_data <= 0] = np.nan
 
         meta = CloudHeightMetadata(
             processing_config=self.config.model_dump()
