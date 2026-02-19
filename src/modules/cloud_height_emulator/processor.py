@@ -13,11 +13,41 @@ import time
 
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeightMetadata, CloudMaskData
 
+from clouds_decoded.normalization import NormalizationWrapper
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.modules.cloud_height_emulator.resunet import Res34_Unet
 
 
 logger = logging.getLogger(__name__)
+
+
+class HeightEmulatorNormWrapper(NormalizationWrapper):
+    """Wraps Res34_Unet with linear input/output scaling.
+
+    Unlike the min-max [-1, 1] convention used by MLP wrappers, the
+    height emulator uses simple linear scaling:
+
+    * **Input**:  ``reflectance * scale_factor``  (scale stored in ``in_max``).
+    * **Output**: ``model_regression * max_reflectance``  (stored in ``out_max``).
+
+    The regression head is denormalized; the segmentation logit is left
+    untouched for downstream sigmoid thresholding.
+    """
+
+    def normalize_input(self, x: torch.Tensor) -> torch.Tensor:
+        """Scale reflectance by a fixed factor (``in_max``)."""
+        return x * self.in_max
+
+    def denormalize_output(self, y: torch.Tensor) -> torch.Tensor:
+        """Scale model regression output to height in metres."""
+        return y * self.out_max
+
+    def forward(self, x: torch.Tensor) -> dict:
+        """Normalize input, run model, denormalize regression output."""
+        outputs = self.model(self.normalize_input(x))
+        if isinstance(outputs, dict):
+            outputs["regression"] = self.denormalize_output(outputs["regression"])
+        return outputs
 
 
 class WindowDataset(Dataset):
@@ -69,7 +99,7 @@ class CloudHeightEmulatorProcessor:
     def _load_model(self):
         if self.model is None:
             logger.info(f"Loading Cloud Height Emulator model on {self.device}")
-            self.model = Res34_Unet(
+            core = Res34_Unet(
                 in_channels=self.config.in_channels,
                 out_channels=[1, 1],
                 heads=["regression", "segmentation"],
@@ -77,27 +107,51 @@ class CloudHeightEmulatorProcessor:
                 pretrained=False
             )
 
+            scale_factor = self.config.max_reflectance / 40_000
+            self.model = HeightEmulatorNormWrapper(
+                model=core,
+                input_stats={"min": [0.0], "max": [scale_factor]},
+                output_stats={"min": [0.0], "max": [self.config.max_reflectance]},
+            )
+
             if self.config.pth_path:
                 pth_path = Path(self.config.pth_path)
                 if pth_path.exists():
                     logger.info(f"Loading checkpoint from {pth_path}")
                     state_dict = torch.load(pth_path, map_location=self.device)
-                    # Strip 'model.' prefix if checkpoint was saved from a
-                    # wrapper (e.g. DataParallel / Lightning).
-                    if any(k.startswith("model.") for k in state_dict.keys()):
-                        state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
-                    result = self.model.load_state_dict(state_dict, strict=False)
-                    if result.missing_keys:
-                        raise ValueError(
-                            f"Missing keys: {result.missing_keys}. "
-                            "Did you use the correct checkpoint?"
+
+                    # Detect checkpoint format: wrapper (keys include
+                    # normalization buffers) vs raw Res34_Unet weights.
+                    has_wrapper_keys = any(
+                        k in state_dict for k in ("in_min", "in_max", "out_min", "out_max")
+                    )
+
+                    if has_wrapper_keys:
+                        # Full wrapper checkpoint — load into self.model
+                        self.model.load_state_dict(state_dict, strict=True)
+                    else:
+                        # Legacy raw checkpoint — strip 'model.' prefix
+                        # (e.g. from DataParallel / Lightning) and load
+                        # into the inner Res34_Unet only.
+                        if any(k.startswith("model.") for k in state_dict.keys()):
+                            state_dict = {
+                                k.replace("model.", ""): v
+                                for k, v in state_dict.items()
+                            }
+                        result = self.model.model.load_state_dict(
+                            state_dict, strict=False,
                         )
-                    if result.unexpected_keys:
-                        raise ValueError(
-                            f"Unexpected keys: {result.unexpected_keys}. "
-                            "Did you use the correct checkpoint?"
-                        )
-                    self.model.load_state_dict(state_dict, strict=True)
+                        if result.missing_keys:
+                            raise ValueError(
+                                f"Missing keys: {result.missing_keys}. "
+                                "Did you use the correct checkpoint?"
+                            )
+                        if result.unexpected_keys:
+                            raise ValueError(
+                                f"Unexpected keys: {result.unexpected_keys}. "
+                                "Did you use the correct checkpoint?"
+                            )
+                        self.model.model.load_state_dict(state_dict, strict=True)
                 else:
                     logger.warning(f"Checkpoint {pth_path} not found. Using initialized weights.")
             else:
@@ -147,8 +201,6 @@ class CloudHeightEmulatorProcessor:
             data_list.append(band_data)
 
         input_stack = np.stack(data_list, axis=0)  # (C, H, W)
-        # Rescale from quantification range to training range
-        input_stack = input_stack * (self.config.max_reflectance / 40_000)
 
         if input_stack.shape[0] != self.config.in_channels:
             logger.warning(f"Input channel count {input_stack.shape[0]} != config.in_channels {self.config.in_channels}.")
@@ -334,8 +386,8 @@ class CloudHeightEmulatorProcessor:
         # Average overlapping windows
         output_padded /= torch.clamp(count_map, min=1.0)
 
-        # Crop to original size and rescale back to metres
-        output_full = output_padded[:, :H, :W] * self.config.max_reflectance
+        # Crop to original size (denormalization already handled by wrapper)
+        output_full = output_padded[:, :H, :W]
 
         return output_full.cpu().numpy()
 
