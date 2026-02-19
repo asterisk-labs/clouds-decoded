@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 import pyproj
 import numpy as np
 import xml.etree.ElementTree as ET
@@ -9,6 +9,7 @@ from rasterio.windows import Window
 from typing import Optional, Any, Dict, List, Tuple, Union, ClassVar
 
 from .base import Data
+from .band import Sentinel2Band, BandDict, BandUnit
 
 logger = logging.getLogger(__name__)
 from ..constants import BANDS, BAND_RESOLUTIONS
@@ -20,8 +21,10 @@ class Sentinel2Scene(Data):
     # data types.
 
     scene_directory: Optional[Path] = None
-    bands: Dict[str, Any] = Field(default_factory=dict)
+    bands: Dict[str, Any] = Field(default_factory=BandDict)
     footprints: Dict[str, Any] = Field(default_factory=dict)
+
+    _band_cache: Dict[tuple, Sentinel2Band] = PrivateAttr(default_factory=dict)
     sun_zenith: Optional[float] = None
     sun_azimuth: Optional[float] = None
     view_zenith: Optional[float] = None
@@ -55,6 +58,14 @@ class Sentinel2Scene(Data):
     METADATA_TL: ClassVar[str] = "MTD_TL.xml"
     METADATA_MTD: ClassVar[str] = "MTD_MSIL1C.xml"
 
+    def model_post_init(self, __context: Any) -> None:
+        """Ensure bands is always a BandDict for auto-wrapping."""
+        if not isinstance(self.bands, BandDict):
+            bd = BandDict()
+            for k, v in self.bands.items():
+                bd[k] = v
+            object.__setattr__(self, 'bands', bd)
+
     def read(self, filepath: Union[str, Path], bands: List[str] = None, crop_window: Tuple[int, int, int, int] = None):
         """
         Read data from a Sentinel-2 scene directory.
@@ -69,7 +80,10 @@ class Sentinel2Scene(Data):
         if bands is None:
              bands = BANDS
              
-        self.bands = self._get_bands(self.scene_directory, bands, crop_window)
+        # Use object.__setattr__ to bypass Pydantic's Dict[str, Any] coercion
+        # which would strip BandDict to plain dict
+        object.__setattr__(self, 'bands', self._get_bands(self.scene_directory, bands, crop_window))
+        self._band_cache.clear()
 
         # Get Georeferencing from reference band (B02)
         scene_width, scene_height = 0, 0
@@ -170,24 +184,166 @@ class Sentinel2Scene(Data):
              
         return (float(width * resolution), float(height * resolution))
 
-    def get_band(self, band_name: str, reflectance: bool = True) -> np.ndarray:
+    def get_band(
+        self,
+        band_name: str,
+        reflectance: bool = True,
+        resolution: Optional[int] = None,
+        cache: bool = True,
+    ) -> np.ndarray:
         """Retrieve a band array, optionally converted to TOA reflectance.
 
+        Derived arrays are cached on the scene so repeated calls with the
+        same parameters return the cached result without recomputation.
+
         Args:
-            band_name: Band identifier (e.g. 'B02', 'B8A').
+            band_name: Band identifier (e.g. ``'B02'``, ``'B8A'``).
             reflectance: If True, return TOA reflectance as float32.
                 If False, return raw DN values as stored.
+            resolution: Target pixel size in metres. If ``None`` (default),
+                return at the band's native resolution.
+            cache: If True (default), store the derived band in an internal
+                cache for fast repeated access.  If False, skip storing but
+                still return an already-cached result if one exists.
 
         Returns:
             2-D numpy array of the band data.
         """
         if band_name not in self.bands:
             raise KeyError(f"Band '{band_name}' not loaded. Available: {list(self.bands.keys())}")
-        data = self.bands[band_name]
-        if not reflectance:
-            return data
-        offset = self.radio_add_offset.get(band_name, 0.0)
-        return (data.astype(np.float32) + offset) / self.quantification_value
+
+        raw = self.bands[band_name]
+
+        # Normalise to Sentinel2Band (defensive — should already be one via BandDict)
+        if isinstance(raw, Sentinel2Band):
+            root = raw
+        else:
+            root = Sentinel2Band(
+                name=band_name,
+                data=raw,
+                native_resolution=BAND_RESOLUTIONS.get(band_name),
+            )
+
+        # Fast path: raw DN at native resolution — no derivation needed
+        if not reflectance and resolution is None:
+            return root.data
+
+        # Build a cache key that includes calibration params for correctness
+        offset = self.radio_add_offset.get(band_name, 0.0) if reflectance else 0.0
+        cache_key = (band_name, reflectance, resolution, offset, self.quantification_value)
+
+        # Always check the cache — no point recomputing what's already in memory
+        if cache_key in self._band_cache:
+            return self._band_cache[cache_key].data
+
+        current = root
+        if reflectance:
+            current = current.to_reflectance(offset, self.quantification_value)
+        if resolution is not None:
+            current = current.to_resolution(resolution)
+
+        if cache:
+            self._band_cache[cache_key] = current
+
+        return current.data
+
+    def get_bands(
+        self,
+        band_names: Optional[List[str]] = None,
+        reflectance: bool = True,
+        resolution: Optional[int] = None,
+        cache: bool = True,
+        n_workers: int = 1,
+    ) -> List[Sentinel2Band]:
+        """Retrieve multiple bands as ``Sentinel2Band`` objects.
+
+        Args:
+            band_names: Band identifiers to retrieve. Defaults to all loaded bands.
+            reflectance: If True, convert to TOA reflectance.
+            resolution: Target pixel size in metres, or None for native.
+            cache: If True (default), store derived bands in an internal
+                cache.  If False, skip storing but still return
+                already-cached results if they exist.
+            n_workers: Number of threads for parallel band evaluation.
+                When > 1, uncached bands are computed concurrently using a
+                thread pool (numpy/skimage release the GIL, so threads give
+                true parallelism for the heavy work).  Use ``-1`` to
+                auto-size the pool to the number of uncached bands.
+                Defaults to 1 (sequential).
+
+        Returns:
+            List of ``Sentinel2Band`` objects (with evaluated data).
+        """
+        if band_names is None:
+            band_names = list(self.bands.keys())
+
+        # First pass: resolve cache hits and build derivation chains for misses.
+        # result[i] is filled immediately for cache hits; misses are collected
+        # in to_compute for (possibly parallel) evaluation.
+        result: List[Optional[Sentinel2Band]] = [None] * len(band_names)
+        to_compute: List[Tuple[int, Optional[tuple], Sentinel2Band]] = []  # (index, cache_key, band)
+
+        for i, name in enumerate(band_names):
+            if name not in self.bands:
+                raise KeyError(f"Band '{name}' not loaded. Available: {list(self.bands.keys())}")
+
+            raw = self.bands[name]
+            if isinstance(raw, Sentinel2Band):
+                root = raw
+            else:
+                root = Sentinel2Band(
+                    name=name,
+                    data=raw,
+                    native_resolution=BAND_RESOLUTIONS.get(name),
+                )
+
+            if not reflectance and resolution is None:
+                result[i] = root
+                continue
+
+            offset = self.radio_add_offset.get(name, 0.0) if reflectance else 0.0
+            cache_key = (name, reflectance, resolution, offset, self.quantification_value)
+
+            if cache_key in self._band_cache:
+                result[i] = self._band_cache[cache_key]
+                continue
+
+            current = root
+            if reflectance:
+                current = current.to_reflectance(offset, self.quantification_value)
+            if resolution is not None:
+                current = current.to_resolution(resolution)
+
+            to_compute.append((i, cache_key, current))
+
+        # Second pass: evaluate uncached bands (sequential or parallel).
+        if to_compute:
+            if n_workers == -1:
+                n_workers = len(to_compute)
+
+            if n_workers > 1:
+                from concurrent.futures import ThreadPoolExecutor
+
+                def _evaluate(band: Sentinel2Band) -> Sentinel2Band:
+                    _ = band.data  # force lazy evaluation
+                    return band
+
+                bands_to_eval = [band for _, _, band in to_compute]
+                with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                    evaluated = list(pool.map(_evaluate, bands_to_eval))
+
+                for (idx, cache_key, _), band in zip(to_compute, evaluated):
+                    result[idx] = band
+                    if cache:
+                        self._band_cache[cache_key] = band
+            else:
+                for idx, cache_key, band in to_compute:
+                    _ = band.data  # force lazy evaluation
+                    result[idx] = band
+                    if cache:
+                        self._band_cache[cache_key] = band
+
+        return result
 
     def write(self, filepath: str):
 
@@ -242,7 +398,7 @@ class Sentinel2Scene(Data):
 
     def _get_bands(self, scene_directory: Path, bands: List[str], crop_window=None):
         paths = self._get_band_paths(scene_directory, bands)
-        bands_data = {}
+        bands_data = BandDict()
         for band, path in paths.items():
             with rio.open(path) as src:
                 if crop_window:
