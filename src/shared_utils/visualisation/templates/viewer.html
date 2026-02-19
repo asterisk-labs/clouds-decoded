@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clouds Decoded Viewer</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; height: 100vh; }
+
+  /* Sidebar */
+  #sidebar {
+    width: 280px;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    padding: 16px;
+    overflow-y: auto;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  #sidebar h1 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: #7b8cde; margin-bottom: 4px; }
+  #sidebar h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; margin-bottom: 8px; }
+
+  .panel { background: #16213e; border-radius: 8px; padding: 12px; }
+  .panel label { display: block; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: background 0.15s; }
+  .panel label:hover { background: #1a2744; }
+  .panel input[type="radio"] { margin-right: 8px; accent-color: #7b8cde; }
+
+  /* Sliders */
+  .slider-group { margin-bottom: 8px; }
+  .slider-group .slider-label { display: flex; justify-content: space-between; font-size: 12px; color: #aaa; margin-bottom: 2px; }
+  .slider-group input[type="range"] {
+    width: 100%;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #2a3a5c;
+    border-radius: 2px;
+    outline: none;
+  }
+  .slider-group input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: #7b8cde;
+    cursor: pointer;
+  }
+
+  /* Basemap selector */
+  select {
+    width: 100%;
+    padding: 6px 8px;
+    background: #2a3a5c;
+    color: #e0e0e0;
+    border: 1px solid #3a4a6c;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  /* Map */
+  #map { flex: 1; }
+
+  /* Info bar */
+  #info {
+    position: absolute;
+    bottom: 8px;
+    left: 288px;
+    background: rgba(26,26,46,0.85);
+    color: #ccc;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  #rgb-controls { display: none; }
+  #rgb-controls.visible { display: block; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div>
+    <h1>Clouds Decoded</h1>
+  </div>
+
+  <!-- Layer selector -->
+  <div class="panel">
+    <h2>Layers</h2>
+    <div id="layer-list"></div>
+  </div>
+
+  <!-- Basemap -->
+  <div class="panel">
+    <h2>Basemap</h2>
+    <select id="basemap-select">
+      <option value="osm">OpenStreetMap</option>
+      <option value="satellite">Satellite (ESRI)</option>
+      <option value="none">None</option>
+    </select>
+  </div>
+
+  <!-- Opacity -->
+  <div class="panel">
+    <h2>Layer Opacity</h2>
+    <div class="slider-group">
+      <div class="slider-label"><span>Opacity</span><span id="opacity-val">100%</span></div>
+      <input type="range" id="opacity-slider" min="0" max="100" value="100" />
+    </div>
+  </div>
+
+  <!-- RGB controls (hidden unless RGB layer active) -->
+  <div id="rgb-controls" class="panel">
+    <h2>RGB Contrast</h2>
+    <div class="slider-group">
+      <div class="slider-label"><span>Gamma</span><span id="gamma-val">0.70</span></div>
+      <input type="range" id="gamma-slider" min="10" max="300" value="70" />
+    </div>
+    <div class="slider-group">
+      <div class="slider-label"><span>Gain</span><span id="gain-val">1.00</span></div>
+      <input type="range" id="gain-slider" min="10" max="500" value="100" />
+    </div>
+    <div class="slider-group">
+      <div class="slider-label"><span>Offset</span><span id="offset-val">0.00</span></div>
+      <input type="range" id="offset-slider" min="-200" max="200" value="0" />
+    </div>
+  </div>
+</div>
+
+<div id="map"></div>
+<div id="info"></div>
+
+<script>
+const BASEMAPS = {
+  osm: { tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], attribution: "&copy; OpenStreetMap contributors", tileSize: 256 },
+  satellite: { tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], attribution: "&copy; Esri", tileSize: 256 },
+};
+
+let map, layers = [], activeLayer = null, activeSourceId = null, activeLayerId = null;
+let initialZoomDone = false;
+
+// Initialise map
+map = new maplibregl.Map({
+  container: "map",
+  style: {
+    version: 8,
+    sources: {
+      osm: { type: "raster", tiles: BASEMAPS.osm.tiles, tileSize: 256, attribution: BASEMAPS.osm.attribution },
+    },
+    layers: [{ id: "basemap", type: "raster", source: "osm" }],
+  },
+  center: [0, 0],
+  zoom: 2,
+  attributionControl: true,
+});
+
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+map.addControl(new maplibregl.ScaleControl({ maxWidth: 200 }), "bottom-right");
+
+// Coordinate display
+map.on("mousemove", (e) => {
+  const { lng, lat } = e.lngLat;
+  document.getElementById("info").textContent = `Lon: ${lng.toFixed(5)}  Lat: ${lat.toFixed(5)}`;
+});
+
+// Load layer metadata and build UI
+map.on("load", async () => {
+  const resp = await fetch("/layers.json");
+  layers = await resp.json();
+
+  // Zoom to data bounds from the first layer that has them
+  const firstWithBounds = layers.find(l => l.bounds);
+  if (firstWithBounds) {
+    const lngs = firstWithBounds.bounds.map(c => c[0]);
+    const lats = firstWithBounds.bounds.map(c => c[1]);
+    map.fitBounds(
+      [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+      { padding: 40, duration: 0 }
+    );
+  }
+  initialZoomDone = true;
+
+  const list = document.getElementById("layer-list");
+  layers.forEach((layer, i) => {
+    const label = document.createElement("label");
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "layer";
+    radio.value = layer.name;
+    if (i === 0) radio.checked = true;
+    radio.addEventListener("change", () => switchLayer(layer));
+    label.appendChild(radio);
+    label.appendChild(document.createTextNode(layer.label || layer.name));
+    list.appendChild(label);
+  });
+
+  // Show first layer
+  if (layers.length > 0) {
+    switchLayer(layers[0]);
+  }
+});
+
+function switchLayer(layer) {
+  activeLayer = layer;
+
+  // Remove previous overlay
+  if (activeLayerId && map.getLayer(activeLayerId)) map.removeLayer(activeLayerId);
+  if (activeSourceId && map.getSource(activeSourceId)) map.removeSource(activeSourceId);
+
+  // Toggle RGB controls visibility
+  const rgbPanel = document.getElementById("rgb-controls");
+  rgbPanel.className = layer.is_rgb ? "panel visible" : "panel";
+
+  // Set slider values if RGB
+  if (layer.is_rgb && layer.rgb_config) {
+    document.getElementById("gamma-slider").value = Math.round(layer.rgb_config.gamma * 100);
+    document.getElementById("gamma-val").textContent = layer.rgb_config.gamma.toFixed(2);
+    document.getElementById("gain-slider").value = Math.round(layer.rgb_config.gain * 100);
+    document.getElementById("gain-val").textContent = layer.rgb_config.gain.toFixed(2);
+    document.getElementById("offset-slider").value = Math.round(layer.rgb_config.offset * 1000);
+    document.getElementById("offset-val").textContent = layer.rgb_config.offset.toFixed(2);
+  }
+
+  if (!layer.bounds) return;
+
+  const sourceId = "layer-" + layer.name.replace(/\s+/g, "-");
+  const layerId = sourceId + "-raster";
+
+  const url = buildLayerUrl(layer);
+
+  map.addSource(sourceId, {
+    type: "image",
+    url: url,
+    coordinates: layer.bounds,
+  });
+
+  map.addLayer({
+    id: layerId,
+    type: "raster",
+    source: sourceId,
+    paint: { "raster-opacity": parseInt(document.getElementById("opacity-slider").value) / 100 },
+  });
+
+  activeSourceId = sourceId;
+  activeLayerId = layerId;
+}
+
+function buildLayerUrl(layer) {
+  const name = encodeURIComponent(layer.name);
+  let url = `/layer/${name}.png`;
+  if (layer.is_rgb) {
+    const gamma = parseFloat(document.getElementById("gamma-slider").value) / 100;
+    const gain = parseFloat(document.getElementById("gain-slider").value) / 100;
+    const offset = parseFloat(document.getElementById("offset-slider").value) / 1000;
+    url += `?gamma=${gamma}&gain=${gain}&offset=${offset}`;
+  }
+  return url;
+}
+
+// Opacity slider
+document.getElementById("opacity-slider").addEventListener("input", (e) => {
+  const val = parseInt(e.target.value);
+  document.getElementById("opacity-val").textContent = val + "%";
+  if (activeLayerId && map.getLayer(activeLayerId)) {
+    map.setPaintProperty(activeLayerId, "raster-opacity", val / 100);
+  }
+});
+
+// RGB sliders — debounced re-fetch
+let rgbTimeout = null;
+function onRGBChange() {
+  const gamma = parseFloat(document.getElementById("gamma-slider").value) / 100;
+  const gain = parseFloat(document.getElementById("gain-slider").value) / 100;
+  const offset = parseFloat(document.getElementById("offset-slider").value) / 1000;
+  document.getElementById("gamma-val").textContent = gamma.toFixed(2);
+  document.getElementById("gain-val").textContent = gain.toFixed(2);
+  document.getElementById("offset-val").textContent = offset.toFixed(2);
+
+  clearTimeout(rgbTimeout);
+  rgbTimeout = setTimeout(() => {
+    if (activeLayer && activeLayer.is_rgb) {
+      // Re-add the source with new URL to force re-fetch
+      const opacity = parseInt(document.getElementById("opacity-slider").value) / 100;
+      if (activeLayerId && map.getLayer(activeLayerId)) map.removeLayer(activeLayerId);
+      if (activeSourceId && map.getSource(activeSourceId)) map.removeSource(activeSourceId);
+
+      const sourceId = "layer-" + activeLayer.name.replace(/\s+/g, "-");
+      const layerId = sourceId + "-raster";
+      const url = buildLayerUrl(activeLayer);
+
+      map.addSource(sourceId, {
+        type: "image",
+        url: url,
+        coordinates: activeLayer.bounds,
+      });
+      map.addLayer({
+        id: layerId,
+        type: "raster",
+        source: sourceId,
+        paint: { "raster-opacity": opacity },
+      });
+      activeSourceId = sourceId;
+      activeLayerId = layerId;
+    }
+  }, 200);
+}
+
+document.getElementById("gamma-slider").addEventListener("input", onRGBChange);
+document.getElementById("gain-slider").addEventListener("input", onRGBChange);
+document.getElementById("offset-slider").addEventListener("input", onRGBChange);
+
+// Basemap toggle
+document.getElementById("basemap-select").addEventListener("change", (e) => {
+  const val = e.target.value;
+
+  // Remove existing basemap
+  if (map.getLayer("basemap")) map.removeLayer("basemap");
+  if (map.getSource("basemap-src")) map.removeSource("basemap-src");
+  // Also remove the default 'osm' source if it exists
+  if (map.getSource("osm")) {
+    if (map.getLayer("basemap")) map.removeLayer("basemap");
+    map.removeSource("osm");
+  }
+
+  if (val === "none") return;
+
+  const basemap = BASEMAPS[val];
+  if (!basemap) return;
+
+  map.addSource("basemap-src", {
+    type: "raster",
+    tiles: basemap.tiles,
+    tileSize: basemap.tileSize,
+    attribution: basemap.attribution,
+  });
+
+  // Add basemap below the data layer
+  const beforeId = activeLayerId && map.getLayer(activeLayerId) ? activeLayerId : undefined;
+  map.addLayer({ id: "basemap", type: "raster", source: "basemap-src" }, beforeId);
+});
+</script>
+</body>
+</html>

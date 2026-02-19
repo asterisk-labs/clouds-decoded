@@ -184,7 +184,7 @@ def run_albedo(
     """Run albedo estimation with explicit config."""
     from clouds_decoded.modules.albedo_estimator.processor import AlbedoEstimator
 
-    logger.info(f"Processing Albedo (method={config.method}, order={config.polynomial_order})...")
+    logger.info(f"Processing Albedo (method={config.method})...")
 
     processor = AlbedoEstimator(config)
     result = processor.process(scene, cloud_mask=cloud_mask)
@@ -373,29 +373,34 @@ def refocus(
 def albedo(
     scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
     output_path: str = typer.Option("albedo_output.tif", help="Output path"),
-    mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file (.tif). Enables polynomial fitting."),
+    mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file (.tif). Enables GP fitting."),
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
-    method: str = typer.Option("polynomial", help="Method: 'polynomial' (needs mask) or 'percentile'"),
-    polynomial_order: int = typer.Option(2, help="Polynomial order (1=linear, 2=quadratic, 3=cubic)"),
+    method: str = typer.Option("gp", help="Method: 'gp' (Gaussian Process, needs mask) or 'datadriven' (trained MLP)"),
+    fallback: str = typer.Option("datadriven", help="Fallback when GP conditions not met: 'datadriven' or 'constant'"),
+    model_path: Optional[str] = typer.Option(None, help="Path to trained data-driven albedo model checkpoint"),
     output_resolution: int = typer.Option(300, help="Output resolution in meters/pixel"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
 ):
     """
     Estimate surface albedo from Sentinel-2 data.
 
-    Fits a 2D polynomial to clear-sky pixels (when a cloud mask is provided),
-    or falls back to a simple percentile method.
+    Fits a Gaussian Process to clear-sky pixels (when a cloud mask is provided),
+    or uses a trained MLP for data-driven estimation. The GP reverts to the mean
+    albedo far from observed clear pixels, avoiding extrapolation artefacts.
     """
     scene = _load_scene(scene_path, crop_window)
 
     if config_path:
         albedo_config = AlbedoEstimatorConfig.from_yaml(config_path)
     else:
-        albedo_config = AlbedoEstimatorConfig(
+        kwargs = dict(
             method=method,
-            polynomial_order=polynomial_order,
+            fallback=fallback,
             output_resolution=output_resolution,
         )
+        if model_path is not None:
+            kwargs["model_path"] = model_path
+        albedo_config = AlbedoEstimatorConfig(**kwargs)
 
     cloud_mask = None
     if mask_path:
@@ -458,7 +463,7 @@ def full_workflow(
         cloud_height_config = CloudHeightEmulatorConfig(**height_cfg_dict)
     else:
         cloud_height_config = CloudHeightConfig(**height_cfg_dict)
-    albedo_config = AlbedoEstimatorConfig(method="polynomial", **albedo_cfg_dict)
+    albedo_config = AlbedoEstimatorConfig(method="gp", **albedo_cfg_dict)
     refocus_config = RefocusConfig(**refocus_cfg_dict)
 
     # Load scene once
@@ -484,7 +489,7 @@ def full_workflow(
         use_emulator=use_emulator,
     )
 
-    # Step 3: Albedo (uses cloud mask for clear-sky polynomial fit)
+    # Step 3: Albedo (uses cloud mask for clear-sky GP fit)
     logger.info("Step 3/5: Albedo Estimation")
     albedo_result = run_albedo(
         scene, albedo_config,

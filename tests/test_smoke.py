@@ -96,10 +96,8 @@ def test_albedo_estimator(dummy_scene):
     """Smoke test: AlbedoEstimator can run with new interface."""
     from clouds_decoded.modules.albedo_estimator import AlbedoEstimator, AlbedoEstimatorConfig
 
-    # Test 1: Percentile fallback (no cloud mask)
-    config = AlbedoEstimatorConfig(
-        percentile=1.0,
-    )
+    # Test 1: Constant fallback (no cloud mask, fallback="constant")
+    config = AlbedoEstimatorConfig(fallback="constant")
 
     estimator = AlbedoEstimator(config)
     result = estimator.process(dummy_scene)
@@ -113,8 +111,9 @@ def test_albedo_estimator(dummy_scene):
     assert hasattr(result.metadata, 'band_names')
     assert len(result.metadata.band_names) == result.data.shape[0]
     assert result.metadata.fallback_used is True
+    assert result.metadata.method == "constant"
 
-    # Test 2: Polynomial fit with cloud mask
+    # Test 2: GP fit with cloud mask
     from clouds_decoded.data import CloudMaskData, CloudMaskMetadata
     # Create a mask where top half is clear (0), bottom half is cloud (1)
     mask_arr = np.zeros((100, 100), dtype=np.uint8)
@@ -126,19 +125,18 @@ def test_albedo_estimator(dummy_scene):
         metadata=CloudMaskMetadata(categorical=True, classes={0: 'Clear', 1: 'Cloud'}),
     )
 
-    poly_config = AlbedoEstimatorConfig(method="polynomial", polynomial_order=2)
-    poly_estimator = AlbedoEstimator(poly_config)
-    poly_result = poly_estimator.process(dummy_scene, cloud_mask=cloud_mask)
+    gp_config = AlbedoEstimatorConfig(method="gp")
+    gp_estimator = AlbedoEstimator(gp_config)
+    gp_result = gp_estimator.process(dummy_scene, cloud_mask=cloud_mask)
 
-    assert poly_result.data.ndim == 3
-    assert poly_result.data.shape[0] == len(dummy_scene.bands)
-    assert poly_result.metadata.method == "polynomial"
-    assert poly_result.metadata.fallback_used is False
-    assert poly_result.metadata.clear_fraction > 0
-    assert len(poly_result.metadata.polynomial_coefficients) > 0
+    assert gp_result.data.ndim == 3
+    assert gp_result.data.shape[0] == len(dummy_scene.bands)
+    assert gp_result.metadata.method == "gp"
+    assert gp_result.metadata.fallback_used is False
+    assert gp_result.metadata.clear_fraction > 0
 
-    print(f"✓ AlbedoEstimator: percentile shape {result.data.shape}, "
-          f"polynomial shape {poly_result.data.shape}, "
+    print(f"✓ AlbedoEstimator: constant shape {result.data.shape}, "
+          f"GP shape {gp_result.data.shape}, "
           f"bands {len(result.metadata.band_names)}")
 
 

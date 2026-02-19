@@ -59,9 +59,9 @@ class CloudPropertyInverter:
         self.model.to(self.device)
         self.model.eval()
         
-        # Initialize internal Albedo Estimator
+        # Initialize internal Albedo Estimator (constant fallback for quick inline use)
         albedo_config = AlbedoEstimatorConfig(
-            percentile=1.0,  # Use 1st percentile (dark object)
+            fallback="constant",
             default_albedo=self.config.default_albedo
         )
         self.albedo_estimator = AlbedoEstimator(albedo_config)
@@ -79,7 +79,7 @@ class CloudPropertyInverter:
             scene: The standardized Sentinel2Scene object.
             height_data: The result from CloudHeightProcessor (Cloud Top Height).
             albedo_data: Optional pre-computed albedo. If None, albedo is estimated
-                         internally using a simple percentile method.
+                         internally using constant default values.
 
         Returns:
             CloudPropertiesData: The inferred cloud properties (COT, CER, etc).
@@ -387,10 +387,10 @@ class ShadingPropertyInverter(CloudPropertyInverter):
         logger.info(f"ShadingPropertyInverter initialized: window={self.window_size}x{self.window_size}, "
                    f"stride={self.stride}, bag_size={self.bag_size}")
 
-        # Initialize internal Albedo Estimator
+        # Initialize internal Albedo Estimator (constant fallback for quick inline use)
         from clouds_decoded.modules.albedo_estimator import AlbedoEstimator, AlbedoEstimatorConfig
         albedo_config = AlbedoEstimatorConfig(
-            percentile=1.0,
+            fallback="constant",
             default_albedo=config.default_albedo
         )
         self.albedo_estimator = AlbedoEstimator(albedo_config)
@@ -543,7 +543,7 @@ class ShadingPropertyInverter(CloudPropertyInverter):
             scene: The standardized Sentinel2Scene object.
             height_data: The result from CloudHeightProcessor (Cloud Top Height).
             albedo_data: Optional pre-computed albedo. If None, albedo is estimated
-                         internally using a simple percentile method.
+                         internally using constant default values.
 
         Returns:
             CloudPropertiesData: The inferred cloud properties including tau_shading.
