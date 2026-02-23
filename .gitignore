@@ -213,6 +213,7 @@ __marimo__/
 # Internal stuff
 scratch*/
 fast_project/
+projects/
 plots/
 ARCHITECTURE.md
 CODEBASE_ANALYSIS.md
