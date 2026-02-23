@@ -26,6 +26,7 @@ dependencies = [
     "tqdm",
     "matplotlib",
     "zarr",
+    "platformdirs",
     "SEnSeIv2 @ git+https://github.com/aliFrancis/SEnSeIv2.git",
     "panel",
     "holoviews",

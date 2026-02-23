@@ -14,6 +14,24 @@ from clouds_decoded.project import Project
 
 
 @pytest.fixture
+def mock_weights_file(tmp_path, monkeypatch):
+    """Create a minimal valid checkpoint and point CLOUDS_DECODED_ASSETS_DIR at tmp_path."""
+    monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))
+    weights_path = tmp_path / "models" / "cloud_height_emulator" / "default.pth"
+    weights_path.parent.mkdir(parents=True)
+    # Minimal state dict matching CloudHeightNormalizationWrapper's 4 buffers.
+    # The inner model is a MagicMock so it contributes no keys.
+    state = {
+        "in_min": torch.tensor([0.0]),
+        "in_max": torch.tensor([1.0]),
+        "out_min": torch.tensor([0.0]),
+        "out_max": torch.tensor([1.0]),
+    }
+    torch.save(state, weights_path)
+    return weights_path
+
+
+@pytest.fixture
 def mock_scene():
     """Create a mock Sentinel2Scene with 100x100 bands."""
     scene = MagicMock(spec=Sentinel2Scene)
@@ -70,12 +88,14 @@ def mock_dataloader():
 # Unit Tests
 # ---------------------------------------------------------------------------
 
-def test_config_initialization():
+def test_config_initialization(tmp_path, monkeypatch):
     """Verify CloudHeightEmulatorConfig defaults and validation."""
+    monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))
     config = CloudHeightEmulatorConfig()
     assert config.in_channels == 8
     assert config.window_size == (1024, 1024)
-    assert config.pth_path is None
+    # model_path is now auto-resolved to the managed assets directory
+    assert config.model_path == str(tmp_path / "models" / "cloud_height_emulator" / "default.pth")
 
     with pytest.raises(ValueError, match="Overlap .* must be smaller than window dimensions"):
         CloudHeightEmulatorConfig(window_size=(100, 100), overlap=100)
@@ -87,7 +107,7 @@ def test_config_strict_mode():
         CloudHeightEmulatorConfig(nonexistent_field="bad")
 
 
-def test_processor_initialization(mock_unet):
+def test_processor_initialization(mock_unet, mock_weights_file):
     """Verify processor loads model and respects device."""
     config = CloudHeightEmulatorConfig(device="cpu")
     processor = CloudHeightEmulatorProcessor(config)
@@ -98,7 +118,7 @@ def test_processor_initialization(mock_unet):
     assert processor.model is not None
 
 
-def test_emulator_input_output_shapes(mock_unet, mock_scene):
+def test_emulator_input_output_shapes(mock_unet, mock_scene, mock_weights_file):
     """Verify that output grid matches input scene dimensions."""
     config = CloudHeightEmulatorConfig(window_size=(64, 64), overlap=16, device="cpu")
     processor = CloudHeightEmulatorProcessor(config)
@@ -111,7 +131,7 @@ def test_emulator_input_output_shapes(mock_unet, mock_scene):
     assert result.data.max() > 0
 
 
-def test_emulator_no_cloud_mask_on_output(mock_unet, mock_scene):
+def test_emulator_no_cloud_mask_on_output(mock_unet, mock_scene, mock_weights_file):
     """Verify CloudHeightGridData output does not carry a cloud_mask attribute."""
     config = CloudHeightEmulatorConfig(window_size=(64, 64), overlap=16, device="cpu")
     processor = CloudHeightEmulatorProcessor(config)
@@ -198,7 +218,7 @@ def test_cloud_height_norm_wrapper_forward_dict_output(mock_unet):
 # Integration Tests (Project / Workflow)
 # ---------------------------------------------------------------------------
 
-def test_emulator_within_project(tmp_path, mock_unet, mock_scene):
+def test_emulator_within_project(tmp_path, mock_unet, mock_scene, mock_weights_file):
     """Verify emulator integration within the Project abstraction."""
     project_dir = tmp_path / "test_proj"
 
@@ -209,7 +229,7 @@ def test_emulator_within_project(tmp_path, mock_unet, mock_scene):
 
     with open(config_path) as f:
         cfg_data = yaml.safe_load(f)
-    assert "pth_path" in cfg_data
+    assert "model_path" in cfg_data
 
     with patch("clouds_decoded.data.Sentinel2Scene.read"), \
          patch("clouds_decoded.data.CloudMaskData.from_file"), \

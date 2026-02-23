@@ -37,7 +37,12 @@ class CloudPropertyInverter:
         
         # Load state
         if not Path(config.model_path).exists():
-             raise FileNotFoundError(f"Model checkpoint not found at {config.model_path}")
+            raise FileNotFoundError(
+                f"Refl2prop model weights not found at {config.model_path}.\n"
+                f"Run:  clouds-decoded download refl2prop\n"
+                f"or set CLOUDS_DECODED_ASSETS_DIR to a directory containing "
+                f"models/refl2prop/default.pth"
+            )
              
         state = torch.load(config.model_path, map_location=self.device)
         
@@ -359,7 +364,12 @@ class ShadingPropertyInverter(CloudPropertyInverter):
 
         # Load state
         if not Path(config.model_path).exists():
-            raise FileNotFoundError(f"Model checkpoint not found at {config.model_path}")
+            raise FileNotFoundError(
+                f"Refl2prop model weights not found at {config.model_path}.\n"
+                f"Run:  clouds-decoded download refl2prop\n"
+                f"or set CLOUDS_DECODED_ASSETS_DIR to a directory containing "
+                f"models/refl2prop/default.pth"
+            )
 
         state = torch.load(config.model_path, map_location=self.device, weights_only=False)
 

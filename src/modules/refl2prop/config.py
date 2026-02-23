@@ -1,9 +1,11 @@
 # refl2prop/config.py
 """Configuration for the Cloud Property Inversion (Refl2Prop) module."""
+from __future__ import annotations
+
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Literal, Tuple
-from pydantic import Field, computed_field
+from typing import Dict, List, Literal, Optional, Tuple
+from pydantic import Field, computed_field, model_validator
 
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import DEFAULT_SURFACE_ALBEDO
@@ -80,9 +82,13 @@ class Refl2PropConfig(BaseProcessorConfig):
     )
 
     # Resources
-    model_path: str = Field(
-        default=str(Path(__file__).parent / "models" / "model.pth"),
-        description="Path to the .pth model checkpoint",
+    model_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to the .pth model checkpoint. "
+            "Defaults to the managed assets directory; run "
+            "'clouds-decoded download refl2prop' to fetch weights."
+        ),
     )
 
     # Processing Parameters
@@ -144,6 +150,24 @@ class Refl2PropConfig(BaseProcessorConfig):
         default=['tau', 'ice_liq_ratio', 'r_eff_liq', 'r_eff_ice'],
         description="Names of output features (order matches model output)"
     )
+
+    # =========================================================================
+    # Validators
+    # =========================================================================
+
+    @model_validator(mode='after')
+    def _resolve_model_path(self) -> Refl2PropConfig:
+        """If no explicit path is given, fall back to managed assets then bundled file."""
+        if self.model_path is None:
+            from clouds_decoded.assets import get_asset
+            managed = get_asset("models/refl2prop/default.pth")
+            if managed.exists():
+                object.__setattr__(self, "model_path", str(managed))
+            else:
+                # Bundled fallback shipped with the package
+                bundled = Path(__file__).parent / "models" / "model.pth"
+                object.__setattr__(self, "model_path", str(bundled))
+        return self
 
     # =========================================================================
     # Computed fields - derived from bands

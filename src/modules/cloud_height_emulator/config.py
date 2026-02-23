@@ -12,12 +12,16 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
 
     model_config = ConfigDict(extra='forbid')
 
-    pth_path: Optional[str] = Field(
+    model_path: Optional[str] = Field(
         default=None,
-        description="Path to the model weights file (.pth)."
+        description=(
+            "Path to the model weights file (.pth). "
+            "Defaults to the managed assets directory; run "
+            "'clouds-decoded download emulator' to fetch weights."
+        ),
     )
     bands: List[str] = Field(
-        default=["B02", "B03", "B04", "B08", "B11", "B12","B09","B10"],
+        default=["B02", "B03", "B04", "B08", "B11", "B12", "B09", "B10"],
         description="Bands to use for inference."
     )
     window_size: Tuple[int, int] = Field(
@@ -45,9 +49,21 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
     )
 
     @model_validator(mode='after')
+    def _resolve_model_path(self) -> CloudHeightEmulatorConfig:
+        """If no explicit path is given, point at the managed asset location."""
+        if self.model_path is None:
+            from clouds_decoded.assets import get_asset
+            object.__setattr__(
+                self, "model_path", str(get_asset("models/cloud_height_emulator/default.pth"))
+            )
+        return self
+
+    @model_validator(mode='after')
     def check_overlap_window_size(self) -> CloudHeightEmulatorConfig:
         """Ensure overlap is smaller than window size."""
         height, width = self.window_size
         if self.overlap >= height or self.overlap >= width:
-            raise ValueError(f"Overlap ({self.overlap}) must be smaller than window dimensions {self.window_size}")
+            raise ValueError(
+                f"Overlap ({self.overlap}) must be smaller than window dimensions {self.window_size}"
+            )
         return self

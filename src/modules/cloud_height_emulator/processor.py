@@ -84,36 +84,35 @@ class CloudHeightEmulatorProcessor:
                 output_stats={"min": 0.0, "max": 1.0},
             )  # default params, are loaded in the checkpoint.
 
-            if self.config.pth_path:
-                pth_path = Path(self.config.pth_path)
-                if pth_path.exists():
-                    logger.info(f"Loading checkpoint from {pth_path}")
-                    state_dict = torch.load(pth_path, map_location=self.device)
-                    if any(k.startswith("model.") for k in state_dict.keys()):
-                        import re
-                        state_dict = {
-                            re.sub(r"^model\.", "", k): v
-                            for k, v in state_dict.items()
-                        }
+            model_path = Path(self.config.model_path)
+            if not model_path.exists():
+                raise FileNotFoundError(
+                    f"Cloud height emulator weights not found at {model_path}.\n"
+                    f"Run:  clouds-decoded download emulator\n"
+                    f"or set CLOUDS_DECODED_ASSETS_DIR to a directory containing "
+                    f"models/cloud_height_emulator/default.pth"
+                )
 
-                    # Detect checkpoint format: wrapper (keys include
-                    # normalization buffers) vs raw Res34_Unet weights.
-                    has_wrapper_keys = any(k in state_dict for k in (
-                        "in_min", "in_max", "out_min", "out_max"))
+            logger.info(f"Loading checkpoint from {model_path}")
+            state_dict = torch.load(model_path, map_location=self.device)
+            if any(k.startswith("model.") for k in state_dict.keys()):
+                import re
+                state_dict = {
+                    re.sub(r"^model\.", "", k): v
+                    for k, v in state_dict.items()
+                }
 
-                    if has_wrapper_keys:
-                        # Full wrapper checkpoint — load into self.model
-                        self.model.load_state_dict(state_dict, strict=True)
-                    else:
-                        raise ValueError(
-                            "Checkpoint does not contain wrapper keys.")
+            # Detect checkpoint format: wrapper (keys include
+            # normalization buffers) vs raw Res34_Unet weights.
+            has_wrapper_keys = any(k in state_dict for k in (
+                "in_min", "in_max", "out_min", "out_max"))
 
-                else:
-                    logger.warning(
-                        f"Checkpoint {pth_path} not found. Using initialized weights.")
+            if has_wrapper_keys:
+                # Full wrapper checkpoint — load into self.model
+                self.model.load_state_dict(state_dict, strict=True)
             else:
-                logger.warning(
-                    "No checkpoint path provided! Using initialized weights.")
+                raise ValueError(
+                    "Checkpoint does not contain wrapper keys.")
 
             self.model.to(self.device)
             self.model.eval()

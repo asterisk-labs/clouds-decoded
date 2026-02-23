@@ -699,5 +699,111 @@ def serve(
     viewer.serve(port=port, show=show)
 
 
+# --- Asset Management Commands ---
+
+@app.command()
+def setup():
+    """Configure the directory used to store large binary assets.
+
+    clouds-decoded needs a directory to store large asset files:
+      - Height emulator model weights    ~500 MB
+      - Refl2prop model weights          ~50 MB
+      - GEBCO bathymetry (optional)      ~2.7 GB
+
+    Writes the chosen path to the user config file so it persists across
+    sessions.  Can be overridden at any time with the
+    CLOUDS_DECODED_ASSETS_DIR environment variable.
+    """
+    import platformdirs
+    from clouds_decoded.assets import (
+        _write_config_assets_dir,
+        _read_config_assets_dir,
+        KNOWN_ASSETS,
+    )
+
+    default = platformdirs.user_data_dir("clouds-decoded", appauthor=False)
+    current = _read_config_assets_dir()
+
+    typer.echo("\nclouds-decoded needs a directory to store large asset files:")
+    for asset in KNOWN_ASSETS.values():
+        typer.echo(f"  - {asset.description:<40} {asset.size_hint}")
+    typer.echo("")
+
+    if current:
+        typer.echo(f"Current location: {current}")
+    typer.echo(f"Default:          {default}")
+    typer.echo("")
+
+    use_default = typer.confirm("Use default location?", default=True)
+
+    if use_default:
+        chosen = default
+    else:
+        chosen = typer.prompt("Enter path", default=current or default)
+
+    _write_config_assets_dir(chosen)
+    typer.echo(f"\nAssets directory set to: {chosen}")
+    typer.echo("\nNext steps:")
+    typer.echo("  clouds-decoded download emulator   # height emulator weights")
+    typer.echo("  clouds-decoded download refl2prop  # cloud property weights")
+    typer.echo("  clouds-decoded download gebco      # GEBCO bathymetry (optional)")
+
+
+@app.command()
+def download(
+    asset: str = typer.Argument(
+        ...,
+        help="Asset key: emulator | refl2prop | gebco | all",
+    ),
+    force: bool = typer.Option(False, "--force", help="Re-download even if file exists"),
+):
+    """Download managed binary assets (model weights, GEBCO).
+
+    \b
+    clouds-decoded download emulator   # height emulator weights (~500 MB)
+    clouds-decoded download refl2prop  # refl2prop weights (~50 MB)
+    clouds-decoded download gebco      # GEBCO bathymetry (~2.7 GB)
+    clouds-decoded download all        # everything
+    """
+    from clouds_decoded.assets import KNOWN_ASSETS, download_asset, get_asset
+
+    keys = list(KNOWN_ASSETS.keys()) if asset == "all" else [asset]
+
+    for k in keys:
+        if k not in KNOWN_ASSETS:
+            typer.echo(
+                f"Unknown asset '{k}'. Choose from: {', '.join(KNOWN_ASSETS)} or 'all'",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        a = KNOWN_ASSETS[k]
+        dest = get_asset(a.relative_path)
+
+        if dest.exists() and not force:
+            typer.echo(f"[{k}] Already present at {dest}. Use --force to re-download.")
+            continue
+
+        if not a.url:
+            typer.echo(
+                f"[{k}] No download URL configured. Please supply the file manually at:\n"
+                f"  {dest}",
+                err=True,
+            )
+            continue
+
+        typer.echo(f"\n[{k}] {a.description}  {a.size_hint}")
+        confirmed = typer.confirm("Download now?", default=True)
+        if not confirmed:
+            typer.echo(f"Skipped {k}.")
+            continue
+
+        try:
+            download_asset(k, force=force)
+        except Exception as exc:
+            typer.echo(f"Error downloading {k}: {exc}", err=True)
+            raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()
