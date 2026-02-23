@@ -375,7 +375,7 @@ def albedo(
     output_path: str = typer.Option("albedo_output.tif", help="Output path"),
     mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file (.tif). Enables GP fitting."),
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
-    method: str = typer.Option("gp", help="Method: 'gp' (Gaussian Process, needs mask) or 'datadriven' (trained MLP)"),
+    method: str = typer.Option("gp", help="Method: 'gp' (Gaussian Process), 'idw' (inverse-distance weighting), or 'datadriven' (trained MLP). gp/idw need a mask."),
     fallback: str = typer.Option("datadriven", help="Fallback when GP conditions not met: 'datadriven' or 'constant'"),
     model_path: Optional[str] = typer.Option(None, help="Path to trained data-driven albedo model checkpoint"),
     output_resolution: int = typer.Option(300, help="Output resolution in meters/pixel"),

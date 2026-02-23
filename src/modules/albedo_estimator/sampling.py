@@ -122,3 +122,85 @@ def sample_clear_locations(
         rows, cols = rows[idx], cols[idx]
 
     return rows, cols
+
+
+def farthest_point_sample(
+    clear_mask: np.ndarray,
+    n_samples: int,
+    seed: int = 42,
+    edge_margin: int = 0,
+    cloud_dilation_px: int = 0,
+) -> tuple:
+    """Greedily sample clear-sky locations that are maximally spread out.
+
+    Starts from a random seed point and iteratively selects the candidate
+    farthest from all previously selected points.  This produces a more
+    spatially uniform set of samples than random selection, which is
+    beneficial for spatial interpolation methods like IDW.
+
+    Complexity is O(n_candidates * n_samples) which is fast for typical
+    scene sizes.
+
+    Args:
+        clear_mask: 2-D boolean array (H, W).
+        n_samples: Maximum number of locations to return.
+        seed: RNG seed for choosing the initial point.
+        edge_margin: Exclude this many pixels from each image edge.
+        cloud_dilation_px: Dilate cloud regions by this many pixels
+            before sampling, keeping samples away from cloud edges.
+
+    Returns:
+        ``(rows, cols)`` integer arrays of sampled coordinates.
+    """
+    mask = clear_mask.copy()
+
+    if cloud_dilation_px > 0:
+        cloud = ~clear_mask
+        dilated = maximum_filter(
+            cloud.view(np.uint8), size=2 * cloud_dilation_px + 1,
+        ).astype(bool)
+        mask &= ~dilated
+
+    if edge_margin > 0:
+        mask[:edge_margin, :] = False
+        mask[-edge_margin:, :] = False
+        mask[:, :edge_margin] = False
+        mask[:, -edge_margin:] = False
+
+    rows, cols = np.where(mask)
+    n_available = len(rows)
+    if n_available == 0:
+        return rows, cols
+
+    if n_available <= n_samples:
+        return rows, cols
+
+    # Pre-subsample the candidate pool when it is much larger than
+    # n_samples.  FPS quality depends on having a diverse pool, not an
+    # exhaustive one, so 50× oversampling is ample.
+    rng = np.random.default_rng(seed)
+    max_candidates = max(n_samples * 50, 10_000)
+    if n_available > max_candidates:
+        idx = rng.choice(n_available, max_candidates, replace=False)
+        rows, cols = rows[idx], cols[idx]
+        n_available = max_candidates
+
+    # Greedy farthest-point selection
+    candidates = np.column_stack([rows, cols]).astype(np.float64)
+
+    first_idx = rng.integers(n_available)
+    selected = [first_idx]
+    # min_dist[i] = distance from candidate i to the nearest selected point
+    min_dist = np.full(n_available, np.inf)
+
+    for _ in range(n_samples - 1):
+        last = candidates[selected[-1]]
+        d = np.sum((candidates - last) ** 2, axis=1)
+        np.minimum(min_dist, d, out=min_dist)
+        # Already-selected points get distance 0 so won't be picked again
+        min_dist[selected[-1]] = 0.0
+        next_idx = int(np.argmax(min_dist))
+        selected.append(next_idx)
+
+    selected = np.array(selected)
+    return rows[selected], cols[selected]

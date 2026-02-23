@@ -140,6 +140,35 @@ def test_albedo_estimator(dummy_scene):
           f"bands {len(result.metadata.band_names)}")
 
 
+def test_albedo_estimator_idw(dummy_scene):
+    """Smoke test: IDW albedo estimator runs and produces valid output."""
+    from clouds_decoded.modules.albedo_estimator import AlbedoEstimator, AlbedoEstimatorConfig
+    from clouds_decoded.data import CloudMaskData, CloudMaskMetadata
+
+    # Create a mask where top half is clear (0), bottom half is cloud (1)
+    mask_arr = np.zeros((100, 100), dtype=np.uint8)
+    mask_arr[50:, :] = 1
+    cloud_mask = CloudMaskData(
+        data=mask_arr,
+        transform=dummy_scene.transform,
+        crs=dummy_scene.crs,
+        metadata=CloudMaskMetadata(categorical=True, classes={0: 'Clear', 1: 'Cloud'}),
+    )
+
+    idw_config = AlbedoEstimatorConfig(method="idw")
+    idw_estimator = AlbedoEstimator(idw_config)
+    idw_result = idw_estimator.process(dummy_scene, cloud_mask=cloud_mask)
+
+    assert idw_result.data.ndim == 3
+    assert idw_result.data.shape[0] == len(dummy_scene.bands)
+    assert idw_result.metadata.method == "idw"
+    assert idw_result.metadata.fallback_used is False
+    assert idw_result.metadata.clear_fraction > 0
+
+    print(f"✓ AlbedoEstimator IDW: shape {idw_result.data.shape}, "
+          f"samples={idw_result.metadata.n_training_samples}")
+
+
 def test_imports_work():
     """Smoke test: All processor imports work."""
     from clouds_decoded.modules.cloud_height import CloudHeightProcessor, CloudHeightConfig

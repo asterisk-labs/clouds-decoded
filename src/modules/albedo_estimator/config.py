@@ -9,16 +9,20 @@ from clouds_decoded.constants import DEFAULT_SURFACE_ALBEDO
 class AlbedoEstimatorConfig(BaseProcessorConfig):
     """Configuration for surface albedo estimation.
 
-    Supports two methods:
+    Supports three methods:
     - 'gp': Fits a Gaussian Process to clear-sky pixels (requires cloud mask).
       Reverts to the mean albedo far from observed clear pixels, avoiding the
       divergence issues of polynomial extrapolation.
+    - 'idw': Inverse-distance weighting with farthest-point sampling
+      (requires cloud mask). Much faster than GP while producing smooth
+      spatial interpolation.
     - 'datadriven': Predicts albedo using a trained MLP from physical conditions.
     """
 
-    method: Literal["gp", "datadriven"] = Field(
+    method: Literal["gp", "idw", "datadriven"] = Field(
         default="gp",
-        description="Estimation method: 'gp' (Gaussian Process) or 'datadriven' (trained MLP)"
+        description="Estimation method: 'gp' (Gaussian Process), "
+                    "'idw' (inverse-distance weighting), or 'datadriven' (trained MLP)"
     )
     fallback: Literal["datadriven", "constant"] = Field(
         default="datadriven",
@@ -72,6 +76,23 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
         le=50,
         description="Cloud mask dilation buffer in pixels (at B02 resolution). "
                     "Samples within this distance of a cloud edge are excluded."
+    )
+
+    # IDW parameters
+    idw_k_neighbours: int = Field(
+        default=8,
+        ge=1,
+        description="Number of nearest sample points used per output pixel "
+                    "in IDW interpolation. Limits computation and keeps the "
+                    "weight matrix sparse."
+    )
+    idw_smoothing_m: float = Field(
+        default=1000.0,
+        ge=0.0,
+        description="Regularisation distance in metres. Weights are "
+                    "1 / (d + d0) instead of 1 / d, preventing a spike "
+                    "when a sample falls on an output pixel and blending "
+                    "neighbours more smoothly."
     )
 
     # Data-driven model paths
