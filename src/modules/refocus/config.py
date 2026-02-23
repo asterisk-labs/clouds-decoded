@@ -27,13 +27,13 @@ class RefocusConfig(BaseProcessorConfig):
 
     # Which bands to refocus (None = all bands in the scene)
     bands: Optional[List[str]] = Field(
-        default=None,
+        default=['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B11', 'B12'], # same default as refl2prop (primary user of refocus)
         description="Bands to refocus. None = all bands in the scene."
     )
 
     # Output resolution
     output_resolution: Optional[int] = Field(
-        default=None,
+        default=20, # same default as refl2prop (primary user of refocus)
         ge=10,
         le=60,
         description=(
