@@ -3,18 +3,19 @@ from __future__ import annotations
 import typer
 import yaml
 from pathlib import Path
-from typing import Optional, Dict, List, Union
+from typing import TYPE_CHECKING, Optional, Dict, List, Union
 import logging
 
-# Lightweight config imports only — processors and data classes are
-# imported lazily inside the functions that need them so that
-# --help / autocomplete stay fast.
-from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
-from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
-from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
-from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
-from clouds_decoded.modules.refocus.config import RefocusConfig
-from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
+# All config/processor/data imports are lazy (inside functions) so that
+# --help and autocomplete stay fast. TYPE_CHECKING-only imports allow
+# type checkers and IDEs to resolve annotations without runtime cost.
+if TYPE_CHECKING:
+    from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
+    from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
+    from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
+    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
+    from clouds_decoded.modules.refocus.config import RefocusConfig
+    from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
 
 # Setup Logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -110,6 +111,7 @@ def run_cloud_height(
     logger.info(f"Processing Cloud Height (Emulator: {use_emulator})...")
 
     if use_emulator:
+        from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
         if not isinstance(config, CloudHeightEmulatorConfig):
              logger.warning("Config is not CloudHeightEmulatorConfig but use_emulator=True. Instantiating default emulator config.")
              config = CloudHeightEmulatorConfig()
@@ -277,6 +279,8 @@ def cloud_height(
     use_emulator: bool = typer.Option(True, help="Use Deep Learning Emulator for height retrieval"),
 ):
     """Calculate Cloud Height from Sentinel-2 data."""
+    from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
+    from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
     scene = _load_scene(scene_path, crop_window)
 
     if config_path:
@@ -308,6 +312,7 @@ def cloud_mask(
     Calculate Cloud Mask from Sentinel-2 data.
     Supports SEnSeIv2 (Deep Learning) and simple thresholding.
     """
+    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
     scene = _load_scene(scene_path, crop_window)
 
     if config_path:
@@ -333,6 +338,7 @@ def cloud_properties(
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
 ):
     """Run Cloud Property Inversion (Refl2Prop). Requires pre-calculated cloud heights."""
+    from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
     scene = _load_scene(scene_path, crop_window)
 
     if properties_method == "shading":
@@ -359,6 +365,7 @@ def refocus(
     acquisition. The reference band (B02) is unchanged; all other bands are
     warped to align with it.
     """
+    from clouds_decoded.modules.refocus.config import RefocusConfig
     scene = _load_scene(scene_path, crop_window)
 
     config = RefocusConfig(
@@ -388,6 +395,7 @@ def albedo(
     or uses a trained MLP for data-driven estimation. The GP reverts to the mean
     albedo far from observed clear pixels, avoiding extrapolation artefacts.
     """
+    from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
     scene = _load_scene(scene_path, crop_window)
 
     if config_path:
@@ -458,6 +466,12 @@ def full_workflow(
         mask_method = mask_cfg_dict.pop("method", mask_method)
 
     # Build configs
+    from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
+    from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
+    from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
+    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
+    from clouds_decoded.modules.refocus.config import RefocusConfig
+    from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
     cloud_mask_config = CloudMaskConfig(method=mask_method, **mask_cfg_dict)
     if use_emulator:
         cloud_height_config = CloudHeightEmulatorConfig(**height_cfg_dict)

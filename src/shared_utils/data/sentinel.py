@@ -827,10 +827,21 @@ class Sentinel2Scene(Data):
 
         # Disable cfgrib index file creation to avoid PermissionError
         # on read-only scene directories.
-        datasets = cfgrib.open_datasets(
-            str(grib_path),
-            backend_kwargs={"indexpath": ""},
-        )
+        # Suppress eccodes "unable to represent the step in h" noise — eccodes
+        # writes directly to C stderr, so suppress at the fd level.
+        import os
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_stderr_fd = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        os.close(devnull_fd)
+        try:
+            datasets = cfgrib.open_datasets(
+                str(grib_path),
+                backend_kwargs={"indexpath": ""},
+            )
+        finally:
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stderr_fd)
 
         u10 = None
         v10 = None
