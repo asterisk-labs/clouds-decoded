@@ -395,7 +395,8 @@ class TestProjectInit:
         from clouds_decoded.modules.refl2prop.config import Refl2PropConfig
 
         project_dir = tmp_path / "my_project"
-        Project.init(str(project_dir), pipeline="full-workflow")
+        # use_emulator=False so cloud_height.yaml uses CloudHeightConfig (not the emulator variant)
+        Project.init(str(project_dir), pipeline="full-workflow", use_emulator=False)
 
         configs_dir = project_dir / "configs"
         CloudMaskConfig.from_yaml(str(configs_dir / "cloud_mask.yaml"))

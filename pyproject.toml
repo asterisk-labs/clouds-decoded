@@ -26,7 +26,10 @@ dependencies = [
     "tqdm",
     "matplotlib",
     "zarr",
-    "SEnSeIv2 @ git+https://github.com/aliFrancis/SEnSeIv2.git"
+    "SEnSeIv2 @ git+https://github.com/aliFrancis/SEnSeIv2.git",
+    "panel",
+    "holoviews",
+    "bokeh",
 ]
 
 [tool.setuptools.package-dir]
@@ -38,6 +41,7 @@ dependencies = [
 "clouds_decoded.modules.albedo_estimator.datadriven" = "src/modules/albedo_estimator/datadriven"
 "clouds_decoded.modules.refl2prop" = "src/modules/refl2prop"
 "clouds_decoded.modules.refocus" = "src/modules/refocus"
+"clouds_decoded.visualisation" = "src/shared_utils/visualisation"
 "clouds_decoded.cli" = "src/cli"
 
 [project.optional-dependencies]

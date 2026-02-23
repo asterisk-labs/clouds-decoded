@@ -104,7 +104,7 @@ def run_cloud_height(
     config: Union[CloudHeightConfig, CloudHeightEmulatorConfig],
     output_path: Optional[str] = None,
     cloud_mask: Optional[Union[CloudMaskData, str, Path]] = None,
-    use_emulator: bool = False,
+    use_emulator: bool = True,
 ) -> CloudHeightGridData:
     """Run cloud height retrieval with explicit config."""
     logger.info(f"Processing Cloud Height (Emulator: {use_emulator})...")
@@ -274,7 +274,7 @@ def cloud_height(
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
     mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
-    use_emulator: bool = typer.Option(False, help="Use Deep Learning Emulator for height retrieval"),
+    use_emulator: bool = typer.Option(True, help="Use Deep Learning Emulator for height retrieval"),
 ):
     """Calculate Cloud Height from Sentinel-2 data."""
     scene = _load_scene(scene_path, crop_window)
@@ -419,7 +419,7 @@ def full_workflow(
     output_dir: str = typer.Option("output", help="Directory for outputs"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
     mask_method: str = typer.Option("senseiv2", help="Mask method: 'senseiv2' or 'threshold'"),
-    use_emulator: bool = typer.Option(False, help="Use Deep Learning Emulator for height retrieval"),
+    use_emulator: bool = typer.Option(True, help="Use Deep Learning Emulator for height retrieval"),
     config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides defaults)"),
 ):
     """
@@ -534,7 +534,7 @@ def project_init(
     project_dir: str = typer.Argument(..., help="Directory for the new project"),
     name: Optional[str] = typer.Option(None, help="Project name (defaults to directory name)"),
     pipeline: str = typer.Option("full-workflow", help="Pipeline type"),
-    use_emulator: bool = typer.Option(False, help="Use emulator for cloud height retrieval"),
+    use_emulator: bool = typer.Option(True, help="Use emulator for cloud height retrieval"),
     clone: Optional[str] = typer.Option(None, help="Clone configs from an existing project directory"),
 ):
     """
@@ -624,6 +624,65 @@ def project_add_scene(
     except FileNotFoundError as e:
         logger.error(str(e))
         raise typer.Exit(1)
+
+
+@app.command()
+def view(
+    project_dir: str = typer.Argument(..., help="Path to a clouds-decoded project directory"),
+    host: str = typer.Option("0.0.0.0", help="Hostname for the viser server"),
+    port: int = typer.Option(8080, help="Port for the viser server"),
+    max_grid_dim: int = typer.Option(800, help="Max grid dimension for display resolution"),
+):
+    """Launch a 3D point-cloud viewer for a project's cloud height outputs (viser).
+
+    Opens a web-based 3D viewer showing cloud height surfaces for all
+    scenes in the project. Supports interactive z-scale, point size,
+    and texture controls (cloud mask, true colour, albedo, properties).
+
+    Port-forward for remote servers:
+        ssh -L 8080:localhost:8080 user@server
+    """
+    from clouds_decoded.visualisation.viser_viewer import ViserViewer
+
+    try:
+        viewer = ViserViewer(
+            project_dir=project_dir,
+            host=host,
+            port=port,
+            max_grid_dim=max_grid_dim,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
+
+    viewer.serve()
+
+
+@app.command()
+def serve(
+    scene_dir: str = typer.Argument(..., help="Path to project scene output directory"),
+    scene_path: Optional[str] = typer.Option(None, help="Path to .SAFE directory for RGB composites"),
+    port: int = typer.Option(5006, help="Port to serve on"),
+    show: bool = typer.Option(False, help="Open browser automatically (disable for remote)"),
+):
+    """Launch a web-based viewer for a processed scene (Panel + Bokeh).
+
+    Ideal for remote servers — port-forward with:
+        ssh -L 5006:localhost:5006 user@server
+
+    Then open http://localhost:5006 in your browser.
+    """
+    from clouds_decoded.visualisation import load_scene_layers
+    from clouds_decoded.visualisation.web_viewer import WebViewer
+
+    layers = load_scene_layers(scene_dir, scene_path=scene_path)
+    if not layers:
+        logger.error(f"No layers found in {scene_dir}")
+        raise typer.Exit(1)
+
+    logger.info(f"Loaded {len(layers)} layers — serving on port {port}")
+    viewer = WebViewer(layers)
+    viewer.serve(port=port, show=show)
 
 
 if __name__ == "__main__":
