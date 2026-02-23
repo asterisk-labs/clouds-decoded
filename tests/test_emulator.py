@@ -6,11 +6,9 @@ from pathlib import Path
 import yaml
 from rasterio.transform import Affine
 
-from clouds_decoded.modules.cloud_height_emulator.processor import (
-    CloudHeightEmulatorProcessor,
-    HeightEmulatorNormWrapper,
-)
+from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
+from clouds_decoded.normalization import CloudHeightNormalizationWrapper
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData, AlbedoData
 from clouds_decoded.project import Project
 
@@ -75,7 +73,7 @@ def mock_dataloader():
 def test_config_initialization():
     """Verify CloudHeightEmulatorConfig defaults and validation."""
     config = CloudHeightEmulatorConfig()
-    assert config.in_channels == 6
+    assert config.in_channels == 8
     assert config.window_size == (1024, 1024)
     assert config.pth_path is None
 
@@ -123,39 +121,41 @@ def test_emulator_no_cloud_mask_on_output(mock_unet, mock_scene):
     assert not hasattr(result, 'cloud_mask') or getattr(result, 'cloud_mask', None) is None
 
 
-def test_height_emulator_norm_wrapper():
-    """Verify HeightEmulatorNormWrapper normalize/denormalize and state_dict roundtrip."""
+def test_cloud_height_normalization_wrapper():
+    """Verify CloudHeightNormalizationWrapper normalize/denormalize and state_dict roundtrip."""
     from clouds_decoded.modules.cloud_height_emulator.resunet import Res34_Unet
 
-    max_reflectance = 20_000.0
-    scale = max_reflectance / 40_000  # 0.5
+    in_min, in_max = 0.0, 1.0
+    out_min, out_max = 0.0, 20_000.0
 
     core = Res34_Unet(in_channels=6, out_channels=[1, 1],
                       heads=["regression", "segmentation"],
                       heads_hidden_channels=[48, 48], pretrained=False)
 
-    wrapper = HeightEmulatorNormWrapper(
+    wrapper = CloudHeightNormalizationWrapper(
         model=core,
-        input_stats={"min": [0.0], "max": [scale]},
-        output_stats={"min": [0.0], "max": [max_reflectance]},
+        input_stats={"min": [in_min], "max": [in_max]},
+        output_stats={"min": [out_min], "max": [out_max]},
     )
 
-    # Check normalize_input: reflectance * 0.5
-    x = torch.tensor([0.4, 0.8, 1.0])
+    # normalize_input: min-max to [-1, 1]
+    x = torch.tensor([0.0, 0.5, 1.0])
     normed = wrapper.normalize_input(x)
-    assert torch.allclose(normed, x * scale)
+    expected = 2.0 * (x - in_min) / (in_max - in_min) - 1.0
+    assert torch.allclose(normed, expected)
 
-    # Check denormalize_output: y * max_reflectance
-    y = torch.tensor([0.1, 0.5])
+    # denormalize_output: [-1, 1] back to physical units
+    y = torch.tensor([-1.0, 0.0, 1.0])
     denormed = wrapper.denormalize_output(y)
-    assert torch.allclose(denormed, y * max_reflectance)
+    expected_d = (y + 1) / 2 * (out_max - out_min) + out_min
+    assert torch.allclose(denormed, expected_d)
 
     # State dict roundtrip — buffers must persist
     sd = wrapper.state_dict()
     assert "in_max" in sd
     assert "out_max" in sd
 
-    wrapper2 = HeightEmulatorNormWrapper(
+    wrapper2 = CloudHeightNormalizationWrapper(
         model=Res34_Unet(in_channels=6, out_channels=[1, 1],
                          heads=["regression", "segmentation"],
                          heads_hidden_channels=[48, 48], pretrained=False),
@@ -163,8 +163,35 @@ def test_height_emulator_norm_wrapper():
         output_stats={"min": [0.0], "max": [0.0]},
     )
     wrapper2.load_state_dict(sd)
-    assert torch.allclose(wrapper2.in_max, torch.tensor([scale]))
-    assert torch.allclose(wrapper2.out_max, torch.tensor([max_reflectance]))
+    assert torch.allclose(wrapper2.in_max, torch.tensor([in_max]))
+    assert torch.allclose(wrapper2.out_max, torch.tensor([out_max]))
+
+
+def test_cloud_height_norm_wrapper_forward_dict_output(mock_unet):
+    """Verify forward() adds regression_norm key to dict output."""
+    core = mock_unet.return_value
+
+    wrapper = CloudHeightNormalizationWrapper(
+        model=core,
+        input_stats={"min": [0.0], "max": [1.0]},
+        output_stats={"min": [0.0], "max": [20_000.0]},
+    )
+
+    # Simulate model returning a dict
+    raw_regression = torch.tensor([0.5])
+    raw_seg = torch.tensor([2.0])
+    core.side_effect = lambda x: {"regression": raw_regression, "segmentation": raw_seg}
+
+    x = torch.zeros(1, 6, 4, 4)
+    output = wrapper(x)
+
+    assert "regression_norm" in output
+    assert "regression" in output
+    # regression_norm should be the raw (pre-denorm) value
+    assert torch.allclose(output["regression_norm"], raw_regression)
+    # regression should be denormalized
+    expected = (raw_regression + 1) / 2 * 20_000.0
+    assert torch.allclose(output["regression"], expected)
 
 
 # ---------------------------------------------------------------------------
