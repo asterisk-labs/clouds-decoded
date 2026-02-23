@@ -65,7 +65,7 @@ class ProjectConfig(BaseModel):
     )
     scenes: List[str] = Field(default_factory=list, description="Absolute paths to .SAFE directories")
     created_at: str = Field(default="", description="ISO timestamp of project creation")
-    use_emulator: bool = Field(default=False, description="Use emulator for cloud height retrieval")
+    use_emulator: bool = Field(default=True, description="Use emulator for cloud height retrieval")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "ProjectConfig":
@@ -183,7 +183,7 @@ class Project:
         name: Optional[str] = None,
         pipeline: str = "full-workflow",
         clone_from: Optional[str] = None,
-        use_emulator: bool = False,
+        use_emulator: bool = True,
     ) -> "Project":
         """Create a new project directory with default config YAMLs.
 
