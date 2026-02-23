@@ -38,10 +38,14 @@ dependencies = [
 "clouds_decoded.modules.cloud_mask" = "src/modules/cloud_mask"
 "clouds_decoded.modules.cloud_height" = "src/modules/cloud_height"
 "clouds_decoded.modules.albedo_estimator" = "src/modules/albedo_estimator"
+"clouds_decoded.modules.albedo_estimator.datadriven" = "src/modules/albedo_estimator/datadriven"
 "clouds_decoded.modules.refl2prop" = "src/modules/refl2prop"
 "clouds_decoded.modules.refocus" = "src/modules/refocus"
 "clouds_decoded.visualisation" = "src/shared_utils/visualisation"
 "clouds_decoded.cli" = "src/cli"
+
+[project.optional-dependencies]
+sampling = ["cfgrib>=0.9.10"]
 
 [project.scripts]
 clouds-decoded = "clouds_decoded.cli.entry:app"

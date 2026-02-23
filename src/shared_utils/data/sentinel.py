@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from pathlib import Path
 from pydantic import Field, PrivateAttr
 import pyproj
@@ -34,6 +35,7 @@ class Sentinel2Scene(Data):
     longitude: Optional[float] = None
     orientation: Optional[float] = None
     orbit_type: Optional[str] = None
+    sensing_time: Optional[datetime] = None
     crs: Optional[Any] = None
     transform: Optional[Any] = None
 
@@ -133,6 +135,7 @@ class Sentinel2Scene(Data):
         self.quantification_value, self.radio_add_offset = self._get_radiometric_params(
             self.scene_directory
         )
+        self.sensing_time = self._get_sensing_time(self.scene_directory)
 
     def _calculate_center_coords(self, width: int, height: int) -> Tuple[float, float]:
         """Calculate center latitude/longitude based on current transform and size."""
@@ -654,3 +657,203 @@ class Sentinel2Scene(Data):
         except Exception as e:
             logger.warning(f"Could not read radiometric params: {e}. Using defaults.")
             return 10000.0, {}
+
+    def _get_sensing_time(self, scene_directory: Path) -> Optional[datetime]:
+        """Extract sensing time from tile or product metadata."""
+        try:
+            granule = self._get_granule_directory(scene_directory)
+            root = self._read_xml_root(granule / self.METADATA_TL)
+            node = root.find(".//SENSING_TIME")
+            if node is not None:
+                return datetime.fromisoformat(node.text.rstrip('Z'))
+        except Exception:
+            pass
+
+        try:
+            root = self._read_xml_root(scene_directory / self.METADATA_MTD)
+            node = root.find(".//DATATAKE_SENSING_START")
+            if node is not None:
+                return datetime.fromisoformat(node.text.rstrip('Z'))
+        except Exception:
+            pass
+
+        logger.warning("Could not find sensing time in metadata")
+        return None
+
+    def _parse_angle_grid(self, values_list: ET.Element) -> np.ndarray:
+        """Parse a Values_List XML element into a 2D numpy array."""
+        return np.array([
+            [float(v) for v in row.text.split()]
+            for row in values_list.findall("VALUES")
+        ])
+
+    def _get_sun_angle_grids(self, scene_directory: Path) -> Tuple[np.ndarray, np.ndarray]:
+        """Parse Sun_Angles_Grid from MTD_TL.xml.
+
+        Returns:
+            (zenith_grid, azimuth_grid) as 2D float64 arrays (typically 23x23).
+        """
+        granule = self._get_granule_directory(scene_directory)
+        root = self._read_xml_root(granule / self.METADATA_TL)
+
+        sun_grid = root.find(".//Sun_Angles_Grid")
+        if sun_grid is None:
+            raise ValueError("Sun_Angles_Grid not found in MTD_TL.xml")
+
+        zenith_grid = self._parse_angle_grid(sun_grid.find("Zenith/Values_List"))
+        azimuth_grid = self._parse_angle_grid(sun_grid.find("Azimuth/Values_List"))
+        return zenith_grid, azimuth_grid
+
+    def _get_view_angle_grids(self, scene_directory: Path) -> Tuple[np.ndarray, np.ndarray]:
+        """Parse Viewing_Incidence_Angles_Grid from MTD_TL.xml.
+
+        Averages across all detectors and bands using nanmean to handle
+        NaN values outside each detector's footprint.
+
+        Returns:
+            (zenith_grid, azimuth_grid) as 2D float64 arrays (typically 23x23).
+        """
+        granule = self._get_granule_directory(scene_directory)
+        root = self._read_xml_root(granule / self.METADATA_TL)
+
+        all_zenith = []
+        all_azimuth = []
+
+        for grid in root.findall(".//Viewing_Incidence_Angles_Grids"):
+            z_values = grid.find("Zenith/Values_List")
+            a_values = grid.find("Azimuth/Values_List")
+
+            z_grid = np.array([
+                [float(v) if v != 'NaN' else np.nan for v in row.text.split()]
+                for row in z_values.findall("VALUES")
+            ])
+            a_grid = np.array([
+                [float(v) if v != 'NaN' else np.nan for v in row.text.split()]
+                for row in a_values.findall("VALUES")
+            ])
+            all_zenith.append(z_grid)
+            all_azimuth.append(a_grid)
+
+        if not all_zenith:
+            raise ValueError("No Viewing_Incidence_Angles_Grids found in MTD_TL.xml")
+
+        zenith_grid = np.nanmean(np.stack(all_zenith), axis=0)
+        azimuth_grid = np.nanmean(np.stack(all_azimuth), axis=0)
+
+        # Fill remaining NaN cells (grid corners not covered by any detector)
+        # with nearest-neighbour so the pixel interpolator has no holes.
+        zenith_grid = self._fill_nan_nearest(zenith_grid)
+        azimuth_grid = self._fill_nan_nearest(azimuth_grid)
+
+        return zenith_grid, azimuth_grid
+
+    @staticmethod
+    def _fill_nan_nearest(grid: np.ndarray) -> np.ndarray:
+        """Fill NaN cells in a 2D grid using nearest valid neighbour."""
+        if not np.isnan(grid).any():
+            return grid
+        from scipy.ndimage import distance_transform_edt
+        mask = np.isnan(grid)
+        _, nearest_idx = distance_transform_edt(mask, return_distances=True, return_indices=True)
+        return grid[tuple(nearest_idx)]
+
+    def get_angles_at_pixels(
+        self,
+        rows: np.ndarray,
+        cols: np.ndarray,
+        resolution: float = 10.0,
+    ) -> Dict[str, np.ndarray]:
+        """Interpolate sun and view angles at specific pixel locations.
+
+        Uses the 5km-step angle grids from MTD_TL.xml and bilinear
+        interpolation to estimate angles at arbitrary pixel coordinates.
+
+        Args:
+            rows: Row indices in the reference band pixel grid.
+            cols: Column indices in the reference band pixel grid.
+            resolution: Pixel resolution in meters (default 10m for B02).
+
+        Returns:
+            Dict with keys 'sun_zenith', 'sun_azimuth', 'view_zenith',
+            'view_azimuth', each a 1D float32 array.
+        """
+        from scipy.interpolate import RegularGridInterpolator
+
+        step = 5000.0
+        sun_z, sun_a = self._get_sun_angle_grids(self.scene_directory)
+        view_z, view_a = self._get_view_angle_grids(self.scene_directory)
+
+        n_rows_grid, n_cols_grid = sun_z.shape
+        grid_y = np.arange(n_rows_grid) * step
+        grid_x = np.arange(n_cols_grid) * step
+
+        pixel_y = rows.astype(np.float64) * resolution
+        pixel_x = cols.astype(np.float64) * resolution
+        points = np.column_stack([pixel_y, pixel_x])
+
+        result = {}
+        for name, grid_data in [
+            ('sun_zenith', sun_z), ('sun_azimuth', sun_a),
+            ('view_zenith', view_z), ('view_azimuth', view_a),
+        ]:
+            interp = RegularGridInterpolator(
+                (grid_y, grid_x), grid_data,
+                method='linear', bounds_error=False, fill_value=None,
+            )
+            result[name] = interp(points).astype(np.float32)
+
+        return result
+
+    def get_wind_data(self) -> Tuple[float, float]:
+        """Read 10m wind speed and direction from AUX_ECMWFT GRIB file.
+
+        Returns:
+            (wind_speed_ms, wind_direction_deg) as scene-level scalars.
+
+        Raises:
+            ImportError: If cfgrib is not installed.
+        """
+        try:
+            import cfgrib
+        except ImportError:
+            raise ImportError(
+                "cfgrib is required for reading AUX_ECMWFT wind data. "
+                "Install with: pip install cfgrib"
+            )
+
+        granule = self._get_granule_directory(self.scene_directory)
+        aux_dir = granule / "AUX_DATA"
+        grib_path = self._find_single_path(aux_dir, "AUX_ECMWFT")
+
+        # Disable cfgrib index file creation to avoid PermissionError
+        # on read-only scene directories.
+        # Suppress eccodes "unable to represent the step in h" noise — eccodes
+        # writes directly to C stderr, so suppress at the fd level.
+        import os
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_stderr_fd = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        os.close(devnull_fd)
+        try:
+            datasets = cfgrib.open_datasets(
+                str(grib_path),
+                backend_kwargs={"indexpath": ""},
+            )
+        finally:
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stderr_fd)
+
+        u10 = None
+        v10 = None
+        for ds in datasets:
+            if 'u10' in ds:
+                u10 = float(ds['u10'].values.mean())
+            if 'v10' in ds:
+                v10 = float(ds['v10'].values.mean())
+
+        if u10 is None or v10 is None:
+            raise ValueError("Could not find u10/v10 wind components in AUX_ECMWFT")
+
+        wind_speed = float(np.sqrt(u10**2 + v10**2))
+        wind_direction = float((np.degrees(np.arctan2(-u10, -v10)) + 360) % 360)
+        return wind_speed, wind_direction

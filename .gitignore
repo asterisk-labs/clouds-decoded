@@ -217,3 +217,5 @@ plots/
 ARCHITECTURE.md
 CODEBASE_ANALYSIS.md
 DEVLOG.md
+CLAUDE.md
+.claude/
