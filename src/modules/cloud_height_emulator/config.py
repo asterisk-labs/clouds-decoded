@@ -17,7 +17,7 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         description="Path to the model weights file (.pth)."
     )
     bands: List[str] = Field(
-        default=["B02", "B03", "B04", "B08", "B11", "B12"],
+        default=["B02", "B03", "B04", "B08", "B11", "B12","B09","B10"],
         description="Bands to use for inference."
     )
     window_size: Tuple[int, int] = Field(
@@ -35,13 +35,9 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         description="Batch size for inference."
     )
     in_channels: int = Field(
-        default=6,
+        default=8,
         ge=1,
         description="Number of input channels expected by the model."
-    )
-    max_reflectance: float = Field(
-        default=20_000,
-        description="Maximum reflectance value used during training for input normalisation."
     )
     device: Optional[str] = Field(
         default="cuda",

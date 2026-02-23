@@ -82,3 +82,26 @@ class NormalizationWrapper(nn.Module):
             self.out_max.cpu().numpy().tolist(),
         ))
         return {"input_ranges": in_ranges, "output_ranges": out_ranges}
+
+
+class CloudHeightNormalizationWrapper(NormalizationWrapper):
+    """
+    Wraps the InversionNet to handle normalization internally.
+    Stats are registered as buffers, so they save/load automatically with torch.save().
+    """
+
+    def forward(self, x):
+        """
+        Takes raw inputs -> Returns physical outputs and normalized ones for loss.
+        """
+        x_norm = self.normalize_input(x)
+        output = self.model(x_norm)
+        
+        if isinstance(output, dict):
+            if "regression" in output:
+                output["regression_norm"] = output["regression"]
+                output["regression"] = self.denormalize_output(output["regression"])
+        else:
+            output = self.denormalize_output(output)
+            
+        return output
