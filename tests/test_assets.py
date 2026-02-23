@@ -146,6 +146,41 @@ class TestEmulatorConfigPthPath:
 
 
 # ---------------------------------------------------------------------------
+# CloudMaskConfig — model_path resolution
+# ---------------------------------------------------------------------------
+
+class TestCloudMaskConfigModelPath:
+    def test_default_points_to_assets_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))
+
+        import importlib
+        import clouds_decoded.assets
+        importlib.reload(clouds_decoded.assets)
+
+        from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
+        cfg = CloudMaskConfig()
+
+        assert cfg.model_path == str(tmp_path / "models" / "cloud_mask" / "default.pt")
+
+    def test_explicit_path_not_overridden(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))
+
+        from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
+        cfg = CloudMaskConfig(model_path="/custom/path/model.pt")
+
+        assert cfg.model_path == "/custom/path/model.pt"
+
+    def test_threshold_method_still_resolves_path(self, tmp_path, monkeypatch):
+        """model_path validator runs regardless of method."""
+        monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))
+
+        from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
+        cfg = CloudMaskConfig(method="threshold")
+
+        assert cfg.model_path == str(tmp_path / "models" / "cloud_mask" / "default.pt")
+
+
+# ---------------------------------------------------------------------------
 # Refl2PropConfig — model_path resolution
 # ---------------------------------------------------------------------------
 

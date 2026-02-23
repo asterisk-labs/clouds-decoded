@@ -118,6 +118,13 @@ KNOWN_ASSETS: dict[str, Asset] = {
         size_hint="~50 MB",
         description="Refl2prop model weights",
     ),
+    "cloud_mask": Asset(
+        key="cloud_mask",
+        relative_path="models/cloud_mask/default.pt",
+        url="https://huggingface.co/aliFrancis/SEnSeIv2/resolve/main/full-models/SegFormerB2-S2-unambiguous/weights.pt",
+        size_hint="~105 MB",
+        description="Cloud mask SegFormer model weights",
+    ),
     "gebco": Asset(
         key="gebco",
         relative_path="data/GEBCO_2024.nc",

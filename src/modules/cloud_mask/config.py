@@ -1,5 +1,5 @@
 from typing import Optional, Literal, List
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import BANDS
 
@@ -55,13 +55,13 @@ class CloudMaskConfig(BaseProcessorConfig):
     )
 
     # SEnSeIv2 Parameters
-    model_name: str = Field(
-        default="SegFormerB2-S2-unambiguous",
-        description="HuggingFace model name for SEnSeIv2"
-    )
-    output_style: str = Field(
-        default="4-class",
-        description="Output style: 'cloud-noncloud', '4-class', etc."
+    model_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to the cloud mask model weights (.pt). "
+            "Defaults to the managed assets directory; run "
+            "'clouds-decoded download cloud_mask' to fetch weights."
+        ),
     )
     device: Optional[str] = Field(
         default=None,
@@ -98,6 +98,16 @@ class CloudMaskConfig(BaseProcessorConfig):
         le=10000,
         description="Reflectance threshold (DN, 0-10000)"
     )
+
+    @model_validator(mode='after')
+    def _resolve_model_path(self) -> 'CloudMaskConfig':
+        """If no explicit path is given, point at the managed asset location."""
+        if self.model_path is None:
+            from clouds_decoded.assets import get_asset
+            object.__setattr__(
+                self, "model_path", str(get_asset("models/cloud_mask/default.pt"))
+            )
+        return self
 
     @field_validator('threshold_band')
     @classmethod

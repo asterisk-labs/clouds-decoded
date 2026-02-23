@@ -27,7 +27,7 @@ dependencies = [
     "matplotlib",
     "zarr",
     "platformdirs",
-    "SEnSeIv2 @ git+https://github.com/aliFrancis/SEnSeIv2.git",
+    "transformers>=4.30.0",
     "panel",
     "holoviews",
     "bokeh",

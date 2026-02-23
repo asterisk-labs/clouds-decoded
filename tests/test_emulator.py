@@ -74,7 +74,7 @@ def mock_unet():
 @pytest.fixture(autouse=True)
 def mock_dataloader():
     """Ensure DataLoader uses num_workers=0 to avoid multiprocessing issues in tests."""
-    with patch("clouds_decoded.modules.cloud_height_emulator.processor.DataLoader") as mock:
+    with patch("clouds_decoded.sliding_window.DataLoader") as mock:
         def side_effect(dataset, **kwargs):
             kwargs['num_workers'] = 0
             kwargs['pin_memory'] = False

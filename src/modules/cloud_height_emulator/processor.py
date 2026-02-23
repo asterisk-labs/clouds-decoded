@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from torch.utils.data import Dataset, DataLoader
 import torch
 import numpy as np
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Union, List, Tuple
+from typing import Optional, Union
 from skimage.transform import resize
 from tqdm import tqdm
 import time
@@ -15,42 +14,10 @@ from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeight
 from clouds_decoded.normalization import CloudHeightNormalizationWrapper
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.modules.cloud_height_emulator.resunet import Res34_Unet
+from clouds_decoded.sliding_window import SlidingWindowInference
 
 
 logger = logging.getLogger(__name__)
-
-
-class WindowDataset(Dataset):
-    """Dataset that yields input windows for a list of (i, j) grid positions."""
-
-    def __init__(
-        self,
-        input_padded: torch.Tensor,
-        valid_indices: List[Tuple[int, int]],
-        stride_h: int,
-        stride_w: int,
-        h_win: int,
-        w_win: int,
-    ):
-        self.input_padded = input_padded
-        self.valid_indices = valid_indices
-        self.stride_h = stride_h
-        self.stride_w = stride_w
-        self.h_win = h_win
-        self.w_win = w_win
-
-    def __len__(self):
-        return len(self.valid_indices)
-
-    def __getitem__(self, idx):
-        i, j = self.valid_indices[idx]
-        h_start = i * self.stride_h
-        w_start = j * self.stride_w
-        h_end = h_start + self.h_win
-        w_end = w_start + self.w_win
-
-        window = self.input_padded[:, :, h_start:h_end, w_start:w_end]
-        return window.squeeze(0), i, j
 
 
 class CloudHeightEmulatorProcessor:
@@ -175,12 +142,40 @@ class CloudHeightEmulatorProcessor:
             ).astype(np.uint8)
 
         logger.info(f"Running inference on shape {input_stack.shape}")
-        input_tensor = torch.from_numpy(input_stack).float()
-        output_data = self._sliding_window_inference(input_tensor, mask_array)
 
-        # output_data is (1, H, W) or (H, W)
-        if output_data.ndim == 3:
-            output_data = output_data[0]
+        w = self.config.window_size[0]  # window is always square
+
+        def model_fn(x: torch.Tensor) -> torch.Tensor:
+            with torch.no_grad():
+                outputs = self.model(x)
+            if isinstance(outputs, dict):
+                preds = outputs["regression"]
+                preds_cloud = outputs.get("segmentation")
+                if preds_cloud is not None:
+                    cloud_masks = torch.sigmoid(preds_cloud)
+                    if preds.dim() == 3:
+                        preds = preds.unsqueeze(1)
+                    if cloud_masks.dim() == 3:
+                        cloud_masks = cloud_masks.unsqueeze(1)
+                    preds[cloud_masks < 0.5] = 0
+            else:
+                preds = outputs
+            if preds.dim() == 3:
+                preds = preds.unsqueeze(1)
+            return preds
+
+        swi = SlidingWindowInference(
+            window_size=w,
+            overlap=self.config.overlap,
+            context_pad=w // 8,
+            batch_size=self.config.batch_size,
+            device=self.device,
+        )
+        output_data = swi(
+            input_stack, model_fn, n_output_channels=1, skip_mask=mask_array
+        )  # (1, H, W)
+
+        output_data = output_data[0]  # (H, W)
 
         # Mark invalid pixels (zero or negative height) as NaN to match
         # the original cloud height processor's convention.
@@ -233,158 +228,3 @@ class CloudHeightEmulatorProcessor:
             mask_array = mask_array[0]
 
         return mask_array
-
-    def _sliding_window_inference(
-        self,
-        input_bands: torch.Tensor,
-        mask: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """Performs sliding window inference with symmetric context padding.
-
-        When a cloud mask is provided, windows whose output region is entirely
-        clear sky (mask == 0) are skipped — no inference is run for them.
-        The segmentation head additionally zeros out pixels the model itself
-        considers non-cloud.
-        """
-        window_size = self.config.window_size
-        overlap = self.config.overlap
-        batch_size = self.config.batch_size
-        device = self.device
-
-        C, H, W = input_bands.shape
-
-        # Context padding (equal on all sides for 'center' crop)
-        win_pad_h, win_pad_w = window_size[0] // 8, window_size[1] // 8
-
-        # Effective window size (output window + 2 * context)
-        h_win = window_size[0] + 2 * win_pad_h
-        w_win = window_size[1] + 2 * win_pad_w
-
-        # Stride based on the output window size
-        stride_h = window_size[0] - overlap
-        stride_w = window_size[1] - overlap
-
-        h_steps = (H + stride_h - 1) // stride_h
-        w_steps = (W + stride_w - 1) // stride_w
-
-        pad_top = win_pad_h
-        pad_left = win_pad_w
-
-        required_H = (h_steps - 1) * stride_h + h_win
-        required_W = (w_steps - 1) * stride_w + w_win
-
-        pad_bottom = max(required_H - (H + pad_top), win_pad_h)
-        pad_right = max(required_W - (W + pad_left), win_pad_w)
-
-        input_tensor = input_bands.unsqueeze(0)
-        input_padded = torch.nn.functional.pad(
-            input_tensor, (pad_left, pad_right, pad_top, pad_bottom), mode='reflect')
-
-        _, _, H_pad, W_pad = input_padded.shape
-
-        # Determine which windows actually contain cloud pixels
-        valid_indices = self._get_valid_window_indices(
-            mask, h_steps, w_steps, stride_h, stride_w, window_size, H, W,
-        )
-
-        total_windows = h_steps * w_steps
-        if len(valid_indices) < total_windows:
-            logger.info(
-                f"Mask skipping {total_windows - len(valid_indices)}/{total_windows} "
-                f"clear-sky windows"
-            )
-
-        output_padded = torch.zeros((1, H_pad, W_pad), device=device)
-        count_map = torch.zeros((1, H_pad, W_pad), device=device)
-
-        dataset = WindowDataset(
-            input_padded, valid_indices, stride_h, stride_w, h_win, w_win,
-        )
-        dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            num_workers=min(os.cpu_count(), self.config.batch_size + 4),
-            shuffle=False,
-            pin_memory=(device == "cuda")
-        )
-
-        with torch.no_grad():
-            for batch_windows, batch_i, batch_j in tqdm(dataloader, desc="Inference Batches"):
-                batch_windows = batch_windows.to(device)
-                outputs = self.model(batch_windows)
-
-                if isinstance(outputs, dict):
-                    preds = outputs["regression"]
-                    preds_cloud = outputs.get("segmentation")
-                    if preds_cloud is not None:
-                        cloud_masks = torch.sigmoid(preds_cloud)
-                        if preds.dim() == 3:
-                            preds = preds.unsqueeze(1)
-                        if cloud_masks.dim() == 3:
-                            cloud_masks = cloud_masks.unsqueeze(1)
-                        # Zero out heights where model thinks it's not cloud
-                        preds[cloud_masks < 0.5] = 0
-                else:
-                    preds = outputs
-
-                if preds.dim() == 3:
-                    preds = preds.unsqueeze(1)
-
-                for idx in range(preds.shape[0]):
-                    i = batch_i[idx].item()
-                    j = batch_j[idx].item()
-                    h_start = i * stride_h
-                    w_start = j * stride_w
-
-                    output_window = preds[idx, :, win_pad_h: win_pad_h + window_size[0],
-                                          win_pad_w: win_pad_w + window_size[1]]
-
-                    h_end_out = h_start + window_size[0]
-                    w_end_out = w_start + window_size[1]
-
-                    output_padded[:, h_start:h_end_out,
-                                  w_start:w_end_out] += output_window
-                    count_map[:, h_start:h_end_out, w_start:w_end_out] += 1.0
-
-        # Average overlapping windows
-        output_padded /= torch.clamp(count_map, min=1.0)
-
-        # Crop to original size (denormalization already handled by wrapper)
-        output_full = output_padded[:, :H, :W]
-
-        return output_full.cpu().numpy()
-
-    @staticmethod
-    def _get_valid_window_indices(
-        mask: Optional[np.ndarray],
-        h_steps: int,
-        w_steps: int,
-        stride_h: int,
-        stride_w: int,
-        window_size: Tuple[int, int],
-        H: int,
-        W: int,
-    ) -> List[Tuple[int, int]]:
-        """Return (i, j) pairs for windows that overlap with cloud pixels.
-
-        If no mask is provided, all windows are valid.
-        """
-        all_indices = [
-            (i, j) for i in range(h_steps) for j in range(w_steps)
-        ]
-
-        if mask is None:
-            return all_indices
-
-        valid = []
-        for i, j in all_indices:
-            # Output region in original (unpadded) coordinates
-            h_start = i * stride_h
-            w_start = j * stride_w
-            h_end = min(h_start + window_size[0], H)
-            w_end = min(w_start + window_size[1], W)
-
-            if mask[h_start:h_end, w_start:w_end].any():
-                valid.append((i, j))
-
-        return valid
