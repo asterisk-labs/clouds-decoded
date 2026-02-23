@@ -10,44 +10,14 @@ from typing import Optional, Union, List, Tuple
 from skimage.transform import resize
 from tqdm import tqdm
 import time
-
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeightMetadata, CloudMaskData
 
-from clouds_decoded.normalization import NormalizationWrapper
+from clouds_decoded.normalization import CloudHeightNormalizationWrapper
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.modules.cloud_height_emulator.resunet import Res34_Unet
 
 
 logger = logging.getLogger(__name__)
-
-
-class HeightEmulatorNormWrapper(NormalizationWrapper):
-    """Wraps Res34_Unet with linear input/output scaling.
-
-    Unlike the min-max [-1, 1] convention used by MLP wrappers, the
-    height emulator uses simple linear scaling:
-
-    * **Input**:  ``reflectance * scale_factor``  (scale stored in ``in_max``).
-    * **Output**: ``model_regression * max_reflectance``  (stored in ``out_max``).
-
-    The regression head is denormalized; the segmentation logit is left
-    untouched for downstream sigmoid thresholding.
-    """
-
-    def normalize_input(self, x: torch.Tensor) -> torch.Tensor:
-        """Scale reflectance by a fixed factor (``in_max``)."""
-        return x * self.in_max
-
-    def denormalize_output(self, y: torch.Tensor) -> torch.Tensor:
-        """Scale model regression output to height in metres."""
-        return y * self.out_max
-
-    def forward(self, x: torch.Tensor) -> dict:
-        """Normalize input, run model, denormalize regression output."""
-        outputs = self.model(self.normalize_input(x))
-        if isinstance(outputs, dict):
-            outputs["regression"] = self.denormalize_output(outputs["regression"])
-        return outputs
 
 
 class WindowDataset(Dataset):
@@ -98,7 +68,8 @@ class CloudHeightEmulatorProcessor:
 
     def _load_model(self):
         if self.model is None:
-            logger.info(f"Loading Cloud Height Emulator model on {self.device}")
+            logger.info(
+                f"Loading Cloud Height Emulator model on {self.device}")
             core = Res34_Unet(
                 in_channels=self.config.in_channels,
                 out_channels=[1, 1],
@@ -107,55 +78,42 @@ class CloudHeightEmulatorProcessor:
                 pretrained=False
             )
 
-            scale_factor = self.config.max_reflectance / 40_000
-            self.model = HeightEmulatorNormWrapper(
+            self.model = CloudHeightNormalizationWrapper(
                 model=core,
-                input_stats={"min": [0.0], "max": [scale_factor]},
-                output_stats={"min": [0.0], "max": [self.config.max_reflectance]},
-            )
+                input_stats={"min": 0.0, "max": 1.0},
+                output_stats={"min": 0.0, "max": 1.0},
+            )  # default params, are loaded in the checkpoint.
 
             if self.config.pth_path:
                 pth_path = Path(self.config.pth_path)
                 if pth_path.exists():
                     logger.info(f"Loading checkpoint from {pth_path}")
                     state_dict = torch.load(pth_path, map_location=self.device)
+                    if any(k.startswith("model.") for k in state_dict.keys()):
+                        import re
+                        state_dict = {
+                            re.sub(r"^model\.", "", k): v
+                            for k, v in state_dict.items()
+                        }
 
                     # Detect checkpoint format: wrapper (keys include
                     # normalization buffers) vs raw Res34_Unet weights.
-                    has_wrapper_keys = any(
-                        k in state_dict for k in ("in_min", "in_max", "out_min", "out_max")
-                    )
+                    has_wrapper_keys = any(k in state_dict for k in (
+                        "in_min", "in_max", "out_min", "out_max"))
 
                     if has_wrapper_keys:
                         # Full wrapper checkpoint — load into self.model
                         self.model.load_state_dict(state_dict, strict=True)
                     else:
-                        # Legacy raw checkpoint — strip 'model.' prefix
-                        # (e.g. from DataParallel / Lightning) and load
-                        # into the inner Res34_Unet only.
-                        if any(k.startswith("model.") for k in state_dict.keys()):
-                            state_dict = {
-                                k.replace("model.", ""): v
-                                for k, v in state_dict.items()
-                            }
-                        result = self.model.model.load_state_dict(
-                            state_dict, strict=False,
-                        )
-                        if result.missing_keys:
-                            raise ValueError(
-                                f"Missing keys: {result.missing_keys}. "
-                                "Did you use the correct checkpoint?"
-                            )
-                        if result.unexpected_keys:
-                            raise ValueError(
-                                f"Unexpected keys: {result.unexpected_keys}. "
-                                "Did you use the correct checkpoint?"
-                            )
-                        self.model.model.load_state_dict(state_dict, strict=True)
+                        raise ValueError(
+                            "Checkpoint does not contain wrapper keys.")
+
                 else:
-                    logger.warning(f"Checkpoint {pth_path} not found. Using initialized weights.")
+                    logger.warning(
+                        f"Checkpoint {pth_path} not found. Using initialized weights.")
             else:
-                logger.warning("No checkpoint path provided! Using initialized weights.")
+                logger.warning(
+                    "No checkpoint path provided! Using initialized weights.")
 
             self.model.to(self.device)
             self.model.eval()
@@ -163,7 +121,8 @@ class CloudHeightEmulatorProcessor:
     def process(
         self,
         scene: Sentinel2Scene,
-        cloud_mask: Optional[Union[CloudMaskData, np.ndarray, str, Path]] = None,
+        cloud_mask: Optional[Union[CloudMaskData,
+                                   np.ndarray, str, Path]] = None,
     ) -> CloudHeightGridData:
         """Runs cloud height emulation on a Sentinel-2 scene.
 
@@ -197,13 +156,15 @@ class CloudHeightEmulatorProcessor:
         for bname in band_order:
             band_data = scene.get_band(bname, reflectance=True)
             if band_data.shape != target_shape:
-                band_data = resize(band_data, target_shape, preserve_range=True, order=1).astype(np.float32)
+                band_data = resize(
+                    band_data, target_shape, preserve_range=True, order=1).astype(np.float32)
             data_list.append(band_data)
 
         input_stack = np.stack(data_list, axis=0)  # (C, H, W)
 
         if input_stack.shape[0] != self.config.in_channels:
-            logger.warning(f"Input channel count {input_stack.shape[0]} != config.in_channels {self.config.in_channels}.")
+            logger.warning(
+                f"Input channel count {input_stack.shape[0]} != config.in_channels {self.config.in_channels}.")
             if input_stack.shape[0] > self.config.in_channels:
                 input_stack = input_stack[:self.config.in_channels]
 
@@ -235,7 +196,8 @@ class CloudHeightEmulatorProcessor:
             processing_config=self.config.model_dump()
         )
         ending_time = time.time()
-        logger.info(f"Inference completed in {ending_time - starting_time:.1f} seconds")
+        logger.info(
+            f"Inference completed in {ending_time - starting_time:.1f} seconds")
         return CloudHeightGridData(
             data=output_data,
             transform=scene.transform,
@@ -256,14 +218,16 @@ class CloudHeightEmulatorProcessor:
                 cm_obj = CloudMaskData.from_file(str(cloud_mask))
                 mask_array = cm_obj.data
             except Exception:
-                logger.warning(f"Could not load {cloud_mask} as CloudMaskData. Ignoring mask.")
+                logger.warning(
+                    f"Could not load {cloud_mask} as CloudMaskData. Ignoring mask.")
                 return None
         elif isinstance(cloud_mask, CloudMaskData):
             mask_array = cloud_mask.data
         elif isinstance(cloud_mask, np.ndarray):
             mask_array = cloud_mask
         else:
-            logger.warning(f"Unsupported cloud_mask type: {type(cloud_mask)}. Ignoring mask.")
+            logger.warning(
+                f"Unsupported cloud_mask type: {type(cloud_mask)}. Ignoring mask.")
             return None
 
         if mask_array.ndim == 3:
@@ -348,7 +312,6 @@ class CloudHeightEmulatorProcessor:
         with torch.no_grad():
             for batch_windows, batch_i, batch_j in tqdm(dataloader, desc="Inference Batches"):
                 batch_windows = batch_windows.to(device)
-
                 outputs = self.model(batch_windows)
 
                 if isinstance(outputs, dict):
@@ -374,13 +337,14 @@ class CloudHeightEmulatorProcessor:
                     h_start = i * stride_h
                     w_start = j * stride_w
 
-                    output_window = preds[idx, :, win_pad_h : win_pad_h + window_size[0],
-                                                win_pad_w : win_pad_w + window_size[1]]
+                    output_window = preds[idx, :, win_pad_h: win_pad_h + window_size[0],
+                                          win_pad_w: win_pad_w + window_size[1]]
 
                     h_end_out = h_start + window_size[0]
                     w_end_out = w_start + window_size[1]
 
-                    output_padded[:, h_start:h_end_out, w_start:w_end_out] += output_window
+                    output_padded[:, h_start:h_end_out,
+                                  w_start:w_end_out] += output_window
                     count_map[:, h_start:h_end_out, w_start:w_end_out] += 1.0
 
         # Average overlapping windows
