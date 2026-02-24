@@ -398,20 +398,38 @@ class Sentinel2Scene(Data):
 
     # --- Data Retrieval Methods ---
 
+    def _get_b02_dims(self, scene_directory: Path, existing_paths: dict) -> tuple:
+        """Return the actual (width, height) of the B02 band file.
+
+        Uses an already-resolved path from *existing_paths* if available,
+        otherwise resolves it fresh.  This gives a reliable reference for
+        scaling crop windows without relying on nominal BAND_RESOLUTIONS
+        constants, which may differ from actual pixel dimensions in newer
+        SAFE processing baselines.
+        """
+        if 'B02' in existing_paths:
+            b02_path = existing_paths['B02']
+        else:
+            b02_path = self._get_band_paths(scene_directory, ['B02'])['B02']
+        with rio.open(b02_path) as src:
+            return src.width, src.height
+
     def _get_bands(self, scene_directory: Path, bands: List[str], crop_window=None):
         paths = self._get_band_paths(scene_directory, bands)
         bands_data = BandDict()
+        if crop_window:
+            b02_w, b02_h = self._get_b02_dims(scene_directory, paths)
         for band, path in paths.items():
             with rio.open(path) as src:
                 if crop_window:
-                    scale = BAND_RESOLUTIONS.get('B02', 10) / BAND_RESOLUTIONS.get(band, 10)
                     col_off, row_off, width, height = crop_window
-                    
+                    scale_x = src.width / b02_w
+                    scale_y = src.height / b02_h
                     window = Window(
-                        col_off=int(col_off * scale),
-                        row_off=int(row_off * scale),
-                        width=int(width * scale),
-                        height=int(height * scale)
+                        col_off=int(col_off * scale_x),
+                        row_off=int(row_off * scale_y),
+                        width=int(width * scale_x),
+                        height=int(height * scale_y),
                     )
                     bands_data[band] = src.read(1, window=window)
                 else:
@@ -422,19 +440,19 @@ class Sentinel2Scene(Data):
         # Logic mirrors _get_bands but for footprints
         paths = self._get_footprint_paths(scene_directory, bands)
         footprints = {}
+        if crop_window:
+            b02_w, b02_h = self._get_b02_dims(scene_directory, paths)
         for band, path in paths.items():
             with rio.open(path) as src:
                 if crop_window:
-                    # Assuming same resolution scaling applies to footprints as bands
-                    # (This is true for Sentinel-2 typically)
-                    scale = BAND_RESOLUTIONS.get('B02', 10) / BAND_RESOLUTIONS.get(band, 10)
                     col_off, row_off, width, height = crop_window
-                    
+                    scale_x = src.width / b02_w
+                    scale_y = src.height / b02_h
                     window = Window(
-                        col_off=int(col_off * scale),
-                        row_off=int(row_off * scale),
-                        width=int(width * scale),
-                        height=int(height * scale)
+                        col_off=int(col_off * scale_x),
+                        row_off=int(row_off * scale_y),
+                        width=int(width * scale_x),
+                        height=int(height * scale_y),
                     )
                     footprints[band] = src.read(1, window=window)
                 else:

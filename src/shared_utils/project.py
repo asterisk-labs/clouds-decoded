@@ -65,7 +65,6 @@ class ProjectConfig(BaseModel):
     )
     scenes: List[str] = Field(default_factory=list, description="Absolute paths to .SAFE directories")
     created_at: str = Field(default="", description="ISO timestamp of project creation")
-    use_emulator: bool = Field(default=True, description="Use emulator for cloud height retrieval")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "ProjectConfig":
@@ -110,12 +109,20 @@ class Provenance(BaseModel):
     pipeline: str = ""
     step_name: str = ""
     step_config: Dict[str, Any] = Field(default_factory=dict)
+    crop_window: Optional[str] = Field(
+        default=None,
+        description="Spatial crop applied when reading the scene, or None for full scene"
+    )
 
 
 class SceneManifest(BaseModel):
     """Per-scene processing manifest, stored as manifest.json."""
     scene_id: str
     scene_path: str
+    crop_window: Optional[str] = Field(
+        default=None,
+        description="Spatial crop applied when reading the scene ('col_off,row_off,width,height'), or None for full scene"
+    )
     provenance: Optional[Provenance] = None
     steps: Dict[str, StepResult] = Field(default_factory=dict)
     last_updated: Optional[str] = None
@@ -183,7 +190,6 @@ class Project:
         name: Optional[str] = None,
         pipeline: str = "full-workflow",
         clone_from: Optional[str] = None,
-        use_emulator: bool = True,
     ) -> "Project":
         """Create a new project directory with default config YAMLs.
 
@@ -211,7 +217,6 @@ class Project:
                 )
             source_project = cls(source_dir)
             pipeline = source_project.config.pipeline
-            use_emulator = source_project.config.use_emulator
 
         project_dir.mkdir(parents=True, exist_ok=True)
 
@@ -219,7 +224,6 @@ class Project:
             name=name,
             pipeline=pipeline,
             created_at=datetime.now().isoformat(),
-            use_emulator=use_emulator,
         )
         config.to_yaml(project_dir / "project.yaml")
 
@@ -289,18 +293,33 @@ class Project:
         """Extract scene ID from .SAFE path (basename without .SAFE)."""
         return Path(scene_path).stem
 
-    def _scene_output_dir(self, scene_id: str) -> Path:
-        return self.scenes_dir / scene_id
+    def _scene_output_dir(self, scene_id: str, crop_window: Optional[str] = None) -> Path:
+        """Return the output directory for a scene run.
 
-    def _load_manifest(self, scene_id: str, scene_path: str) -> SceneManifest:
-        manifest_path = self._scene_output_dir(scene_id) / "manifest.json"
+        Full-scene runs are stored directly under scenes/<scene_id>/.
+        Cropped runs are isolated under scenes/<scene_id>/crops/<crop_id>/,
+        where crop_id replaces commas with underscores (e.g. '100_200_512_512').
+        This allows multiple crop windows to coexist for the same scene.
+        """
+        base = self.scenes_dir / scene_id
+        if crop_window is not None:
+            crop_id = crop_window.replace(",", "_")
+            return base / "crops" / crop_id
+        return base
+
+    def _load_manifest(
+        self, scene_id: str, scene_path: str, crop_window: Optional[str] = None
+    ) -> SceneManifest:
+        manifest_path = self._scene_output_dir(scene_id, crop_window) / "manifest.json"
         if manifest_path.exists():
             return SceneManifest.from_json(manifest_path)
-        return SceneManifest(scene_id=scene_id, scene_path=scene_path)
+        return SceneManifest(scene_id=scene_id, scene_path=scene_path, crop_window=crop_window)
 
-    def _save_manifest(self, scene_id: str, manifest: SceneManifest):
+    def _save_manifest(
+        self, scene_id: str, manifest: SceneManifest, crop_window: Optional[str] = None
+    ):
         manifest.last_updated = datetime.now().isoformat()
-        manifest_path = self._scene_output_dir(scene_id) / "manifest.json"
+        manifest_path = self._scene_output_dir(scene_id, crop_window) / "manifest.json"
         manifest.to_json(manifest_path)
 
     # ------------------------------------------------------------------
@@ -333,7 +352,9 @@ class Project:
         if step == "cloud_mask":
             return CloudMaskConfig.from_yaml(config_path)
         elif step == "cloud_height":
-            if self.config.use_emulator:
+            # Peek at use_emulator in the YAML to select the right config class
+            raw = yaml.safe_load(self._config_yaml_path(step).read_bytes()) or {}
+            if raw.get("use_emulator", True):
                 return CloudHeightEmulatorConfig.from_yaml(config_path)
             return CloudHeightConfig.from_yaml(config_path)
         elif step == "albedo":
@@ -352,7 +373,6 @@ class Project:
     def _write_default_configs(self):
         """Write default YAML configs for each module."""
         from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
-        from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
         from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
         from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
         from clouds_decoded.modules.refocus.config import RefocusConfig
@@ -361,10 +381,7 @@ class Project:
         self.configs_dir.mkdir(parents=True, exist_ok=True)
 
         CloudMaskConfig().to_yaml(str(self.configs_dir / "cloud_mask.yaml"))
-        if self.config.use_emulator:
-            CloudHeightEmulatorConfig().to_yaml(str(self.configs_dir / "cloud_height.yaml"))
-        else:
-            CloudHeightConfig().to_yaml(str(self.configs_dir / "cloud_height.yaml"))
+        CloudHeightEmulatorConfig().to_yaml(str(self.configs_dir / "cloud_height.yaml"))
         AlbedoEstimatorConfig().to_yaml(str(self.configs_dir / "albedo.yaml"))
         RefocusConfig().to_yaml(str(self.configs_dir / "refocus.yaml"))
         Refl2PropConfig().to_yaml(
@@ -411,6 +428,7 @@ class Project:
         product_id: Optional[str],
         step_name: str,
         step_config_dict: Dict[str, Any],
+        crop_window: Optional[str] = None,
     ) -> Provenance:
         import sys
         return Provenance(
@@ -424,6 +442,7 @@ class Project:
             pipeline=self.config.pipeline,
             step_name=step_name,
             step_config=step_config_dict,
+            crop_window=crop_window,
         )
 
     # ------------------------------------------------------------------
@@ -455,6 +474,7 @@ class Project:
         scene_out: Path,
         scene_path: str,
         current_config_dict: Dict[str, Any],
+        crop_window: Optional[str] = None,
     ) -> Optional[str]:
         """Validate that an output file's embedded provenance matches the current config.
 
@@ -519,6 +539,14 @@ class Project:
                 f"File was produced with different settings than the current config."
             )
 
+        # Check crop_window matches
+        file_crop = provenance.get("crop_window")
+        if file_crop != crop_window:
+            return (
+                f"[{step}] {filepath.name} was produced with crop_window={file_crop!r}, "
+                f"but current run uses crop_window={crop_window!r}."
+            )
+
         return None
 
     # ------------------------------------------------------------------
@@ -543,6 +571,12 @@ class Project:
             crop_window: Optional spatial crop 'col_off,row_off,width,height'
                 applied when reading each scene.
         """
+        # Normalise crop_window to canonical form (no spaces) so that
+        # "500, 500, 2000, 2000" and "500,500,2000,2000" are treated identically
+        # and map to the same output directory.
+        if crop_window is not None:
+            crop_window = ",".join(p.strip() for p in crop_window.split(","))
+
         # Lazy imports to avoid circular dependencies and heavy torch import
         from clouds_decoded.modules.cloud_mask.config import PostProcessParams
         from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor
@@ -568,10 +602,10 @@ class Project:
             logger.info(f"Scene: {scene_id}")
             logger.info(f"{'='*60}")
 
-            scene_out = self._scene_output_dir(scene_id)
+            scene_out = self._scene_output_dir(scene_id, crop_window)
             scene_out.mkdir(parents=True, exist_ok=True)
 
-            manifest = self._load_manifest(scene_id, scene_path)
+            manifest = self._load_manifest(scene_id, scene_path, crop_window)
 
             # Determine which steps need running
             steps_to_run = self.steps
@@ -587,7 +621,10 @@ class Project:
                             computed = type(step_config).model_computed_fields
                             exclude = set(computed.keys()) if computed else set()
                             config_dict = step_config.model_dump(mode='json', exclude=exclude)
-                            error = self._validate_step_file(step, scene_out, scene_path, config_dict)
+                            error = self._validate_step_file(
+                                step, scene_out, scene_path, config_dict,
+                                crop_window=crop_window,
+                            )
                             if error is not None:
                                 logger.error(
                                     f"  {error}\n"
@@ -616,6 +653,10 @@ class Project:
             if invalidate_from is None:
                 logger.info(f"All steps complete for {scene_id}")
                 continue
+
+            # Record the crop window used for this run in the manifest
+            manifest.crop_window = crop_window
+            self._save_manifest(scene_id, manifest, crop_window)
 
             # Load scene
             from clouds_decoded.data import Sentinel2Scene
@@ -666,7 +707,7 @@ class Project:
                     started_at=datetime.now().isoformat(),
                 )
                 manifest.steps[step] = step_result
-                self._save_manifest(scene_id, manifest)
+                self._save_manifest(scene_id, manifest, crop_window)
 
                 t_start = time.time()
                 try:
@@ -676,6 +717,7 @@ class Project:
                         height_result=height_result,
                         albedo_result=albedo_result,
                         refocused_scene=refocused_scene,
+                        crop_window=crop_window,
                     )
 
                     # Capture results for downstream steps
@@ -713,10 +755,10 @@ class Project:
                     step_result.duration_seconds = round(duration, 1)
                     step_result.error = str(e)
                     logger.error(f"  [{step}] FAILED: {e}")
-                    self._save_manifest(scene_id, manifest)
+                    self._save_manifest(scene_id, manifest, crop_window)
                     break  # Stop pipeline on failure
 
-                self._save_manifest(scene_id, manifest)
+                self._save_manifest(scene_id, manifest, crop_window)
 
         logger.info(f"\nProject run complete.")
 
@@ -730,6 +772,7 @@ class Project:
         height_result=None,
         albedo_result=None,
         refocused_scene=None,
+        crop_window: Optional[str] = None,
     ):
         """Run a single processing step. Returns output path or scene object."""
         # Lazy imports
@@ -747,7 +790,9 @@ class Project:
         exclude = set(computed.keys()) if computed else set()
         config_dict = step_config.model_dump(mode='json', exclude=exclude)
         product_id = getattr(scene, 'product_uri', None)
-        provenance = self._build_provenance(scene_path, product_id, step, config_dict)
+        provenance = self._build_provenance(
+            scene_path, product_id, step, config_dict, crop_window=crop_window
+        )
 
         if step == "cloud_mask":
             output_path = str(scene_out / STEP_OUTPUT_FILE[step])
@@ -762,7 +807,6 @@ class Project:
                 scene, step_config,
                 output_path=output_path,
                 cloud_mask=mask_result,
-                use_emulator=self.config.use_emulator,
             )
             result.metadata.provenance = provenance.model_dump()
             result.write(output_path)
@@ -857,6 +901,23 @@ class Project:
     # Status
     # ------------------------------------------------------------------
 
+    def _status_row(self, label: str, manifest: SceneManifest, steps: List[str]) -> str:
+        """Format one row of the status table."""
+        cols = []
+        for step in steps:
+            if step in manifest.steps:
+                result = manifest.steps[step]
+                if result.status == "completed":
+                    cols.append("done")
+                elif result.status == "failed":
+                    cols.append("FAILED")
+                else:
+                    cols.append("--")
+            else:
+                cols.append("--")
+        display = label[:48] + ".." if len(label) > 50 else label
+        return f"{display:<50} " + " ".join(f"{c:<12}" for c in cols)
+
     def status(self) -> str:
         """Return a formatted status table for the project."""
         lines = []
@@ -865,31 +926,28 @@ class Project:
         lines.append("")
 
         steps = self.steps
-        # Header
         header = f"{'Scene':<50} " + " ".join(f"{s:<12}" for s in steps)
         lines.append(header)
         lines.append("-" * len(header))
 
         for scene_path in self.config.scenes:
             scene_id = self._scene_id(scene_path)
+
+            # Full-scene run
             manifest = self._load_manifest(scene_id, scene_path)
+            lines.append(self._status_row(scene_id, manifest, steps))
 
-            cols = []
-            for step in steps:
-                if step in manifest.steps:
-                    result = manifest.steps[step]
-                    if result.status == "completed":
-                        cols.append("done")
-                    elif result.status == "failed":
-                        cols.append("FAILED")
-                    else:
-                        cols.append("--")
-                else:
-                    cols.append("--")
-
-            # Truncate scene ID for display
-            display_id = scene_id[:48] + ".." if len(scene_id) > 50 else scene_id
-            line = f"{display_id:<50} " + " ".join(f"{c:<12}" for c in cols)
-            lines.append(line)
+            # Crop runs — each lives in scenes/<scene_id>/crops/<crop_id>/
+            crops_dir = self.scenes_dir / scene_id / "crops"
+            if crops_dir.exists():
+                for crop_dir in sorted(crops_dir.iterdir()):
+                    if not crop_dir.is_dir():
+                        continue
+                    manifest_path = crop_dir / "manifest.json"
+                    if not manifest_path.exists():
+                        continue
+                    crop_manifest = SceneManifest.from_json(manifest_path)
+                    crop_label = f"  crop:{crop_manifest.crop_window or crop_dir.name}"
+                    lines.append(self._status_row(crop_label, crop_manifest, steps))
 
         return "\n".join(lines)

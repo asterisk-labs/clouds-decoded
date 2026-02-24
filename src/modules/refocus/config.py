@@ -27,7 +27,9 @@ class RefocusConfig(BaseProcessorConfig):
 
     # Which bands to refocus (None = all bands in the scene)
     bands: Optional[List[str]] = Field(
-        default=['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B11', 'B12'], # same default as refl2prop (primary user of refocus)
+        default=['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B11', 'B12'],
+        # B09 and B10 are intentionally excluded — refl2prop (the primary consumer of
+        # refocused output) does not use them.  Set bands=None to include all bands.
         description="Bands to refocus. None = all bands in the scene."
     )
 

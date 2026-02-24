@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from enum import Enum
-from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 from pydantic import Field, computed_field, model_validator
 
@@ -157,16 +156,10 @@ class Refl2PropConfig(BaseProcessorConfig):
 
     @model_validator(mode='after')
     def _resolve_model_path(self) -> Refl2PropConfig:
-        """If no explicit path is given, fall back to managed assets then bundled file."""
+        """If no explicit path is given, point at the managed asset location."""
         if self.model_path is None:
             from clouds_decoded.assets import get_asset
-            managed = get_asset("models/refl2prop/default.pth")
-            if managed.exists():
-                object.__setattr__(self, "model_path", str(managed))
-            else:
-                # Bundled fallback shipped with the package
-                bundled = Path(__file__).parent / "models" / "model.pth"
-                object.__setattr__(self, "model_path", str(bundled))
+            object.__setattr__(self, "model_path", str(get_asset("models/refl2prop/default.pth")))
         return self
 
     # =========================================================================

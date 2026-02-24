@@ -90,6 +90,10 @@ class CloudHeightConfig(BaseProcessorConfig):
     )
 
     # System
+    use_emulator: bool = Field(
+        default=False,
+        description="Use deep learning emulator for cloud height retrieval"
+    )
     n_workers: int = Field(
         default=48,
         ge=1,

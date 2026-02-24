@@ -389,23 +389,22 @@ class TestProjectInit:
         """Config YAMLs produced by init() can be loaded by their config classes."""
         from clouds_decoded.project import Project
         from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
-        from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
         from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
         from clouds_decoded.modules.refocus.config import RefocusConfig
         from clouds_decoded.modules.refl2prop.config import Refl2PropConfig
 
         project_dir = tmp_path / "my_project"
-        # use_emulator=False so cloud_height.yaml uses CloudHeightConfig (not the emulator variant)
-        Project.init(str(project_dir), pipeline="full-workflow", use_emulator=False)
+        Project.init(str(project_dir), pipeline="full-workflow")
 
         configs_dir = project_dir / "configs"
         CloudMaskConfig.from_yaml(str(configs_dir / "cloud_mask.yaml"))
-        CloudHeightConfig.from_yaml(str(configs_dir / "cloud_height.yaml"))
+        from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
+        CloudHeightEmulatorConfig.from_yaml(str(configs_dir / "cloud_height.yaml"))
         AlbedoEstimatorConfig.from_yaml(str(configs_dir / "albedo.yaml"))
         RefocusConfig.from_yaml(str(configs_dir / "refocus.yaml"))
         r2p = Refl2PropConfig.from_yaml(str(configs_dir / "refl2prop.yaml"))
-        # model_path should default to the bundled model
-        assert "model.pth" in r2p.model_path
+        # model_path should default to the managed asset location
+        assert r2p.model_path.endswith("refl2prop/default.pth")
 
     def test_init_refuses_existing_project(self, tmp_path):
         """Project.init() raises if project.yaml already exists."""
@@ -802,3 +801,155 @@ class TestFileProvenanceValidation:
         )
         assert error is not None
         assert "DIFFERENT" in error
+
+    def test_validate_crop_window_mismatch(self, tmp_path):
+        """_validate_step_file detects crop_window mismatch."""
+        from clouds_decoded.project import Project
+
+        project_dir = tmp_path / "proj"
+        project = Project.init(str(project_dir), name="T")
+
+        scene_out = tmp_path / "scene_out"
+        scene_out.mkdir()
+
+        # File was produced with a crop
+        prov = {
+            "project_name": "T",
+            "step_config": {"x": 1},
+            "crop_window": "100,200,512,512",
+        }
+        self._write_tif_with_provenance(scene_out / "cloud_mask.tif", prov)
+
+        # Current run uses no crop
+        error = project._validate_step_file(
+            "cloud_mask", scene_out, "/data/scene.SAFE", {"x": 1}, crop_window=None
+        )
+        assert error is not None
+        assert "crop_window" in error
+
+    def test_validate_crop_window_match(self, tmp_path):
+        """_validate_step_file passes when crop_window matches."""
+        from clouds_decoded.project import Project
+
+        project_dir = tmp_path / "proj"
+        project = Project.init(str(project_dir), name="T")
+
+        scene_out = tmp_path / "scene_out"
+        scene_out.mkdir()
+
+        prov = {
+            "project_name": "T",
+            "step_config": {"x": 1},
+            "crop_window": "100,200,512,512",
+        }
+        self._write_tif_with_provenance(scene_out / "cloud_mask.tif", prov)
+
+        error = project._validate_step_file(
+            "cloud_mask", scene_out, "/data/scene.SAFE", {"x": 1},
+            crop_window="100,200,512,512",
+        )
+        assert error is None
+
+
+# ---------------------------------------------------------------------------
+# Crop window directory structure tests
+# ---------------------------------------------------------------------------
+
+class TestCropWindowDirectoryStructure:
+    """Tests for crop-window-separated output directories."""
+
+    def test_scene_output_dir_no_crop(self, tmp_path):
+        """_scene_output_dir without crop returns scenes/<scene_id>/."""
+        from clouds_decoded.project import Project
+
+        project = Project.init(str(tmp_path / "proj"))
+        out = project._scene_output_dir("S2A_TEST")
+        assert out == project.scenes_dir / "S2A_TEST"
+
+    def test_scene_output_dir_with_crop(self, tmp_path):
+        """_scene_output_dir with crop returns scenes/<scene_id>/crops/<crop_id>/."""
+        from clouds_decoded.project import Project
+
+        project = Project.init(str(tmp_path / "proj"))
+        out = project._scene_output_dir("S2A_TEST", crop_window="100,200,512,512")
+        assert out == project.scenes_dir / "S2A_TEST" / "crops" / "100_200_512_512"
+
+    def test_different_crops_different_dirs(self, tmp_path):
+        """Two different crop windows produce different output directories."""
+        from clouds_decoded.project import Project
+
+        project = Project.init(str(tmp_path / "proj"))
+        out_a = project._scene_output_dir("S2A_TEST", crop_window="0,0,512,512")
+        out_b = project._scene_output_dir("S2A_TEST", crop_window="512,512,512,512")
+        assert out_a != out_b
+
+    def test_full_scene_and_crop_manifests_coexist(self, tmp_path):
+        """Full-scene and crop manifests coexist independently for the same scene."""
+        from clouds_decoded.project import Project, SceneManifest
+
+        project = Project.init(str(tmp_path / "proj"))
+
+        full = SceneManifest(scene_id="S2A_TEST", scene_path="/data/test.SAFE")
+        project._save_manifest("S2A_TEST", full)
+
+        crop = SceneManifest(
+            scene_id="S2A_TEST", scene_path="/data/test.SAFE", crop_window="0,0,256,256"
+        )
+        project._save_manifest("S2A_TEST", crop, crop_window="0,0,256,256")
+
+        full_path = project.scenes_dir / "S2A_TEST" / "manifest.json"
+        crop_path = project.scenes_dir / "S2A_TEST" / "crops" / "0_0_256_256" / "manifest.json"
+        assert full_path.exists()
+        assert crop_path.exists()
+
+        loaded_full = project._load_manifest("S2A_TEST", "/data/test.SAFE")
+        loaded_crop = project._load_manifest("S2A_TEST", "/data/test.SAFE", crop_window="0,0,256,256")
+        assert loaded_full.crop_window is None
+        assert loaded_crop.crop_window == "0,0,256,256"
+
+    def test_status_shows_crop_rows(self, tmp_path):
+        """status() lists crop subdirectory runs beneath the full-scene row."""
+        from clouds_decoded.project import Project, SceneManifest, StepResult
+
+        project = Project.init(str(tmp_path / "proj"), name="CropStatus")
+        project.add_scene("/data/scene1.SAFE")
+
+        crop = SceneManifest(
+            scene_id="scene1",
+            scene_path="/data/scene1.SAFE",
+            crop_window="100,200,512,512",
+            steps={"cloud_mask": StepResult(status="completed", config_hash="abc")},
+        )
+        project._save_manifest("scene1", crop, crop_window="100,200,512,512")
+
+        output = project.status()
+        assert "crop:100,200,512,512" in output
+
+    def test_manifest_stores_crop_window(self, tmp_path):
+        """SceneManifest stores and round-trips crop_window."""
+        from clouds_decoded.project import SceneManifest
+
+        manifest = SceneManifest(
+            scene_id="test",
+            scene_path="/data/test.SAFE",
+            crop_window="100,200,512,512",
+        )
+        path = tmp_path / "manifest.json"
+        manifest.to_json(path)
+        loaded = SceneManifest.from_json(path)
+        assert loaded.crop_window == "100,200,512,512"
+
+    def test_manifest_crop_window_defaults_none(self):
+        """SceneManifest.crop_window defaults to None for full-scene runs."""
+        from clouds_decoded.project import SceneManifest
+
+        manifest = SceneManifest(scene_id="test", scene_path="/data/test.SAFE")
+        assert manifest.crop_window is None
+
+    def test_provenance_stores_crop_window(self):
+        """Provenance model stores crop_window."""
+        from clouds_decoded.project import Provenance
+
+        prov = Provenance(project_name="test", step_name="cloud_mask", crop_window="0,0,256,256")
+        assert prov.crop_window == "0,0,256,256"
+        assert prov.model_dump()["crop_window"] == "0,0,256,256"

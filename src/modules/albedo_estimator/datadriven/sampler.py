@@ -130,6 +130,12 @@ class AlbedoPixelSampler:
         # 4. Wind speed and direction
         try:
             wind_speed, wind_direction = scene.get_wind_data()
+        except ImportError:
+            logger.warning(
+                "cfgrib is not installed — wind features set to 0. "
+                "Install with: pip install 'clouds-decoded[sampling]'"
+            )
+            wind_speed, wind_direction = 0.0, 0.0
         except Exception as e:
             logger.warning(f"Could not read wind data: {e}. Using 0.")
             wind_speed, wind_direction = 0.0, 0.0

@@ -124,6 +124,19 @@ class DataDrivenAlbedoEstimator:
         albedo_array = np.clip(albedo_array, 0.0, None)
         albedo_array = albedo_array.transpose(2, 0, 1).astype(np.float32)
 
+        # Apply nodata mask: DN=0 pixels are scene edges / detector gaps.
+        # Load B02 (the reference band), resize to output grid, NaN-out nodata.
+        if "B02" in scene.bands:
+            from skimage.transform import resize as sk_resize
+            b02_dn = scene.get_band("B02", reflectance=False)
+            nodata_mask = b02_dn == 0
+            if nodata_mask.any():
+                nodata_resized = sk_resize(
+                    nodata_mask.astype(np.float32), (out_h, out_w),
+                    order=0, preserve_range=True,
+                ) > 0.5
+                albedo_array[:, nodata_resized] = np.nan
+
         metadata = AlbedoMetadata(
             band_names=band_names,
             method="datadriven",
@@ -216,6 +229,12 @@ class DataDrivenAlbedoEstimator:
         # Wind
         try:
             wind_speed, wind_direction = scene.get_wind_data()
+        except ImportError:
+            logger.warning(
+                "cfgrib is not installed — wind features set to 0. "
+                "Install with: pip install 'clouds-decoded[sampling]'"
+            )
+            wind_speed, wind_direction = 0.0, 0.0
         except Exception as e:
             logger.warning(f"Could not read wind data: {e}. Using 0.")
             wind_speed, wind_direction = 0.0, 0.0

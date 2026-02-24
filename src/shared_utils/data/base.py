@@ -44,7 +44,12 @@ class Data(BaseModel, ABC):
         pass
 
 class Metadata(BaseModel):
-    """Base model for metadata structures."""
+    """Base model for metadata structures.
+
+    Uses ``extra='allow'`` intentionally so that GeoTIFF tags and future
+    metadata keys round-trip without errors.  Subclasses should document
+    their own fields; unknown keys are preserved silently.
+    """
     model_config = ConfigDict(extra='allow')
     provenance: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -209,10 +214,18 @@ class GeoRasterData(Data):
 
     @classmethod
     def with_template(cls, data: np.ndarray, template: Union[Any, str, Path], metadata: Optional[Metadata] = None) -> "GeoRasterData":
-        """
-        Create a GeoRasterData instance with a given data array, using the extent/projection
-        from a template (GeoRasterData object or file path). 
-        Calculates new transform to fit the template's bounding box at the new resolution.
+        """Create a GeoRasterData instance with a given data array, using the extent/projection
+        from a template (GeoRasterData object or file path).
+
+        Calculates a new transform to fit the template's bounding box at the new resolution.
+
+        Args:
+            data: 2-D array for the new instance.
+            template: Either a file path (data will be loaded to determine extents) or an
+                existing ``GeoRasterData`` object.  When passing an object its ``data``
+                attribute must not be ``None`` — the array shape is needed to derive the
+                bounding box.
+            metadata: Optional metadata for the new instance.
         """
         if isinstance(template, (str, Path)):
             # Create a temporary instance to read metadata

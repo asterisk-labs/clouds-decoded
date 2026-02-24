@@ -12,6 +12,10 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
 
     model_config = ConfigDict(extra='forbid')
 
+    use_emulator: bool = Field(
+        default=True,
+        description="Use deep learning emulator for cloud height retrieval"
+    )
     model_path: Optional[str] = Field(
         default=None,
         description=(

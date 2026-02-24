@@ -1,15 +1,18 @@
 from typing import Optional, Literal, List
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import BANDS
 
 
-class PostProcessParams(BaseProcessorConfig):
-    """Post-processing parameters for cloud masks.
+class PostProcessParams(BaseModel):
+    """Post-processing parameters passed per-call to ``CloudMaskProcessor.postprocess()``.
 
-    Allows different downstream applications (e.g., Albedo vs Cloud Height)
-    to request mask properties specific to their needs.
+    These are per-invocation parameters (resolution, masking thresholds) that
+    may differ between callers (e.g. Albedo vs Cloud Height).  Not a processor
+    config — intentionally separate from ``CloudMaskConfig`` and does not carry
+    ``output_dir`` / ``n_workers`` fields.
     """
+    model_config = ConfigDict(extra='forbid')
     output_resolution: Optional[int] = Field(
         default=None,
         ge=10,

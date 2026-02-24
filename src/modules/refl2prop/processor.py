@@ -22,45 +22,61 @@ from .config import Refl2PropConfig, ShadingRefl2PropConfig, OutputFeature
 logger = logging.getLogger(__name__)
 
 class CloudPropertyInverter:
+
+    @staticmethod
+    def _load_and_init_model(model, model_path: str, device: torch.device):
+        """Check path, load checkpoint, and prepare model for inference.
+
+        Args:
+            model: Instantiated (but untrained) model/wrapper.
+            model_path: Path to the .pth checkpoint file.
+            device: Target device.
+
+        Returns:
+            The same model object, with weights loaded, moved to device, in eval mode.
+        """
+        if not Path(model_path).exists():
+            raise FileNotFoundError(
+                f"Refl2prop model weights not found at {model_path}.\n"
+                f"Run:  clouds-decoded download refl2prop\n"
+                f"or set CLOUDS_DECODED_ASSETS_DIR to a directory containing "
+                f"models/refl2prop/default.pth"
+            )
+        state = torch.load(model_path, map_location=device, weights_only=False)
+        model.load_state_dict(state)
+        model.to(device)
+        model.eval()
+        return model
+
     def __init__(self, config: Refl2PropConfig, device: str = 'cuda'):
         """
         Initializes the CloudPropertyInverter.
-        
+
         Args:
             config: Refl2PropConfig object.
             device: 'cuda' or 'cpu'.
         """
         self.config = config
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
-        
-        # Load state
-        if not Path(config.model_path).exists():
-            raise FileNotFoundError(
-                f"Refl2prop model weights not found at {config.model_path}.\n"
-                f"Run:  clouds-decoded download refl2prop\n"
-                f"or set CLOUDS_DECODED_ASSETS_DIR to a directory containing "
-                f"models/refl2prop/default.pth"
-            )
-             
-        state = torch.load(config.model_path, map_location=self.device)
-        
+
         # Init Model
         # TODO: Move input/output sizes to config or infer from checkpoint meta if available
         # Note: noise_output_size=6 matches the training configuration for model_ood.pth
         core_model = InversionNet(
-             input_size=self.config.input_size, 
-             output_size=self.config.output_size, 
+             input_size=self.config.input_size,
+             output_size=self.config.output_size,
              noise_output_size=self.config.noise_output_size
         )
-        
+
         # Reconstruct Normalization Wrapper using dummy stats (overwritten by load_state_dict)
         dummy = {'min': [0]*self.config.input_size, 'max': [1]*self.config.input_size}
         out_dummy = {'min': [0]*self.config.output_size, 'max': [1]*self.config.output_size}
-        
-        self.model = NormalizationWrapper(core_model, dummy, out_dummy)
-        self.model.load_state_dict(state)
-        self.model.to(self.device)
-        self.model.eval()
+
+        self.model = self._load_and_init_model(
+            NormalizationWrapper(core_model, dummy, out_dummy),
+            config.model_path,
+            self.device,
+        )
         
     def process(
         self,
@@ -338,17 +354,6 @@ class ShadingPropertyInverter(CloudPropertyInverter):
 
         self.bag_size = self.window_size * self.window_size
 
-        # Load state
-        if not Path(config.model_path).exists():
-            raise FileNotFoundError(
-                f"Refl2prop model weights not found at {config.model_path}.\n"
-                f"Run:  clouds-decoded download refl2prop\n"
-                f"or set CLOUDS_DECODED_ASSETS_DIR to a directory containing "
-                f"models/refl2prop/default.pth"
-            )
-
-        state = torch.load(config.model_path, map_location=self.device, weights_only=False)
-
         # Init Shading Model
         core_model = ShadingAwareInversionNet(
             input_size=config.input_size,
@@ -363,12 +368,11 @@ class ShadingPropertyInverter(CloudPropertyInverter):
         dummy_output = {'min': [0] * config.output_size, 'max': [1] * config.output_size}
         dummy_shading = {'min': 0.0, 'max': 100.0}
 
-        self.model = ShadingNormalizationWrapper(
-            core_model, dummy_input, dummy_output, dummy_shading
+        self.model = CloudPropertyInverter._load_and_init_model(
+            ShadingNormalizationWrapper(core_model, dummy_input, dummy_output, dummy_shading),
+            config.model_path,
+            self.device,
         )
-        self.model.load_state_dict(state)
-        self.model.to(self.device)
-        self.model.eval()
 
         logger.info(f"ShadingPropertyInverter initialized: window={self.window_size}x{self.window_size}, "
                    f"stride={self.stride}, bag_size={self.bag_size}")

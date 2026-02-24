@@ -38,6 +38,7 @@ dependencies = [
 "clouds_decoded.modules" = "src/modules"
 "clouds_decoded.modules.cloud_mask" = "src/modules/cloud_mask"
 "clouds_decoded.modules.cloud_height" = "src/modules/cloud_height"
+"clouds_decoded.modules.cloud_height_emulator" = "src/modules/cloud_height_emulator"
 "clouds_decoded.modules.albedo_estimator" = "src/modules/albedo_estimator"
 "clouds_decoded.modules.albedo_estimator.datadriven" = "src/modules/albedo_estimator/datadriven"
 "clouds_decoded.modules.refl2prop" = "src/modules/refl2prop"

@@ -105,17 +105,14 @@ def run_cloud_height(
     config: Union[CloudHeightConfig, CloudHeightEmulatorConfig],
     output_path: Optional[str] = None,
     cloud_mask: Optional[Union[CloudMaskData, str, Path]] = None,
-    use_emulator: bool = True,
 ) -> CloudHeightGridData:
     """Run cloud height retrieval with explicit config."""
+    from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig as _EmulatorConfig
+
+    use_emulator = getattr(config, "use_emulator", False)
     logger.info(f"Processing Cloud Height (Emulator: {use_emulator})...")
 
     if use_emulator:
-        from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
-        if not isinstance(config, CloudHeightEmulatorConfig):
-             logger.warning("Config is not CloudHeightEmulatorConfig but use_emulator=True. Instantiating default emulator config.")
-             config = CloudHeightEmulatorConfig()
-
         from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
         processor = CloudHeightEmulatorProcessor(config)
         result = processor.process(scene, cloud_mask=cloud_mask)
@@ -294,7 +291,7 @@ def cloud_height(
         else:
             config = CloudHeightConfig()
 
-    run_cloud_height(scene, config, output_path, cloud_mask=mask_path, use_emulator=use_emulator)
+    run_cloud_height(scene, config, output_path, cloud_mask=mask_path)
 
 
 @app.command()
@@ -500,7 +497,6 @@ def full_workflow(
         scene, cloud_height_config,
         output_path=str(out / "cloud_height.tif"),
         cloud_mask=mask_result,
-        use_emulator=use_emulator,
     )
 
     # Step 3: Albedo (uses cloud mask for clear-sky GP fit)
@@ -548,7 +544,6 @@ def project_init(
     project_dir: str = typer.Argument(..., help="Directory for the new project"),
     name: Optional[str] = typer.Option(None, help="Project name (defaults to directory name)"),
     pipeline: str = typer.Option("full-workflow", help="Pipeline type"),
-    use_emulator: bool = typer.Option(True, help="Use emulator for cloud height retrieval"),
     clone: Optional[str] = typer.Option(None, help="Clone configs from an existing project directory"),
 ):
     """
@@ -569,7 +564,6 @@ def project_init(
             name=name,
             pipeline=pipeline,
             clone_from=clone,
-            use_emulator=use_emulator,
         )
         logger.info(f"\nEdit configs in {project.configs_dir}/ then run:")
         logger.info(f"  clouds-decoded project run {project_dir}")

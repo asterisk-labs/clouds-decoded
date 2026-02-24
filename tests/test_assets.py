@@ -196,17 +196,20 @@ class TestRefl2PropConfigModelPath:
 
         assert cfg.model_path == str(managed)
 
-    def test_bundled_fallback_when_managed_absent(self, tmp_path, monkeypatch):
+    def test_managed_path_used_even_when_file_absent(self, tmp_path, monkeypatch):
+        """When managed asset file does not yet exist the config still points at it.
+
+        The bundled-model fallback has been removed — callers get a clear
+        FileNotFoundError at inference time via require_asset / the processor.
+        """
         monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))
         # managed file does NOT exist
-
-        from clouds_decoded.modules.refl2prop import config as r2p_cfg
-        bundled = Path(r2p_cfg.__file__).parent / "models" / "model.pth"
 
         from clouds_decoded.modules.refl2prop.config import Refl2PropConfig
         cfg = Refl2PropConfig()
 
-        assert cfg.model_path == str(bundled)
+        expected = str(tmp_path / "models" / "refl2prop" / "default.pth")
+        assert cfg.model_path == expected
 
     def test_explicit_path_not_overridden(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))

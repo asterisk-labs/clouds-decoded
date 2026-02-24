@@ -231,7 +231,7 @@ def test_emulator_within_project(tmp_path, mock_unet, mock_scene, mock_weights_f
     """Verify emulator integration within the Project abstraction."""
     project_dir = tmp_path / "test_proj"
 
-    project = Project.init(str(project_dir), name="Test Emulator Project", use_emulator=True)
+    project = Project.init(str(project_dir), name="Test Emulator Project")
 
     config_path = project_dir / "configs" / "cloud_height.yaml"
     assert config_path.exists()
@@ -267,7 +267,7 @@ def test_emulator_within_project(tmp_path, mock_unet, mock_scene, mock_weights_f
 def test_emulator_full_workflow(tmp_path, mock_unet, mock_scene):
     """Verify the full-workflow pipeline correctly utilizes the emulator."""
     project_dir = tmp_path / "workflow_proj"
-    project = Project.init(str(project_dir), use_emulator=True)
+    project = Project.init(str(project_dir))
 
     with patch("clouds_decoded.data.Sentinel2Scene.read", return_value=None), \
          patch("clouds_decoded.data.CloudMaskData.from_file"), \
@@ -294,14 +294,14 @@ def test_emulator_full_workflow(tmp_path, mock_unet, mock_scene):
 
         mock_run_height.assert_called()
         args, kwargs = mock_run_height.call_args
-        assert kwargs["use_emulator"] is True
         assert isinstance(args[1], CloudHeightEmulatorConfig)
+        assert args[1].use_emulator is True
 
 
 def test_emulator_cloud_height_only_workflow(tmp_path, mock_unet, mock_scene):
     """Verify standalone cloud-height step via Project."""
     project_dir = tmp_path / "height_only_proj"
-    project = Project.init(str(project_dir), use_emulator=True)
+    project = Project.init(str(project_dir))
 
     with patch("clouds_decoded.cli.entry.run_cloud_height") as mock_run_height, \
          patch("clouds_decoded.data.CloudHeightGridData.write"):
@@ -316,4 +316,6 @@ def test_emulator_cloud_height_only_workflow(tmp_path, mock_unet, mock_scene):
             project_dir / "scenes" / "test"
         )
 
-        assert mock_run_height.call_args[1]["use_emulator"] is True
+        args, kwargs = mock_run_height.call_args
+        assert isinstance(args[1], CloudHeightEmulatorConfig)
+        assert args[1].use_emulator is True

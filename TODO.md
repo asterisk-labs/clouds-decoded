@@ -5,7 +5,7 @@
   - [ ] (pre-release) Unify asset handling: host all model weights (refl2prop, emulator, datadriven albedo) on HuggingFace, remove bundled refl2prop and albedo weights from source tree, make all processors use the same managed-asset-only pattern with no silent bundled fallback
   - [x] Review and update all processors to use band-caching logic implemented in 0cd91c1
   - [x] Use raw weights files from sensei-v2 and stop using its sliding window inference feature. Deduplicate sliding window code so that height emulation window is reused for sensei-v2, and use asset and download helpers for the model weights instead of sensei-v2's own handling.
-  - [ ] Improved manifest.json: hashing of IO files, crop-window tracking and support, intelligently assigning steps as "outdated" when a processor upstream of it is changed. More integrity checks between project.yaml and manifests, e.g. git repo commit hashes / release version numbers to cross-check.
+  - [x] Improved manifest.json: hashing of IO files, crop-window tracking and support, intelligently assigning steps as "outdated" when a processor upstream of it is changed. More integrity checks between project.yaml and manifests, e.g. git repo commit hashes / release version numbers to cross-check.
   - [ ] Improve clarity and accessibility of configs: explore nested configs to avoid long lists of independent sets of parameters (e.g. the height emulator's parameters all sitting next to the original height algorithm's parameters), project recipes for different sensible configurations. How do we inject n_workers for band parallel ops across all processors - current n_workers in configs are useless.
   - [ ] Add improved write options for data classes: e.g. netcdf, zarr
   - [ ] Refactor height emulator to sit inside the cloud_height module, ala albedo and the datadriven alternative. Avoid config parameters like "use_emulator" in project.yaml
@@ -36,11 +36,11 @@
   - [x] Inconsistent wind/bathymetry fallback values between datadriven `processor.py` and `sampler.py` — unified to `0.0` / `-1.0`
   - [x] Dead `reference_resolution` field in `AlbedoSamplerConfig` — removed
   - [x] `scene.orientation` field was buggy (wrong pyproj axis order) and unused — removed entirely along with `_get_scene_orientation()`
-  - [ ] (potential) Crop window scaling uses nominal `BAND_RESOLUTIONS` constants (`sentinel.py`) — will produce misaligned crops with newer SAFE baselines where actual pixel dimensions differ from nominal
+  - [x] (potential) Crop window scaling uses nominal `BAND_RESOLUTIONS` constants (`sentinel.py`) — `_get_bands` and `_get_footprints` now derive scale from actual B02 file dimensions via `_get_b02_dims()`
   - [ ] Zombie worker processes in `CloudHeightProcessor` when retrieval returns zero points; also unconditional `/dev/shm` usage (`cloud_height/processor.py`)
-  - [ ] Missing nodata masking in `DataDrivenAlbedoEstimator` — all other albedo paths apply it, this one doesn't
-  - [ ] `PostProcessParams` passed as a method argument to `postprocess()` rather than via `__init__` — breaks the stated processor interface pattern
-  - [ ] `refl2prop/config.py` has a silent bundled-model fallback that contradicts the stated design intent (see pre-release unify asset handling above)
-  - [ ] `ShadingPropertyInverter.__init__` duplicates model-loading logic without calling `super().__init__()` — changes to parent won't propagate
-  - [ ] (potential) `cfgrib` is an optional install extra but called unconditionally in the datadriven albedo path — `ImportError` at runtime with no guidance if not installed
-  - [ ] Non-standard multi-root `package-dir` layout in `pyproject.toml` causes IDE import resolution failures; `cloud_height_emulator` not explicitly listed
+  - [x] Missing nodata masking in `DataDrivenAlbedoEstimator` — B02 DN loaded after inference, resized to output grid, NaN applied to DN=0 pixels
+  - [x] `PostProcessParams` subclassed `BaseProcessorConfig` incorrectly — changed to plain `BaseModel` with `extra='forbid'`; no unused `output_dir`/`n_workers` fields
+  - [x] `refl2prop/config.py` had a silent bundled-model fallback — removed; config now points directly at managed asset; `FileNotFoundError` at inference time gives actionable message
+  - [x] `ShadingPropertyInverter.__init__` duplicated model-loading logic without calling `super().__init__()` — shared sequence extracted to `CloudPropertyInverter._load_and_init_model()` staticmethod, called from both
+  - [x] (potential) `cfgrib` is an optional install extra but called unconditionally in the datadriven albedo path — `ImportError` now caught separately with a message pointing to `pip install 'clouds-decoded[sampling]'` in both `datadriven/processor.py` and `datadriven/sampler.py`
+  - [ ] Non-standard multi-root `package-dir` layout in `pyproject.toml` causes IDE import resolution failures — `cloud_height_emulator` entry added; broader `src/clouds_decoded/` restructure still outstanding
