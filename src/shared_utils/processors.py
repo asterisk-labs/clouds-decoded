@@ -4,10 +4,6 @@ This module re-exports processors and configurations from the installed sub-modu
 allowing them to be accessed from a central `clouds_decoded.processors` namespace.
 """
 
-import logging
-
-logger = logging.getLogger(__name__)
-
 # Cloud Height Module
 from clouds_decoded.modules.cloud_height import CloudHeightProcessor, CloudHeightConfig
 

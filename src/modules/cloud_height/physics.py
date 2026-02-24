@@ -79,10 +79,7 @@ def heightsToOffsets(heights,bands,pixel_size):
     motion_in_space = ORBITAL_VELOCITY * delays # m
     
     # Trigonometry to retrieve height. Approximately linear with height for small angles
-    if len(delays) > 1:
-        motion_at_h = heights * motion_in_space / SPACECRAFT_ALTITUDE
-    else:
-        motion_at_h = heights * motion_in_space / SPACECRAFT_ALTITUDE
+    motion_at_h = heights * motion_in_space / SPACECRAFT_ALTITUDE
     offsets = motion_at_h / pixel_size
 
     return offsets

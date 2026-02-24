@@ -50,10 +50,8 @@ class CloudHeightProcessor:
                        # Attempt to load as CloudMaskData
                        cm_obj = CloudMaskData.from_file(str(cloud_mask))
                        mask_array = cm_obj.data
-                  except Exception:
-                       # If that fails (e.g. plain geotiff), try generic load?
-                       # Or just fail? Let's assume valid CloudMaskData file.
-                       logger.warning(f"Could not load {cloud_mask} as CloudMaskData. Ignoring mask.")
+                  except (FileNotFoundError, OSError, ValueError, TypeError) as e:
+                       logger.warning(f"Could not load {cloud_mask} as CloudMaskData ({e}). Ignoring mask.")
              elif isinstance(cloud_mask, CloudMaskData):
                   mask_array = cloud_mask.data
              elif isinstance(cloud_mask, np.ndarray):

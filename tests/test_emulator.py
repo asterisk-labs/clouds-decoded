@@ -106,7 +106,7 @@ def test_config_initialization(tmp_path, monkeypatch):
     # model_path is now auto-resolved to the managed assets directory
     assert config.model_path == str(tmp_path / "models" / "cloud_height_emulator" / "default.pth")
 
-    with pytest.raises(ValueError, match="Overlap .* must be smaller than window dimensions"):
+    with pytest.raises(ValueError, match="Overlap .* must be smaller than window size"):
         CloudHeightEmulatorConfig(window_size=(100, 100), overlap=100)
 
 

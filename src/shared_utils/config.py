@@ -14,9 +14,6 @@ class BaseProcessorConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     output_dir: Optional[str] = Field(None, description="Directory to save outputs")
     n_workers: int = Field(1, description="Number of parallel workers where applicable")
-    
-    # Common processing flags could go here
-    debug_mode: bool = False
 
     @classmethod
     def from_yaml(cls, config_path: Optional[str] = None):

@@ -38,10 +38,6 @@ class AlbedoSamplerConfig(BaseModel):
         default_factory=lambda: list(BANDS),
         description="Bands to extract TOA reflectance for",
     )
-    reference_resolution: float = Field(
-        default=10.0,
-        description="Resolution in meters of the reference grid (B02)",
-    )
     dilation_pixels: int = Field(
         default=5,
         ge=0,
@@ -135,8 +131,8 @@ class AlbedoPixelSampler:
         try:
             wind_speed, wind_direction = scene.get_wind_data()
         except Exception as e:
-            logger.warning(f"Could not read wind data: {e}. Using NaN.")
-            wind_speed, wind_direction = np.nan, np.nan
+            logger.warning(f"Could not read wind data: {e}. Using 0.")
+            wind_speed, wind_direction = 0.0, 0.0
 
         # 5. Day of year
         sensing_time_str = None
@@ -154,7 +150,7 @@ class AlbedoPixelSampler:
                 dtype=np.float32,
             )
         else:
-            bathy_values = np.full(n_samples, np.nan, dtype=np.float32)
+            bathy_values = np.full(n_samples, -1.0, dtype=np.float32)
 
         # 7. Detector index from B02 footprint
         footprint = scene.footprints.get("B02")

@@ -60,10 +60,14 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
 
     @model_validator(mode='after')
     def check_overlap_window_size(self) -> CloudHeightEmulatorConfig:
-        """Ensure overlap is smaller than window size."""
+        """Ensure window is square and overlap is smaller than window size."""
         height, width = self.window_size
-        if self.overlap >= height or self.overlap >= width:
+        if height != width:
             raise ValueError(
-                f"Overlap ({self.overlap}) must be smaller than window dimensions {self.window_size}"
+                f"window_size must be square, got {self.window_size}"
+            )
+        if self.overlap >= height:
+            raise ValueError(
+                f"Overlap ({self.overlap}) must be smaller than window size {height}"
             )
         return self

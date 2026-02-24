@@ -71,7 +71,6 @@ class RefocusProcessor:
             image_azimuth=scene.image_azimuth,
             latitude=scene.latitude,
             longitude=scene.longitude,
-            orientation=scene.orientation,
             orbit_type=scene.orbit_type,
             crs=scene.crs,
             transform=scene.transform,

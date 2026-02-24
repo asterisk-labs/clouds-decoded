@@ -33,7 +33,6 @@ class Sentinel2Scene(Data):
     image_azimuth: Optional[float] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    orientation: Optional[float] = None
     orbit_type: Optional[str] = None
     sensing_time: Optional[datetime] = None
     is_refocused: bool = False
@@ -128,7 +127,6 @@ class Sentinel2Scene(Data):
              self.latitude = self._get_latitude(self.scene_directory)
              self.longitude = self._get_longitude(self.scene_directory)
              
-        self.orientation = self._get_scene_orientation(self.scene_directory)
         self.orbit_type = self._get_orbit_type(self.scene_directory)
 
         # Read product metadata
@@ -586,34 +584,6 @@ class Sentinel2Scene(Data):
             transform.transform(bounds.right, bounds.bottom)[0]
         ) / 2
         return lon
-
-    def _get_scene_orientation(self, scene_directory: Path):
-        paths = self._get_band_paths(scene_directory, bands=['B02'])
-        with rio.open(paths['B02']) as src:
-            # Calculate UTM coords of top-left and top-right pixels
-            # Affine transform: x' = a*x + b*y + c, y' = d*x + e*y + f
-            # top-left pixel (0,0)
-            tl_utm = src.transform * (0, 0)
-            # top-right pixel (width, 0)
-            tr_utm = src.transform * (src.width, 0)
-            crs = src.crs
-            
-        transform = pyproj.transformer.Transformer.from_crs(crs, 'EPSG:4326')
-        # Note: transform() expects (x, y) if the CRS is configured right, but pyproj matches CRS definition order.
-        # EPSG:4326 is usually lat, lon in some versions, but 'always_xy=True' is safer if used. 
-        # Here we used default previously.
-        # Previous code: transform(x,y) -> (lat, lon) usually for 4326 without always_xy
-        
-        tl_geo = transform.transform(tl_utm[0], tl_utm[1])
-        tr_geo = transform.transform(tr_utm[0], tr_utm[1])
-        
-        # Arctan2(delta_y, delta_x)
-        # Y is Lat, X is Lon in the previous code's output implicitly
-        orientation = np.pi/2 - np.arctan2(
-            tr_geo[1] - tl_geo[1], 
-            tr_geo[0] - tl_geo[0]
-        )
-        return orientation
 
     def _get_orbit_type(self, scene_directory: Path):
         root = self._read_xml_root(scene_directory / self.METADATA_MTD)

@@ -598,7 +598,7 @@ class ShadingPropertyInverter(CloudPropertyInverter):
         sza = to_grid(scene.sun_zenith)
         vza_rad = np.radians(scene.view_zenith)
         mu = to_grid(np.cos(vza_rad))
-        rel_az = np.abs(scene.sun_azimuth - scene.view_azimuth)
+        rel_az = np.radians(np.abs(scene.sun_azimuth - scene.view_azimuth))
         phi = to_grid(rel_az)
 
         # 2. Build input tensor

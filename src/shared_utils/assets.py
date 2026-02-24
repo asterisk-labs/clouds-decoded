@@ -35,12 +35,13 @@ def _read_config_assets_dir() -> Optional[str]:
     """Return the assets_dir value from config.toml, or None if absent."""
     if not _CONFIG_FILE.exists():
         return None
-    # Minimal TOML parse — we only need one scalar key.
+    # Minimal TOML parse — strip inline comments before unquoting.
     for line in _CONFIG_FILE.read_text().splitlines():
         line = line.strip()
         if line.startswith(_CONFIG_KEY):
             _, _, value = line.partition("=")
-            return value.strip().strip('"').strip("'")
+            value = value.split("#")[0].strip().strip('"').strip("'")
+            return value or None
     return None
 
 

@@ -151,7 +151,7 @@ class GeoRasterData(Data):
             except ImportError:
                  raise ImportError("xarray is required to write NetCDF files.")
             
-            metadata = self.metadata.model_dump(exclude_defaults=True)
+            metadata = self.metadata.model_dump(exclude_defaults=True, mode='json')
             
             da = xr.DataArray(
                 out_data,
@@ -194,7 +194,7 @@ class GeoRasterData(Data):
             
             # Write metadata as tags
             # We bundle the metadata object into a JSON string to preserve structure
-            meta_dict = self.metadata.model_dump(exclude_defaults=True)
+            meta_dict = self.metadata.model_dump(exclude_defaults=True, mode='json')
             if meta_dict:
                  json_meta = json.dumps(meta_dict, cls=NumpyEncoder)
                  dst.update_tags(**{METADATA_TAG: json_meta})
@@ -321,7 +321,7 @@ class PointCloudData(Data):
         table = pa.Table.from_pandas(self.data)
         
         # Inject metadata
-        meta_dict = self.metadata.model_dump(exclude_defaults=True)
+        meta_dict = self.metadata.model_dump(exclude_defaults=True, mode='json')
         if meta_dict:
             # Get existing metadata (usually pandas info) or empty dict
             existing_meta = table.schema.metadata or {}

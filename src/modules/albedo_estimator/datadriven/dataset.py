@@ -28,7 +28,7 @@ def engineer_features(df: pd.DataFrame) -> np.ndarray:
             bathymetry, day_of_year, detector.
 
     Returns:
-        float32 array of shape (N, 15), column order matches
+        float32 array of shape (N, 14), column order matches
         INPUT_FEATURE_NAMES.
     """
     n = len(df)
