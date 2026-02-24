@@ -174,7 +174,7 @@ class AlbedoEstimator:
 
         # 1. Use B02 (or largest band) as reference — matches _compute_output_grid
         if "B02" in scene.bands:
-            ref_band = scene.bands["B02"]
+            ref_band = scene.get_band("B02", reflectance=False)
         else:
             ref_band = max(scene.bands.values(), key=lambda b: b.size)
         ref_h, ref_w = (ref_band.shape[1:] if ref_band.ndim == 3 else ref_band.shape)
@@ -240,8 +240,16 @@ class AlbedoEstimator:
         _res_cache: Dict[int, tuple] = {}
         band_values: Dict[str, np.ndarray] = {}
 
+        prefetched = {
+            name: self._get_band_2d(obj.data)
+            for name, obj in zip(
+                band_names,
+                scene.get_bands(band_names, reflectance=True, n_workers=len(band_names)),
+            )
+        }
+
         for band_name in band_names:
-            band_data = self._get_band_2d(scene.get_band(band_name))
+            band_data = prefetched[band_name]
             band_res = BAND_RESOLUTIONS.get(band_name, ref_res)
 
             if band_res not in _res_cache:
@@ -446,13 +454,19 @@ class AlbedoEstimator:
         _res_cache: Dict[int, tuple] = {}
         band_values: Dict[str, np.ndarray] = {}
 
+        prefetched_raw = {
+            name: self._get_band_2d(obj.data)
+            for name, obj in zip(
+                band_names,
+                scene.get_bands(band_names, reflectance=False, n_workers=len(band_names)),
+            )
+        }
+
         for band_name in band_names:
             # Use raw DN to avoid full-array float conversion; the
             # reflectance transform is linear so we convert the small
             # per-point means afterwards.
-            band_raw = self._get_band_2d(
-                scene.get_band(band_name, reflectance=False),
-            )
+            band_raw = prefetched_raw[band_name]
             band_res = BAND_RESOLUTIONS.get(band_name, ref_res)
 
             native_h, native_w = band_raw.shape[:2]
@@ -663,7 +677,7 @@ class AlbedoEstimator:
         band to identify nodata regions, then resizes to the output grid.
         """
         if "B02" in scene.bands:
-            ref_band = scene.bands["B02"]
+            ref_band = scene.get_band("B02", reflectance=False)
         else:
             ref_band = max(scene.bands.values(), key=lambda b: b.size)
         ref_2d = ref_band[0] if ref_band.ndim == 3 else ref_band

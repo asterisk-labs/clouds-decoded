@@ -107,25 +107,19 @@ class CloudHeightEmulatorProcessor:
         # Resolve cloud mask early — it's used to skip windows during inference
         mask_array = self._resolve_cloud_mask(cloud_mask)
 
+        band_objects = scene.get_bands(
+            self.config.bands, reflectance=True, n_workers=len(self.config.bands),
+        )
+        # Use B02 (10m reference) actual data shape as the target grid
+        b02_idx = self.config.bands.index("B02") if "B02" in self.config.bands else 0
+        target_shape = band_objects[b02_idx].data.shape
+
         data_list = []
-
-        # Find B02 (10m) for reference shape
-        ref_band_name = "B02"
-        ref_band = scene.get_band(ref_band_name)
-        if ref_band is None:
-            ref_band_name = list(scene.bands.keys())[0]
-            ref_band = scene.get_band(ref_band_name)
-
-        target_shape = ref_band.shape
-        band_order = self.config.bands
-
-        for bname in band_order:
-            band_data = scene.get_band(bname, reflectance=True)
-            if band_data.shape != target_shape:
-                band_data = resize(
-                    band_data, target_shape, preserve_range=True, order=1).astype(np.float32)
-            data_list.append(band_data)
-
+        for band_obj in band_objects:
+            band_arr = band_obj.data
+            if band_arr.shape != target_shape:
+                band_arr = resize(band_arr, target_shape, preserve_range=True, order=1).astype(np.float32)
+            data_list.append(band_arr)
         input_stack = np.stack(data_list, axis=0)  # (C, H, W)
 
         if input_stack.shape[0] != self.config.in_channels:

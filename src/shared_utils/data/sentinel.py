@@ -36,6 +36,7 @@ class Sentinel2Scene(Data):
     orientation: Optional[float] = None
     orbit_type: Optional[str] = None
     sensing_time: Optional[datetime] = None
+    is_refocused: bool = False
     crs: Optional[Any] = None
     transform: Optional[Any] = None
 

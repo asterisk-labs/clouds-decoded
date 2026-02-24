@@ -14,8 +14,6 @@ from clouds_decoded.data import (
     AlbedoData,
     CloudMaskData
 )
-# AlbedoEstimator import
-from clouds_decoded.modules.albedo_estimator import AlbedoEstimator, AlbedoEstimatorConfig
 
 from .model import InversionNet, NormalizationWrapper
 from .model_shading import ShadingAwareInversionNet, ShadingNormalizationWrapper
@@ -64,13 +62,6 @@ class CloudPropertyInverter:
         self.model.to(self.device)
         self.model.eval()
         
-        # Initialize internal Albedo Estimator (constant fallback for quick inline use)
-        albedo_config = AlbedoEstimatorConfig(
-            fallback="constant",
-            default_albedo=self.config.default_albedo
-        )
-        self.albedo_estimator = AlbedoEstimator(albedo_config)
-
     def process(
         self,
         scene: Sentinel2Scene,
@@ -100,7 +91,7 @@ class CloudPropertyInverter:
             input_shape = height_data.data.shape[1:]
             height_map = height_data.data[0]  # Assume first band is height
 
-        # Determine target resolution and shape
+        # Determine target resolution and shape (derived from height data grid)
         input_resolution = abs(input_transform.a)  # Current pixel size in meters
         target_resolution = self.config.output_resolution
         scale = input_resolution / target_resolution
@@ -112,46 +103,32 @@ class CloudPropertyInverter:
             0, -target_resolution, input_transform.f
         )
 
-        # Resize height map using nearest neighbor if needed
-        if target_shape != input_shape:
-            logger.info(f"Resampling from {input_resolution}m to {target_resolution}m "
+        # Resize height map if needed
+        if height_map.shape != target_shape:
+            logger.info(f"Resampling height from {input_resolution}m to {target_resolution}m "
                        f"({input_shape} -> {target_shape})")
             height_map = resize(height_map, target_shape, order=0, preserve_range=True).astype(np.float32)
-        
+
         # 1. Prepare Inputs
         # -----------------
-        
-        # A. Bands (B01, B02, B04, B08, B11, B12)
-        logger.info("Loading bands and resizing to target resolution...")
+
+        # A. Bands
+        logger.info("Loading bands...")
         required_bands = self.config.bands
+        band_objects = scene.get_bands(required_bands, reflectance=True, n_workers=len(required_bands))
         bands_map = {}
-        
-        for b in required_bands:
-             # get_band handles radiometric calibration -> reflectance
-             band_arr = scene.get_band(b)
-             # Ensure band_arr is 2D
-             if band_arr.ndim == 3:
-                 band_arr = band_arr[0]
-
-             if band_arr.shape != target_shape:
-                  # Resize to match cloud height grid
-                  band_arr = resize(band_arr, target_shape, order=1, preserve_range=True).astype(np.float32)
-             else:
-                  band_arr = band_arr.astype(np.float32)
-
-             bands_map[b] = band_arr
+        for b, obj in zip(required_bands, band_objects):
+            band_arr = obj.data.astype(np.float32)
+            if band_arr.shape != target_shape:
+                band_arr = resize(band_arr, target_shape, order=1, preserve_range=True).astype(np.float32)
+            bands_map[b] = band_arr
 
         # B. Surface Albedo
         # -----------------
         albedo_maps = {}
 
         if albedo_data is None:
-            logger.info("No albedo provided, estimating internally...")
-            try:
-                albedo_data = self.albedo_estimator.process(scene)
-            except Exception as e:
-                logger.error(f"Albedo estimation failed: {e}. Using default albedo.")
-                albedo_data = None
+            logger.warning("No albedo provided. Using per-band constant defaults.")
         else:
             logger.info("Using pre-computed albedo data")
 
@@ -166,7 +143,6 @@ class CloudPropertyInverter:
                 alb_arr = albedo_data.data[band_idx]
             else:
                 fallback = self.config.default_albedo.get(b, 0.05)
-                logger.warning(f"Albedo for {b} missing. Using {fallback} fallback.")
                 alb_arr = np.full(target_shape, fallback, dtype=np.float32)
 
             if alb_arr.shape != target_shape:
@@ -397,14 +373,6 @@ class ShadingPropertyInverter(CloudPropertyInverter):
         logger.info(f"ShadingPropertyInverter initialized: window={self.window_size}x{self.window_size}, "
                    f"stride={self.stride}, bag_size={self.bag_size}")
 
-        # Initialize internal Albedo Estimator (constant fallback for quick inline use)
-        from clouds_decoded.modules.albedo_estimator import AlbedoEstimator, AlbedoEstimatorConfig
-        albedo_config = AlbedoEstimatorConfig(
-            fallback="constant",
-            default_albedo=config.default_albedo
-        )
-        self.albedo_estimator = AlbedoEstimator(albedo_config)
-
     def _extract_windows(self, data: np.ndarray) -> tuple:
         """
         Extract overlapping windows from 2D or 3D array.
@@ -569,7 +537,7 @@ class ShadingPropertyInverter(CloudPropertyInverter):
             input_shape = height_data.data.shape[1:]
             height_map = height_data.data[0]
 
-        # Determine target resolution
+        # Determine target resolution and shape (derived from height data grid)
         input_resolution = abs(input_transform.a)
         target_resolution = self.config.output_resolution
         scale = input_resolution / target_resolution
@@ -581,39 +549,27 @@ class ShadingPropertyInverter(CloudPropertyInverter):
         )
 
         # Resize height map if needed
-        if target_shape != input_shape:
-            logger.info(f"Resampling from {input_resolution}m to {target_resolution}m "
+        if height_map.shape != target_shape:
+            logger.info(f"Resampling height from {input_resolution}m to {target_resolution}m "
                        f"({input_shape} -> {target_shape})")
             height_map = resize(height_map, target_shape, order=0, preserve_range=True).astype(np.float32)
 
         # 1. Prepare Inputs
-        logger.info("Loading bands and resizing to target resolution...")
+        logger.info("Loading bands...")
         required_bands = self.config.bands
+        band_objects = scene.get_bands(required_bands, reflectance=True, n_workers=len(required_bands))
         bands_map = {}
-
-        for b in required_bands:
-            # get_band handles radiometric calibration -> reflectance
-            band_arr = scene.get_band(b)
-            if band_arr.ndim == 3:
-                band_arr = band_arr[0]
-
+        for b, obj in zip(required_bands, band_objects):
+            band_arr = obj.data.astype(np.float32)
             if band_arr.shape != target_shape:
                 band_arr = resize(band_arr, target_shape, order=1, preserve_range=True).astype(np.float32)
-            else:
-                band_arr = band_arr.astype(np.float32)
-
             bands_map[b] = band_arr
 
         # Surface Albedo
         albedo_maps = {}
 
         if albedo_data is None:
-            logger.info("No albedo provided, estimating internally...")
-            try:
-                albedo_data = self.albedo_estimator.process(scene)
-            except Exception as e:
-                logger.error(f"Albedo estimation failed: {e}. Using default albedo.")
-                albedo_data = None
+            logger.warning("No albedo provided. Using per-band constant defaults.")
         else:
             logger.info("Using pre-computed albedo data")
 

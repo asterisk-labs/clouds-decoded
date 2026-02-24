@@ -132,40 +132,28 @@ class CloudMaskProcessor:
         self._load_model()
 
         # 1. Prepare Data
-        # Determine target shape based on config.resolution
-        ref_band_10m = "B02"
-        if ref_band_10m in scene.bands:
-            base_arr = scene.bands[ref_band_10m]
-        else:
-            base_arr = next(iter(scene.bands.values()))
-
-        if base_arr.ndim == 3:
-            base_arr = base_arr[0]
-
+        ref_arr = scene.bands.get("B02") or next(iter(scene.bands.values()))
+        if ref_arr.ndim == 3:
+            ref_arr = ref_arr[0]
         current_res = abs(scene.transform[0])
         target_res = float(self.config.resolution)
         scale_factor = current_res / target_res
-
-        target_h = int(base_arr.shape[0] * scale_factor)
-        target_w = int(base_arr.shape[1] * scale_factor)
-        target_shape = (target_h, target_w)
+        target_shape = (int(ref_arr.shape[0] * scale_factor), int(ref_arr.shape[1] * scale_factor))
 
         logger.info(
             f"Input Resolution Processing: Native {current_res:.2f}m -> "
             f"Target {target_res}m. Shape: {target_shape}"
         )
 
+        band_objects = scene.get_bands(
+            SENTINEL2_BAND_NAMES, reflectance=True, n_workers=len(SENTINEL2_BAND_NAMES),
+        )
         data_list = []
-        for bname in SENTINEL2_BAND_NAMES:
-            band_arr = scene.get_band(bname, reflectance=True)
-            if band_arr.ndim == 3:
-                band_arr = band_arr[0]
+        for band_obj in band_objects:
+            band_arr = band_obj.data
             if band_arr.shape != target_shape:
-                band_arr = resize(
-                    band_arr, target_shape, preserve_range=True, order=1
-                ).astype(np.float32)
+                band_arr = resize(band_arr, target_shape, preserve_range=True, order=1).astype(np.float32)
             data_list.append(band_arr)
-
         input_data = np.stack(data_list, axis=0)  # (13, H, W)
 
         # 2. Run Inference via shared sliding window

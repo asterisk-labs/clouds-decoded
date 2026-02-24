@@ -40,10 +40,19 @@ def mock_scene():
     band_names = ["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B09", "B10", "B11", "B12"]
     scene.bands = {name: np.random.rand(100, 100).astype(np.float32) for name in band_names}
 
-    def get_band(name, reflectance=True):
+    def get_band(name, reflectance=True, resolution=None, cache=True):
         return scene.bands.get(name, np.random.rand(100, 100).astype(np.float32))
 
+    def get_bands(names, reflectance=True, resolution=None, cache=True, n_workers=1):
+        result = []
+        for name in names:
+            band_mock = MagicMock()
+            band_mock.data = scene.bands.get(name, np.random.rand(100, 100).astype(np.float32))
+            result.append(band_mock)
+        return result
+
     scene.get_band.side_effect = get_band
+    scene.get_bands.side_effect = get_bands
     scene.transform = Affine(10, 0, 0, 0, -10, 1000)
     scene.crs = "EPSG:32631"
     scene.shape = (100, 100)

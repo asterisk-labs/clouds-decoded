@@ -2,6 +2,7 @@
 """Parallax correction (refocusing) for Sentinel-2 multi-band imagery."""
 import logging
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from scipy.ndimage import map_coordinates
 from skimage.transform import resize
 
@@ -79,69 +80,67 @@ class RefocusProcessor:
         )
         output.bands = {}
 
+        valid_bands = []
         for band_name in bands_to_process:
             if band_name not in scene.bands:
                 logger.warning(f"Band {band_name} not in scene, skipping")
-                continue
+            else:
+                valid_bands.append(band_name)
 
-            # Raw DN — refocus warps spatially, calibration params carry through
-            band_data = scene.bands[band_name]
+        def _process_band(band_name: str):
             band_resolution = BAND_RESOLUTIONS[band_name]
             time_delay = BAND_TIME_DELAYS.get(band_name, 0.0)
 
-            # Reference band (zero delay) -> pass through unchanged
             if time_delay == 0.0:
-                if config.output_resolution and config.output_resolution != band_resolution:
-                    band_data = self._resample_band(
-                        band_data, band_resolution, config.output_resolution
-                    )
-                output.bands[band_name] = band_data
+                result = scene.get_band(
+                    band_name, reflectance=False, resolution=config.output_resolution
+                )
                 logger.debug(f"  {band_name}: reference band, passed through")
-                continue
+                return band_name, result
 
-            # Interpolate height map to this band's resolution
+            band_data = scene.get_band(band_name, reflectance=False)
+
             band_height = self._interpolate_height_to_band(
                 height_map, height_resolution, band_data.shape, band_resolution
             )
-
-            # Compute per-pixel along-track offset (in pixels at band resolution)
-            # heightsToOffsets returns offset in pixels for given pixel_size
             offsets = heightsToOffsets(band_height, [band_name], band_resolution)
-
-            # Per-pixel direction sign from footprint IDs
-            # Even detector IDs = 'up' (+1), odd = 'down' (-1)
             direction_sign = self._get_direction_sign_map(
                 scene, band_name, band_data.shape, band_resolution
             )
             offsets = offsets * direction_sign
 
-            # Decompose along-track offset into row/col components
-            # image_azimuth is the angle of the satellite track relative to the image grid
-            # Along-track = roughly along rows, rotated by image_azimuth
             row_offsets = offsets * np.cos(image_azimuth)
             col_offsets = offsets * np.sin(image_azimuth)
 
-            # Warp: for each output pixel (r, c), sample input at (r + row_offset, c + col_offset)
             corrected = self._warp_band(band_data, row_offsets, col_offsets)
 
-            # Optionally resample to common output resolution
             if config.output_resolution and config.output_resolution != band_resolution:
-                corrected = self._resample_band(
-                    corrected, band_resolution, config.output_resolution
-                )
+                scale = band_resolution / config.output_resolution
+                warp_target = (int(corrected.shape[0] * scale), int(corrected.shape[1] * scale))
+                if warp_target != corrected.shape:
+                    corrected = resize(
+                        corrected, warp_target,
+                        order=config.interpolation_order,
+                        preserve_range=True,
+                    ).astype(corrected.dtype)
 
-            output.bands[band_name] = corrected
             max_offset_m = np.nanmax(np.abs(offsets)) * band_resolution
             logger.info(
                 f"  {band_name}: delay={time_delay:.3f}s, "
                 f"max_offset={max_offset_m:.1f}m, shape={corrected.shape}"
             )
+            return band_name, corrected
+
+        with ThreadPoolExecutor(max_workers=len(valid_bands)) as pool:
+            for band_name, result in pool.map(_process_band, valid_bands):
+                output.bands[band_name] = result
 
         # Copy bands that weren't in the processing list (pass through)
         for band_name, band_data in scene.bands.items():
             if band_name not in output.bands:
                 output.bands[band_name] = band_data
 
+        output.is_refocused = True
         logger.info("Refocusing complete")
         return output
 
@@ -277,19 +276,3 @@ class RefocusProcessor:
         )
         return result.astype(band_data.dtype)
 
-    def _resample_band(
-        self,
-        band_data: np.ndarray,
-        current_resolution: float,
-        target_resolution: float,
-    ) -> np.ndarray:
-        """Resample a band to a different resolution."""
-        scale = current_resolution / target_resolution
-        target_shape = (int(band_data.shape[0] * scale), int(band_data.shape[1] * scale))
-        if target_shape == band_data.shape:
-            return band_data
-        return resize(
-            band_data, target_shape,
-            order=self.config.interpolation_order,
-            preserve_range=True,
-        ).astype(band_data.dtype)

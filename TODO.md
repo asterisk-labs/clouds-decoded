@@ -3,9 +3,9 @@
 ## Code quality and functionality
   - [x] Asset and download helpers with path variable on installation: GEBCO, model weights
   - [ ] (pre-release) Unify asset handling: host all model weights (refl2prop, emulator, datadriven albedo) on HuggingFace, remove bundled refl2prop and albedo weights from source tree, make all processors use the same managed-asset-only pattern with no silent bundled fallback
-  - [ ] Review and update all processors to use band-caching logic implemented in 0cd91c1
+  - [x] Review and update all processors to use band-caching logic implemented in 0cd91c1
   - [x] Use raw weights files from sensei-v2 and stop using its sliding window inference feature. Deduplicate sliding window code so that height emulation window is reused for sensei-v2, and use asset and download helpers for the model weights instead of sensei-v2's own handling.
-  - [ ] Improved manifest.json: hashing of IO files, intelligently assigning steps as "outdated" when a processor upstream of it is changed. More integrity checks between project.yaml and manifests, e.g. git repo commit hashes / release version numbers to cross-check.
+  - [ ] Improved manifest.json: hashing of IO files, crop-window tracking and support, intelligently assigning steps as "outdated" when a processor upstream of it is changed. More integrity checks between project.yaml and manifests, e.g. git repo commit hashes / release version numbers to cross-check.
   - [ ] Improve clarity and accessibility of configs: explore nested configs to avoid long lists of independent sets of parameters (e.g. the height emulator's parameters all sitting next to the original height algorithm's parameters), project recipes for different sensible configurations
   - [ ] Add improved write options for data classes: e.g. netcdf, zarr
   - [ ] Refactor height emulator to sit inside the cloud_height module, ala albedo and the datadriven alternative. Avoid config parameters like "use_emulator" in project.yaml
