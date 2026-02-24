@@ -586,7 +586,7 @@ class Project:
                             step_config = self._load_step_config(step)
                             computed = type(step_config).model_computed_fields
                             exclude = set(computed.keys()) if computed else set()
-                            config_dict = step_config.model_dump(exclude=exclude)
+                            config_dict = step_config.model_dump(mode='json', exclude=exclude)
                             error = self._validate_step_file(step, scene_out, scene_path, config_dict)
                             if error is not None:
                                 logger.error(
@@ -745,7 +745,7 @@ class Project:
         # Build provenance
         computed = type(step_config).model_computed_fields
         exclude = set(computed.keys()) if computed else set()
-        config_dict = step_config.model_dump(exclude=exclude)
+        config_dict = step_config.model_dump(mode='json', exclude=exclude)
         product_id = getattr(scene, 'product_uri', None)
         provenance = self._build_provenance(scene_path, product_id, step, config_dict)
 
