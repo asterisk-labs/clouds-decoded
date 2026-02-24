@@ -129,7 +129,9 @@ def test_processor_initialization(mock_unet, mock_weights_file):
 
 def test_emulator_input_output_shapes(mock_unet, mock_scene, mock_weights_file):
     """Verify that output grid matches input scene dimensions."""
-    config = CloudHeightEmulatorConfig(window_size=(64, 64), overlap=16, device="cpu")
+    config = CloudHeightEmulatorConfig(
+        window_size=(64, 64), overlap=16, device="cpu", working_resolution=10,
+    )
     processor = CloudHeightEmulatorProcessor(config)
 
     result = processor.process(mock_scene)
@@ -142,7 +144,9 @@ def test_emulator_input_output_shapes(mock_unet, mock_scene, mock_weights_file):
 
 def test_emulator_no_cloud_mask_on_output(mock_unet, mock_scene, mock_weights_file):
     """Verify CloudHeightGridData output does not carry a cloud_mask attribute."""
-    config = CloudHeightEmulatorConfig(window_size=(64, 64), overlap=16, device="cpu")
+    config = CloudHeightEmulatorConfig(
+        window_size=(64, 64), overlap=16, device="cpu", working_resolution=10,
+    )
     processor = CloudHeightEmulatorProcessor(config)
 
     result = processor.process(mock_scene)
@@ -250,7 +254,7 @@ def test_emulator_within_project(tmp_path, mock_unet, mock_scene, mock_weights_f
 
         with patch.object(Project, "_load_step_config") as mock_load_cfg:
             mock_load_cfg.return_value = CloudHeightEmulatorConfig(
-                window_size=(64, 64), overlap=16, device="cpu"
+                window_size=(64, 64), overlap=16, device="cpu", working_resolution=10,
             )
 
             output_path = project._run_step(

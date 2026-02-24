@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Optional, Dict, Any, List
 import yaml
 from pathlib import Path
@@ -14,6 +14,37 @@ class BaseProcessorConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     output_dir: Optional[str] = Field(None, description="Directory to save outputs")
     n_workers: int = Field(1, description="Number of parallel workers where applicable")
+    working_resolution: Optional[int] = Field(
+        default=None,
+        ge=10,
+        description=(
+            "Resolution in metres at which inference is performed. "
+            "None = processor's natural resolution."
+        ),
+    )
+    output_resolution: Optional[int] = Field(
+        default=None,
+        ge=10,
+        description=(
+            "Output resolution in metres. When set, the result from process() is "
+            "resampled to this resolution before being returned. None = return at "
+            "the processor's working resolution."
+        ),
+    )
+
+    @model_validator(mode='after')
+    def _check_resolution_ordering(self) -> 'BaseProcessorConfig':
+        """Reject configs where output_resolution < working_resolution."""
+        if (
+            self.working_resolution is not None
+            and self.output_resolution is not None
+            and self.output_resolution < self.working_resolution
+        ):
+            raise ValueError(
+                f"output_resolution ({self.output_resolution}) must be >= "
+                f"working_resolution ({self.working_resolution})"
+            )
+        return self
 
     @classmethod
     def from_yaml(cls, config_path: Optional[str] = None):

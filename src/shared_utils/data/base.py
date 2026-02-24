@@ -212,6 +212,66 @@ class GeoRasterData(Data):
                  if simple_tags:
                      dst.update_tags(**simple_tags)
 
+    def resample(self, target_resolution_m: Optional[int]) -> "GeoRasterData":
+        """Resample to a target resolution in metres.
+
+        Returns self unchanged if ``target_resolution_m`` is None, data is None,
+        or the current resolution is already within 0.5 m of the target.
+
+        Float data uses bilinear interpolation (order=1) with NaN-safe fill/restore.
+        Integer/categorical data uses nearest-neighbour (order=0).
+        The affine transform is updated to reflect the new pixel size.
+
+        Args:
+            target_resolution_m: Target pixel size in metres, or None for no-op.
+
+        Returns:
+            A new instance of the same subclass at the requested resolution,
+            or ``self`` if no resampling is needed.
+        """
+        if target_resolution_m is None or self.data is None:
+            return self
+        current_res = abs(self.transform.a)
+        if abs(current_res - target_resolution_m) < 0.5:
+            return self
+
+        from skimage.transform import resize as sk_resize
+        from rasterio.transform import Affine
+
+        scale = current_res / target_resolution_m  # <1 downsample, >1 upsample
+        data = self.data
+        squeeze = data.ndim == 2
+        if squeeze:
+            data = data[np.newaxis]
+        C, H, W = data.shape
+        new_H = max(1, round(H * scale))
+        new_W = max(1, round(W * scale))
+
+        is_float = np.issubdtype(data.dtype, np.floating)
+        if is_float:
+            nan_mask = np.isnan(data)
+            filled = np.where(nan_mask, 0.0, data)
+            resized = sk_resize(
+                filled, (C, new_H, new_W), order=1,
+                preserve_range=True, anti_aliasing=False,
+            )
+            nan_mask_r = sk_resize(
+                nan_mask.astype(np.float32), (C, new_H, new_W),
+                order=0, preserve_range=True,
+            ) > 0.5
+            resized[nan_mask_r] = np.nan
+        else:
+            resized = sk_resize(
+                data, (C, new_H, new_W), order=0,
+                preserve_range=True, anti_aliasing=False,
+            ).astype(data.dtype)
+
+        if squeeze:
+            resized = resized[0]
+
+        new_transform = self.transform * Affine.scale(1.0 / scale)
+        return self.model_copy(update={"data": resized, "transform": new_transform})
+
     @classmethod
     def with_template(cls, data: np.ndarray, template: Union[Any, str, Path], metadata: Optional[Metadata] = None) -> "GeoRasterData":
         """Create a GeoRasterData instance with a given data array, using the extent/projection

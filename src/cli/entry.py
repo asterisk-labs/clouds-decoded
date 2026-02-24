@@ -319,7 +319,7 @@ def cloud_mask(
             method=method,
             threshold_band=threshold_band,
             threshold_value=threshold_value,
-            resolution=resolution,
+            working_resolution=resolution,
         )
 
     run_cloud_mask(scene, mask_config, output_path)

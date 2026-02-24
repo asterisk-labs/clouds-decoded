@@ -9,8 +9,9 @@ from typing import Optional, Union
 from skimage.transform import resize
 from tqdm import tqdm
 import time
+from rasterio.transform import Affine
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeightMetadata, CloudMaskData
-
+from clouds_decoded.base_processor import BaseProcessor
 from clouds_decoded.normalization import CloudHeightNormalizationWrapper
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.modules.cloud_height_emulator.resunet import Res34_Unet
@@ -20,7 +21,7 @@ from clouds_decoded.sliding_window import SlidingWindowInference
 logger = logging.getLogger(__name__)
 
 
-class CloudHeightEmulatorProcessor:
+class CloudHeightEmulatorProcessor(BaseProcessor):
     def __init__(self, config: Optional[CloudHeightEmulatorConfig] = None):
         if config is None:
             config = CloudHeightEmulatorConfig()
@@ -84,7 +85,7 @@ class CloudHeightEmulatorProcessor:
             self.model.to(self.device)
             self.model.eval()
 
-    def process(
+    def _process(
         self,
         scene: Sentinel2Scene,
         cloud_mask: Optional[Union[CloudMaskData,
@@ -110,9 +111,16 @@ class CloudHeightEmulatorProcessor:
         band_objects = scene.get_bands(
             self.config.bands, reflectance=True, n_workers=len(self.config.bands),
         )
-        # Use B02 (10m reference) actual data shape as the target grid
+        # Derive target shape from B02 actual dimensions scaled to working_resolution
         b02_idx = self.config.bands.index("B02") if "B02" in self.config.bands else 0
-        target_shape = band_objects[b02_idx].data.shape
+        b02_actual_shape = band_objects[b02_idx].data.shape
+        b02_native_res = abs(scene.transform.a)  # typically 10.0 m
+        w_scale = b02_native_res / self.config.working_resolution
+        target_shape = (
+            max(1, round(b02_actual_shape[0] * w_scale)),
+            max(1, round(b02_actual_shape[1] * w_scale)),
+        )
+        working_transform = scene.transform * Affine.scale(1.0 / w_scale)
 
         data_list = []
         for band_obj in band_objects:
@@ -188,7 +196,7 @@ class CloudHeightEmulatorProcessor:
             f"Inference completed in {ending_time - starting_time:.1f} seconds")
         return CloudHeightGridData(
             data=output_data,
-            transform=scene.transform,
+            transform=working_transform,
             crs=scene.crs,
             metadata=meta,
         )

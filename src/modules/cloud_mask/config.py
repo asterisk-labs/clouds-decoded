@@ -76,11 +76,11 @@ class CloudMaskConfig(BaseProcessorConfig):
         le=64,
         description="Batch size for model inference"
     )
-    resolution: int = Field(
+    working_resolution: int = Field(
         default=20,
         ge=10,
         le=60,
-        description="Input resolution for model (meters)"
+        description="Resolution in metres at which inference is performed."
     )
 
     stride: int = Field(

@@ -21,6 +21,7 @@ from clouds_decoded.data import (
     Sentinel2Scene, AlbedoData, AlbedoMetadata, CloudMaskData,
 )
 from clouds_decoded.constants import BAND_RESOLUTIONS
+from clouds_decoded.base_processor import BaseProcessor
 from .config import AlbedoEstimatorConfig
 from .sampling import (
     clear_pixel_count,
@@ -76,7 +77,7 @@ def _select_length_scale(
 # Processor
 # ---------------------------------------------------------------------------
 
-class AlbedoEstimator:
+class AlbedoEstimator(BaseProcessor):
     """Estimates surface albedo from Sentinel-2 scenes.
 
     When a cloud mask is provided, fits a Gaussian Process to clear-sky pixels
@@ -95,7 +96,7 @@ class AlbedoEstimator:
     # Public API
     # ------------------------------------------------------------------
 
-    def process(
+    def _process(
         self,
         scene: Sentinel2Scene,
         cloud_mask: Optional[CloudMaskData] = None,

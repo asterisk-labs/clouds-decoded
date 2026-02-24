@@ -15,13 +15,14 @@ from clouds_decoded.data import (
     CloudMaskData
 )
 
+from clouds_decoded.base_processor import BaseProcessor
 from .model import InversionNet, NormalizationWrapper
 from .model_shading import ShadingAwareInversionNet, ShadingNormalizationWrapper
 from .config import Refl2PropConfig, ShadingRefl2PropConfig, OutputFeature
 
 logger = logging.getLogger(__name__)
 
-class CloudPropertyInverter:
+class CloudPropertyInverter(BaseProcessor):
 
     @staticmethod
     def _load_and_init_model(model, model_path: str, device: torch.device):
@@ -78,7 +79,7 @@ class CloudPropertyInverter:
             self.device,
         )
         
-    def process(
+    def _process(
         self,
         scene: Sentinel2Scene,
         height_data: CloudHeightGridData,
@@ -109,7 +110,7 @@ class CloudPropertyInverter:
 
         # Determine target resolution and shape (derived from height data grid)
         input_resolution = abs(input_transform.a)  # Current pixel size in meters
-        target_resolution = self.config.output_resolution
+        target_resolution = self.config.working_resolution
         scale = input_resolution / target_resolution
         target_shape = (int(input_shape[0] * scale), int(input_shape[1] * scale))
 
@@ -512,7 +513,7 @@ class ShadingPropertyInverter(CloudPropertyInverter):
 
         return global_output, shading_output
 
-    def process(
+    def _process(
         self,
         scene: Sentinel2Scene,
         height_data: CloudHeightGridData,
@@ -543,7 +544,7 @@ class ShadingPropertyInverter(CloudPropertyInverter):
 
         # Determine target resolution and shape (derived from height data grid)
         input_resolution = abs(input_transform.a)
-        target_resolution = self.config.output_resolution
+        target_resolution = self.config.working_resolution
         scale = input_resolution / target_resolution
         target_shape = (int(input_shape[0] * scale), int(input_shape[1] * scale))
 

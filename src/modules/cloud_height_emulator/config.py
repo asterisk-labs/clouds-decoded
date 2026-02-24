@@ -51,6 +51,11 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         default="cuda",
         description="Device to run inference on (e.g., 'cuda', 'cpu'). If None, auto-detects."
     )
+    working_resolution: int = Field(
+        default=20,
+        ge=10,
+        description="Resolution in metres at which inference is performed.",
+    )
 
     @model_validator(mode='after')
     def _resolve_model_path(self) -> CloudHeightEmulatorConfig:
@@ -75,3 +80,4 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
                 f"Overlap ({self.overlap}) must be smaller than window size {height}"
             )
         return self
+

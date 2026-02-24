@@ -12,6 +12,7 @@ from rasterio.transform import Affine
 from typing import Optional, Union
 from pathlib import Path
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudHeightMetadata, CloudMaskData
+from clouds_decoded.base_processor import BaseProcessor
 from .data import ColumnExtractor, ColumnIterator, RetrievalCube
 from .physics import heightsToOffsets
 from .config import CloudHeightConfig
@@ -20,7 +21,7 @@ from clouds_decoded.constants import BAND_RESOLUTIONS
 # Module-level logger setup
 logger = logging.getLogger(__name__)
 
-class CloudHeightProcessor:
+class CloudHeightProcessor(BaseProcessor):
     def __init__(self, config: CloudHeightConfig):
         """
         Initializes the CloudHeightProcessor with a configuration object.
@@ -28,7 +29,7 @@ class CloudHeightProcessor:
         self.config = config
         self.gaussian_kernel = self._constructGaussianKernel()
 
-    def process(self, scene: Sentinel2Scene, cloud_mask: Optional[Union[CloudMaskData, np.ndarray, str, Path]] = None) -> CloudHeightGridData:
+    def _process(self, scene: Sentinel2Scene, cloud_mask: Optional[Union[CloudMaskData, np.ndarray, str, Path]] = None) -> CloudHeightGridData:
         """
         Main processing method.
         Args:
@@ -153,13 +154,12 @@ class CloudHeightProcessor:
         transform = Affine(geo_pixel_size, 0, scene.transform.c, 0, -geo_pixel_size, scene.transform.f)
         crs = scene.crs
         
-        result_data = CloudHeightGridData(
+        return CloudHeightGridData(
             data=final_gridded_heights,
             metadata=meta,
             transform=transform,
             crs=crs
         )
-        return result_data
 
     def _worker_job(self, data_queue, result_queue):
         while True:

@@ -9,13 +9,14 @@ from skimage.transform import resize
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData
 from clouds_decoded.constants import BAND_RESOLUTIONS, BAND_TIME_DELAYS
 from clouds_decoded.modules.cloud_height.physics import heightsToOffsets
+from clouds_decoded.base_processor import BaseProcessor
 
 from .config import RefocusConfig
 
 logger = logging.getLogger(__name__)
 
 
-class RefocusProcessor:
+class RefocusProcessor(BaseProcessor):
     """
     Corrects parallax misalignment in Sentinel-2 bands using cloud height data.
 
@@ -31,6 +32,14 @@ class RefocusProcessor:
         self.config = config
 
     def process(
+        self,
+        scene: Sentinel2Scene,
+        height_data: CloudHeightGridData,
+    ) -> Sentinel2Scene:
+        """Bypass base-class resampling — returns Sentinel2Scene, not GeoRasterData."""
+        return self._process(scene, height_data)
+
+    def _process(
         self,
         scene: Sentinel2Scene,
         height_data: CloudHeightGridData,

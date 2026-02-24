@@ -11,6 +11,7 @@ import rasterio
 
 from clouds_decoded.data import Sentinel2Scene, CloudMaskData, CloudMaskMetadata
 from clouds_decoded.constants import BANDS as SENTINEL2_BAND_NAMES
+from clouds_decoded.base_processor import BaseProcessor
 from .config import CloudMaskConfig, PostProcessParams
 
 logger = logging.getLogger(__name__)
@@ -41,13 +42,13 @@ _SEGFORMER_B2 = dict(
 _PATCH_SIZE = 512   # fixed SegFormerB2 patch size
 
 
-class ThresholdCloudMaskProcessor:
+class ThresholdCloudMaskProcessor(BaseProcessor):
     def __init__(self, config: Optional[CloudMaskConfig] = None):
         if config is None:
             config = CloudMaskConfig(method="threshold")
         self.config = config
 
-    def process(self, scene: Sentinel2Scene) -> CloudMaskData:
+    def _process(self, scene: Sentinel2Scene) -> CloudMaskData:
         """
         Creates a basic cloud mask by thresholding a specific band.
         Values GREATER than the threshold are considered cloud (1), others not (0).
@@ -67,7 +68,7 @@ class ThresholdCloudMaskProcessor:
         mask = (band_data > threshold_value).astype(np.uint8)
 
         # Construct CloudMaskData using Sentinel2Scene georeferencing
-        out = CloudMaskData(
+        return CloudMaskData(
              data=mask,
              transform=scene.transform,
              crs=scene.crs,
@@ -79,9 +80,8 @@ class ThresholdCloudMaskProcessor:
                  threshold_value=threshold_value
              )
         )
-        return out
 
-class CloudMaskProcessor:
+class CloudMaskProcessor(BaseProcessor):
     def __init__(self, config: Optional[CloudMaskConfig] = None):
         if config is None:
             config = CloudMaskConfig(method="senseiv2")
@@ -117,7 +117,7 @@ class CloudMaskProcessor:
             self.model.load_state_dict(stripped, strict=True)
             self.model.eval()
 
-    def process(self, scene: Sentinel2Scene) -> CloudMaskData:
+    def _process(self, scene: Sentinel2Scene) -> CloudMaskData:
         """
         Generates a cloud mask using SEnSeIv2 deep learning model.
         The output is a 4-class categorical map (0=clear, 1=thick cloud,
@@ -136,7 +136,7 @@ class CloudMaskProcessor:
         if ref_arr.ndim == 3:
             ref_arr = ref_arr[0]
         current_res = abs(scene.transform[0])
-        target_res = float(self.config.resolution)
+        target_res = float(self.config.working_resolution)
         scale_factor = current_res / target_res
         target_shape = (int(ref_arr.shape[0] * scale_factor), int(ref_arr.shape[1] * scale_factor))
 
