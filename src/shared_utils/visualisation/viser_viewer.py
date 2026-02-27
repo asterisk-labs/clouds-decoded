@@ -579,8 +579,9 @@ class ViserViewer:
         self._scene_data: Dict[str, SceneData] = {}
         self._scene_order: List[str] = []
 
-        for scene_path in project.config.scenes:
-            scene_id = project._scene_id(scene_path)
+        for row in project.db.get_all():
+            scene_path = row["path"]
+            scene_id = row["scene_id"]
             output_dir = project._scene_output_dir(scene_id)
 
             if not (output_dir / "cloud_height.tif").exists():

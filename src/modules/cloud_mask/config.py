@@ -84,7 +84,7 @@ class CloudMaskConfig(BaseProcessorConfig):
     )
 
     stride: int = Field(
-        default=80,
+        default=128,
         ge=1,
         le=256,
         description="Stride for tiling inputs to model (pixels at model resolution)"

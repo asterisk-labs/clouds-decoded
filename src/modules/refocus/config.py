@@ -35,9 +35,8 @@ class RefocusConfig(BaseProcessorConfig):
 
     # Output resolution
     output_resolution: Optional[int] = Field(
-        default=20, # same default as refl2prop (primary user of refocus)
+        default=60, # same default as refl2prop (primary user of refocus)
         ge=10,
-        le=60,
         description=(
             "Output resolution in meters. None = preserve native resolution per band. "
             "If set, all bands are resampled to this common grid."

@@ -20,7 +20,7 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
     """
 
     method: Literal["gp", "idw", "datadriven"] = Field(
-        default="gp",
+        default="idw",
         description="Estimation method: 'gp' (Gaussian Process), "
                     "'idw' (inverse-distance weighting), or 'datadriven' (trained MLP)"
     )
@@ -87,7 +87,7 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
                     "weight matrix sparse."
     )
     idw_smoothing_m: float = Field(
-        default=1000.0,
+        default=2000.0,
         ge=0.0,
         description="Regularisation distance in metres. Weights are "
                     "1 / (d + d0) instead of 1 / d, preventing a spike "

@@ -145,16 +145,10 @@ class CloudMaskProcessor(BaseProcessor):
             f"Target {target_res}m. Shape: {target_shape}"
         )
 
-        band_objects = scene.get_bands(
-            SENTINEL2_BAND_NAMES, reflectance=True, n_workers=len(SENTINEL2_BAND_NAMES),
-        )
-        data_list = []
-        for band_obj in band_objects:
-            band_arr = band_obj.data
-            if band_arr.shape != target_shape:
-                band_arr = resize(band_arr, target_shape, preserve_range=True, order=1).astype(np.float32)
-            data_list.append(band_arr)
-        input_data = np.stack(data_list, axis=0)  # (13, H, W)
+        input_data = np.stack(
+            [scene.get_band_at_shape(name, target_shape) for name in SENTINEL2_BAND_NAMES],
+            axis=0,
+        )  # (13, H, W)
 
         # 2. Run Inference via shared sliding window
         from clouds_decoded.sliding_window import SlidingWindowInference

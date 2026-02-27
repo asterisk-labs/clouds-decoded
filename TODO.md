@@ -12,15 +12,17 @@
   - [ ] (major bug) datadriven albedo currently has strong detector dependency, creating unwanted stripes
   - [x] more flexibility and independence for _output_ resolutions of processors via the .write function, e.g. cloud height emulation processed @ 20m/pixel and saved at 60 m/pixel. Strict distinction between "working_resolution" and "output_resolution" in configs?
   - [ ] Decouple stride from output_resolution in original cloud_height algorithm, shouuld be two separate parameters. 
+  - [x] Improve logging behaviour (log files per computation)
+  - [x] Define computation graph in YAML spec, so that users can modify the pipeline without changing project.py or entry.py
 
 ## Features 
   - [ ] (new processor) Using B09 and B10 for water vapor column retrieval above cloud: referencing LUT and looking at difference in reflectance for the two bands against expected
   - [ ] (new processor) Using B01 for aerosol retrieval above cloud: referencing LUT and looking at difference in reflectance for the two bands against expected (need to make refl2prop model independent of B01 to be valid)
   - [ ] (new processor) Cloud type with SSL: latent embeddings output for use with clustering and distance metrics between samples (e.g. similarity search)
-  - [ ] Speed up refocus with parallelisation / vectorising / something because it can definitely be quicker (tbd)
-  - [ ] Orchestration: how to handle big processing runs efficiently (i) parallelising at whole scene processing level vs. parallelising at individual processor level. Could be linked to another config file in project spaces with runtime/orchestration parameters
-  - [ ] Standardised approach for output catalogue management: STAC/geoparquet/DuckDB/alternatives
+  - [x] Orchestration: how to handle big processing runs efficiently (i) parallelising at whole scene processing level vs. parallelising at individual processor level. Could be linked to another config file in project spaces with runtime/orchestration parameters
+  - [x] Standardised approach for output catalogue management: STAC/geoparquet/DuckDB/alternatives
   - [ ] Regridding tool to turn project run into ERA5/6-like products
+  - [x] Overhaul project scene management (currently a list in the project.yaml) with a database. Forms basis for next point
   - [ ] (big) Analysis toolkit for statistical checks on regridded outputs and original outputs, database-style queries for certain conditions, integration with ERA5/6 layers for more complex analysis
   - [ ] (optional) Web dashboard homepage for project, linking to visualiser for individual scenes and project-wide stats and maps
 

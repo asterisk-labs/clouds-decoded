@@ -1,0 +1,39 @@
+steps:
+  - name: cloud_mask
+    processor: cloud_mask
+    config: cloud_mask.yaml
+    inputs: [scene]
+    output: cloud_mask
+    output_file: cloud_mask.tif
+    postprocess: true
+
+  - name: cloud_height
+    processor: cloud_height_emulator
+    config: cloud_height.yaml
+    inputs: [scene]
+    keyword_inputs: {cloud_mask: cloud_mask}
+    output: cloud_height
+    output_file: cloud_height.tif
+
+  - name: albedo
+    processor: albedo
+    config: albedo.yaml
+    inputs: [scene]
+    keyword_inputs: {cloud_mask: cloud_mask}
+    output: albedo
+    output_file: albedo.tif
+
+  - name: refocus
+    processor: refocus
+    config: refocus.yaml
+    inputs: [scene, cloud_height]
+    output: refocused_scene
+    # output_file omitted -> ephemeral; re-run if resuming from a later step
+
+  - name: cloud_properties
+    processor: cloud_properties
+    config: refl2prop.yaml
+    inputs: [refocused_scene, cloud_height]
+    keyword_inputs: {albedo_data: albedo}
+    output_file: properties.tif
+    # output omitted -> terminal step

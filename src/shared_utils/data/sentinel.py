@@ -26,6 +26,7 @@ class Sentinel2Scene(Data):
     footprints: Dict[str, Any] = Field(default_factory=dict)
 
     _band_cache: Dict[tuple, Sentinel2Band] = PrivateAttr(default_factory=dict)
+    _resized_band_cache: Dict[tuple, np.ndarray] = PrivateAttr(default_factory=dict)
     sun_zenith: Optional[float] = None
     sun_azimuth: Optional[float] = None
     view_zenith: Optional[float] = None
@@ -86,6 +87,7 @@ class Sentinel2Scene(Data):
         # which would strip BandDict to plain dict
         object.__setattr__(self, 'bands', self._get_bands(self.scene_directory, bands, crop_window))
         self._band_cache.clear()
+        self._resized_band_cache.clear()
 
         # Get Georeferencing from reference band (B02)
         scene_width, scene_height = 0, 0
@@ -346,6 +348,66 @@ class Sentinel2Scene(Data):
                         self._band_cache[cache_key] = band
 
         return result
+
+    def get_band_at_shape(
+        self,
+        band_name: str,
+        target_shape: Tuple[int, int],
+        reflectance: bool = True,
+    ) -> np.ndarray:
+        """Return band data resized to *target_shape*, using a per-scene cache.
+
+        The cache is keyed by ``(band_name, reflectance, target_shape)`` so
+        multiple processors sharing a scene object automatically share resized
+        arrays.  Thread-safe for concurrent reads and writes under CPython's GIL.
+
+        Args:
+            band_name: Sentinel-2 band identifier (e.g. ``"B02"``).
+            target_shape: ``(height, width)`` in pixels.
+            reflectance: If True, return top-of-atmosphere reflectance.
+
+        Returns:
+            ``float32`` array of shape ``target_shape``.
+        """
+        key = (band_name, reflectance, target_shape)
+        cached = self._resized_band_cache.get(key)
+        if cached is not None:
+            return cached
+        raw = self.get_band(band_name, reflectance=reflectance)
+        if raw.shape == target_shape:
+            arr = raw.astype(np.float32)
+        else:
+            from skimage.transform import resize
+            arr = resize(raw, target_shape, preserve_range=True, order=1).astype(np.float32)
+        self._resized_band_cache[key] = arr
+        return arr
+
+    def prefetch_at_shape(
+        self,
+        band_names: List[str],
+        target_shape: Tuple[int, int],
+        reflectance: bool = True,
+        n_workers: int = -1,
+    ) -> None:
+        """Pre-compute and cache *band_names* resized to *target_shape* in parallel.
+
+        Intended to be called from a background thread in the reader pipeline
+        stage so that resized arrays are ready before a downstream processor
+        requests them via :meth:`get_band_at_shape`.
+
+        Args:
+            band_names: Bands to prefetch.
+            target_shape: Target ``(height, width)``.
+            reflectance: If True, use top-of-atmosphere reflectance.
+            n_workers: Number of threads.  -1 = one per band (I/O + GIL-releasing
+                resize ops benefit from threading even in CPython).
+        """
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+        n = len(band_names) if n_workers == -1 else max(1, n_workers)
+        n = min(n, os.cpu_count() or 1)
+        with ThreadPoolExecutor(max_workers=n) as ex:
+            list(ex.map(lambda b: self.get_band_at_shape(b, target_shape, reflectance), band_names))
 
     def write(self, filepath: str):
 
@@ -827,6 +889,7 @@ class Sentinel2Scene(Data):
             datasets = cfgrib.open_datasets(
                 str(grib_path),
                 backend_kwargs={"indexpath": ""},
+                decode_timedelta=False,
             )
         finally:
             os.dup2(saved_stderr_fd, 2)

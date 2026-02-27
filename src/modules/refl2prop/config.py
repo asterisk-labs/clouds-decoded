@@ -106,13 +106,13 @@ class Refl2PropConfig(BaseProcessorConfig):
         description="Inference batch size (pixels)"
     )
     working_resolution: int = Field(
-        default=20,
+        default=60,
         ge=10,
         le=300,
         description="Resolution in metres at which inference is performed.",
     )
     output_resolution: int = Field(
-        default=20,
+        default=60,
         ge=10,
         le=300,
         description="Output spatial resolution in meters/pixel (absolute, not relative to inputs)"

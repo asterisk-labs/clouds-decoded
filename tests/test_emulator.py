@@ -10,7 +10,7 @@ from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEm
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.normalization import CloudHeightNormalizationWrapper
 from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData, AlbedoData
-from clouds_decoded.project import Project
+from clouds_decoded.project import Project, _PipelineCtx
 
 
 @pytest.fixture
@@ -51,8 +51,16 @@ def mock_scene():
             result.append(band_mock)
         return result
 
+    def get_band_at_shape(name, target_shape, reflectance=True):
+        arr = scene.bands.get(name, np.random.rand(100, 100).astype(np.float32))
+        if arr.shape != target_shape:
+            from skimage.transform import resize as sk_resize
+            arr = sk_resize(arr, target_shape, preserve_range=True, order=1).astype(np.float32)
+        return arr
+
     scene.get_band.side_effect = get_band
     scene.get_bands.side_effect = get_bands
+    scene.get_band_at_shape.side_effect = get_band_at_shape
     scene.transform = Affine(10, 0, 0, 0, -10, 1000)
     scene.crs = "EPSG:32631"
     scene.shape = (100, 100)
@@ -79,18 +87,6 @@ def mock_unet():
         mock.return_value = model_instance
         yield mock
 
-
-@pytest.fixture(autouse=True)
-def mock_dataloader():
-    """Ensure DataLoader uses num_workers=0 to avoid multiprocessing issues in tests."""
-    with patch("clouds_decoded.sliding_window.DataLoader") as mock:
-        def side_effect(dataset, **kwargs):
-            kwargs['num_workers'] = 0
-            kwargs['pin_memory'] = False
-            from torch.utils.data import DataLoader as RealDataLoader
-            return RealDataLoader(dataset, **kwargs)
-        mock.side_effect = side_effect
-        yield mock
 
 
 # ---------------------------------------------------------------------------
@@ -252,74 +248,103 @@ def test_emulator_within_project(tmp_path, mock_unet, mock_scene, mock_weights_f
         mock_mask = MagicMock(spec=CloudMaskData)
         mock_mask.data = np.zeros((100, 100), dtype=np.uint8)
 
+        scene_out = project_dir / "scenes" / "mock_scene"
+        scene_out.mkdir(parents=True, exist_ok=True)
+        ctx = _PipelineCtx(
+            scene_path="mock_scene_path",
+            crop_window=None,
+            log_path=scene_out / "log.txt",
+            force=False,
+            unsafe=False,
+            git_hash=None,
+            scene_out=scene_out,
+        )
+        ctx.intermediates["scene"] = mock_scene
+        ctx.intermediates["cloud_mask"] = mock_mask
+
         with patch.object(Project, "_load_step_config") as mock_load_cfg:
             mock_load_cfg.return_value = CloudHeightEmulatorConfig(
                 window_size=(64, 64), overlap=16, device="cpu", working_resolution=10,
             )
 
-            output_path = project._run_step(
-                "cloud_height",
-                mock_scene,
-                "mock_scene_path",
-                project_dir / "scenes" / "mock_scene",
-                mask_result=mock_mask
-            )
+            step = project._get_workflow_step("cloud_height")
+            output_path, _ = project._run_step(step, ctx)
 
             assert "cloud_height.tif" in output_path
 
 
 def test_emulator_full_workflow(tmp_path, mock_unet, mock_scene):
-    """Verify the full-workflow pipeline correctly utilizes the emulator."""
+    """Verify the full-workflow pipeline correctly utilizes the emulator.
+
+    _create_processor_for_step() is called once per step at run() startup.
+    We verify that the cloud_height step receives a CloudHeightEmulatorConfig.
+    """
     project_dir = tmp_path / "workflow_proj"
     project = Project.init(str(project_dir))
+    project.add_scene("mock_scene.SAFE")
 
-    with patch("clouds_decoded.data.Sentinel2Scene.read", return_value=None), \
-         patch("clouds_decoded.data.CloudMaskData.from_file"), \
-         patch("clouds_decoded.data.CloudHeightGridData.from_file"), \
-         patch("clouds_decoded.data.AlbedoData.from_file"), \
-         patch("clouds_decoded.data.CloudHeightGridData.write"), \
-         patch("clouds_decoded.data.CloudMaskData.write"), \
-         patch("clouds_decoded.data.AlbedoData.write"), \
-         patch("clouds_decoded.data.refl2prop.CloudPropertiesData.write"), \
-         patch("clouds_decoded.cli.entry.run_cloud_mask"), \
-         patch("clouds_decoded.cli.entry.run_cloud_height") as mock_run_height, \
-         patch("clouds_decoded.cli.entry.run_albedo"), \
-         patch("clouds_decoded.cli.entry.run_refocus"), \
-         patch("clouds_decoded.cli.entry.run_cloud_properties"):
+    captured_height_config = []
 
-        mock_run_height.return_value = MagicMock(spec=CloudHeightGridData)
-        mock_run_height.return_value.metadata = MagicMock()
-        mock_run_height.return_value.metadata.provenance = {}
+    def mock_create_for_step(self, step, device=None):
+        """Capture the cloud_height config; return mocks so nothing actually runs."""
+        config = self._load_step_config(step)
+        if step == "cloud_height":
+            captured_height_config.append(config)
+        mock_proc = MagicMock()
+        mock_proc.process.return_value = MagicMock()
+        mock_proc.process.return_value.metadata = MagicMock()
+        mock_proc.process.return_value.metadata.provenance = {}
+        postproc = MagicMock()
+        postproc.postprocess.return_value = MagicMock()
+        return {step: mock_proc, "_cloud_mask_postprocessor": postproc}
 
-        project.add_scene("mock_scene.SAFE")
+    with patch.object(Project, "_create_processor_for_step", mock_create_for_step), \
+         patch("clouds_decoded.data.Sentinel2Scene.read"):
+        project.run(force=True)
 
-        with patch("clouds_decoded.data.Sentinel2Scene", return_value=mock_scene):
-            project.run(force=True)
-
-        mock_run_height.assert_called()
-        args, kwargs = mock_run_height.call_args
-        assert isinstance(args[1], CloudHeightEmulatorConfig)
-        assert args[1].use_emulator is True
+    assert len(captured_height_config) == 1, (
+        f"Expected exactly 1 cloud_height config capture, got {len(captured_height_config)}"
+    )
+    assert isinstance(captured_height_config[0], CloudHeightEmulatorConfig), (
+        f"Expected CloudHeightEmulatorConfig, got {type(captured_height_config[0])}"
+    )
+    assert captured_height_config[0].use_emulator is True
 
 
 def test_emulator_cloud_height_only_workflow(tmp_path, mock_unet, mock_scene):
-    """Verify standalone cloud-height step via Project."""
+    """Verify standalone cloud-height step via Project uses CloudHeightEmulatorConfig."""
     project_dir = tmp_path / "height_only_proj"
     project = Project.init(str(project_dir))
 
-    with patch("clouds_decoded.cli.entry.run_cloud_height") as mock_run_height, \
-         patch("clouds_decoded.data.CloudHeightGridData.write"):
+    # The default config for cloud_height must be CloudHeightEmulatorConfig with use_emulator=True
+    config = project._load_step_config("cloud_height")
+    assert isinstance(config, CloudHeightEmulatorConfig)
+    assert config.use_emulator is True
 
-        mock_run_height.return_value = MagicMock(spec=CloudHeightGridData)
-        mock_run_height.return_value.metadata = MagicMock()
+    # _run_step should work when processors are supplied (no model load required)
+    scene_out = project_dir / "scenes" / "test"
+    scene_out.mkdir(parents=True, exist_ok=True)
+    mock_proc = MagicMock()
+    mock_proc.process.return_value = MagicMock(spec=CloudHeightGridData)
+    mock_proc.process.return_value.metadata = MagicMock()
+    mock_proc.process.return_value.metadata.provenance = {}
 
-        project._run_step(
-            "cloud_height",
-            mock_scene,
-            "path",
-            project_dir / "scenes" / "test"
+    ctx = _PipelineCtx(
+        scene_path="path",
+        crop_window=None,
+        log_path=scene_out / "log.txt",
+        force=False,
+        unsafe=False,
+        git_hash=None,
+        scene_out=scene_out,
+    )
+    ctx.intermediates["scene"] = mock_scene
+    ctx.intermediates["cloud_mask"] = MagicMock()
+
+    step = project._get_workflow_step("cloud_height")
+    with patch("clouds_decoded.data.CloudHeightGridData.write"):
+        output_path, result = project._run_step(
+            step, ctx, processors={"cloud_height": mock_proc},
         )
 
-        args, kwargs = mock_run_height.call_args
-        assert isinstance(args[1], CloudHeightEmulatorConfig)
-        assert args[1].use_emulator is True
+    assert "cloud_height.tif" in output_path

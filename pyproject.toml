@@ -31,6 +31,7 @@ dependencies = [
     "panel",
     "holoviews",
     "bokeh",
+    "shapely>=2.0",
 ]
 
 [tool.setuptools.package-dir]
@@ -44,10 +45,21 @@ dependencies = [
 "clouds_decoded.modules.refl2prop" = "src/modules/refl2prop"
 "clouds_decoded.modules.refocus" = "src/modules/refocus"
 "clouds_decoded.visualisation" = "src/shared_utils/visualisation"
+"clouds_decoded.workflows" = "src/shared_utils/workflows"
 "clouds_decoded.cli" = "src/cli"
+"clouds_decoded.stats" = "src/stats"
+
+[tool.setuptools.package-data]
+"clouds_decoded.workflows" = ["recipes/*.yaml"]
 
 [project.optional-dependencies]
 sampling = ["cfgrib>=0.9.10"]
 
 [project.scripts]
 clouds-decoded = "clouds_decoded.cli.entry:app"
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselected by default; run with -m slow or --run-slow)",
+]
+addopts = "-m 'not slow'"

@@ -7,46 +7,82 @@ pad → tile → batch-infer → accumulate → crop logic.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
+# Set to True by project.run() before worker threads are created.
+# All threads inherit the same module object, so no ContextVar needed.
+suppress_inference_progress: bool = False
+
 
 class _WindowDataset(Dataset):
-    """Dataset that yields batched input windows for a list of (i, j) grid positions."""
+    """Dataset that lazily extracts model-input windows from the original array.
+
+    Windows are extracted on the fly rather than from a pre-padded copy of the
+    full image. Interior windows are zero-copy numpy views; only boundary windows
+    allocate a small padded copy. This eliminates the full ``(C, H_pad, W_pad)``
+    upfront allocation (typically several GB for full Sentinel-2 scenes).
+    """
 
     def __init__(
         self,
-        input_padded: torch.Tensor,             # (1, C, H_pad, W_pad)
+        input_arr: np.ndarray,              # (C, H, W) float32
         valid_indices: List[Tuple[int, int]],
         stride: int,
-        h_win: int,   # full model-input window height (output_window + 2 * context_pad)
+        h_win: int,
         w_win: int,
+        ctx: int,                           # context_pad pixels on each side
     ):
-        self.input_padded = input_padded
+        self.input_arr = input_arr
         self.valid_indices = valid_indices
         self.stride = stride
         self.h_win = h_win
         self.w_win = w_win
+        self.ctx = ctx
+        self.H = input_arr.shape[1]
+        self.W = input_arr.shape[2]
 
     def __len__(self) -> int:
         return len(self.valid_indices)
 
     def __getitem__(self, idx: int):
         i, j = self.valid_indices[idx]
-        h_start = i * self.stride
-        w_start = j * self.stride
-        window = self.input_padded[
-            :, :, h_start: h_start + self.h_win, w_start: w_start + self.w_win
-        ]
-        return window.squeeze(0), i, j  # (C, h_win, w_win), int, int
+        # Model-input window origin in original (unpadded) coordinates.
+        h_in = i * self.stride - self.ctx
+        w_in = j * self.stride - self.ctx
+
+        h_s = max(0, h_in)
+        h_e = min(self.H, h_in + self.h_win)
+        w_s = max(0, w_in)
+        w_e = min(self.W, w_in + self.w_win)
+
+        window = torch.from_numpy(self.input_arr[:, h_s:h_e, w_s:w_e]).float()
+
+        pad_top    = h_s - h_in
+        pad_bottom = (h_in + self.h_win) - h_e
+        pad_left   = w_s - w_in
+        pad_right  = (w_in + self.w_win) - w_e
+
+        if pad_top or pad_bottom or pad_left or pad_right:
+            _, h, w = window.shape
+            # reflect requires padding < dimension; fall back to replicate (edge extension)
+            # for extreme boundary windows where the slice is smaller than the padding.
+            can_reflect = h > pad_top and h > pad_bottom and w > pad_left and w > pad_right
+            window = F.pad(
+                window.unsqueeze(0),
+                (pad_left, pad_right, pad_top, pad_bottom),
+                mode="reflect" if can_reflect else "replicate",
+            ).squeeze(0)
+
+        return window, i, j  # (C, h_win, w_win), int, int
 
 
 class SlidingWindowInference:
@@ -126,22 +162,12 @@ class SlidingWindowInference:
         h_steps = (H + stride - 1) // stride
         w_steps = (W + stride - 1) // stride
 
-        # Reflect-pad input so every window position is fully covered
-        pad_top = ctx
-        pad_left = ctx
-        required_H = (h_steps - 1) * stride + h_win
-        required_W = (w_steps - 1) * stride + w_win
-        pad_bottom = max(required_H - (H + pad_top), ctx)
-        pad_right = max(required_W - (W + pad_left), ctx)
+        # Accumulator dimensions: just enough to hold all output window placements
+        H_acc = (h_steps - 1) * stride + ws
+        W_acc = (w_steps - 1) * stride + ws
 
-        input_tensor = torch.from_numpy(input_arr).float().unsqueeze(0)  # (1, C, H, W)
-        input_padded = torch.nn.functional.pad(
-            input_tensor,
-            (pad_left, pad_right, pad_top, pad_bottom),
-            mode="reflect",
-        )  # (1, C, H_pad, W_pad)
-
-        _, _, H_pad, W_pad = input_padded.shape
+        # Ensure float32 (zero-copy if already float32)
+        input_f32 = input_arr.astype(np.float32, copy=False)
 
         valid_indices = self._get_valid_indices(
             skip_mask, h_steps, w_steps, stride, ws, H, W
@@ -154,19 +180,22 @@ class SlidingWindowInference:
                 skipped, total,
             )
 
-        output = torch.zeros((n_output_channels, H_pad, W_pad), device=self.device)
-        count_map = torch.zeros((n_output_channels, H_pad, W_pad), device=self.device)
+        output = torch.zeros((n_output_channels, H_acc, W_acc), device=self.device)
+        # Single-channel count_map: overlap count is channel-independent, broadcast on divide
+        count_map = torch.zeros((1, H_acc, W_acc), device=self.device)
 
-        dataset = _WindowDataset(input_padded, valid_indices, stride, h_win, w_win)
+        dataset = _WindowDataset(input_f32, valid_indices, stride, h_win, w_win, ctx)
         dataloader = DataLoader(
             dataset,
             batch_size=self.batch_size,
-            num_workers=min(os.cpu_count() or 1, self.batch_size + 4),
+            num_workers=0,  # dataset is pure in-memory tensor slicing; workers add no throughput
             shuffle=False,
             pin_memory=(self.device == "cuda"),
         )
 
-        for batch_windows, batch_i, batch_j in tqdm(dataloader, desc="Inference"):
+        for batch_windows, batch_i, batch_j in tqdm(
+            dataloader, desc="Inference", disable=suppress_inference_progress
+        ):
             batch_windows = batch_windows.to(self.device)
             preds = model_fn(batch_windows)  # (B, n_out, H_out, W_out)
             if preds.dim() == 3:
@@ -181,6 +210,8 @@ class SlidingWindowInference:
                 out_win = preds[k, :, ctx: ctx + ws, ctx: ctx + ws]
                 output[:, h_start: h_start + ws, w_start: w_start + ws] += out_win
                 count_map[:, h_start: h_start + ws, w_start: w_start + ws] += 1.0
+
+        del dataset, dataloader
 
         output /= torch.clamp(count_map, min=1.0)
         return output[:, :H, :W].cpu().numpy()

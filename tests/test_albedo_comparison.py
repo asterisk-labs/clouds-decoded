@@ -170,6 +170,7 @@ class TestAlbedoSmoke:
 NEED_REAL = not (HAS_SAMPLE_SCENE and HAS_UNCONDITIONAL)
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(NEED_REAL, reason="Sample scene or model checkpoints not available")
 class TestAlbedoComparison:
     """Compare GP and data-driven methods on the same real Sentinel-2 scene."""

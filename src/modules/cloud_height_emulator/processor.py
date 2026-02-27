@@ -108,27 +108,21 @@ class CloudHeightEmulatorProcessor(BaseProcessor):
         # Resolve cloud mask early — it's used to skip windows during inference
         mask_array = self._resolve_cloud_mask(cloud_mask)
 
-        band_objects = scene.get_bands(
-            self.config.bands, reflectance=True, n_workers=len(self.config.bands),
-        )
-        # Derive target shape from B02 actual dimensions scaled to working_resolution
-        b02_idx = self.config.bands.index("B02") if "B02" in self.config.bands else 0
-        b02_actual_shape = band_objects[b02_idx].data.shape
+        # Derive target shape from the reference band's actual dimensions.
+        ref_name = "B02" if "B02" in self.config.bands else self.config.bands[0]
+        ref_shape = scene.get_band(ref_name, reflectance=True).shape
         b02_native_res = abs(scene.transform.a)  # typically 10.0 m
         w_scale = b02_native_res / self.config.working_resolution
         target_shape = (
-            max(1, round(b02_actual_shape[0] * w_scale)),
-            max(1, round(b02_actual_shape[1] * w_scale)),
+            max(1, round(ref_shape[0] * w_scale)),
+            max(1, round(ref_shape[1] * w_scale)),
         )
         working_transform = scene.transform * Affine.scale(1.0 / w_scale)
 
-        data_list = []
-        for band_obj in band_objects:
-            band_arr = band_obj.data
-            if band_arr.shape != target_shape:
-                band_arr = resize(band_arr, target_shape, preserve_range=True, order=1).astype(np.float32)
-            data_list.append(band_arr)
-        input_stack = np.stack(data_list, axis=0)  # (C, H, W)
+        input_stack = np.stack(
+            [scene.get_band_at_shape(name, target_shape) for name in self.config.bands],
+            axis=0,
+        )  # (C, H, W)
 
         if input_stack.shape[0] != self.config.in_channels:
             logger.warning(

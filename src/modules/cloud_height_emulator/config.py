@@ -48,7 +48,7 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         description="Number of input channels expected by the model."
     )
     device: Optional[str] = Field(
-        default="cuda",
+        default=None,
         description="Device to run inference on (e.g., 'cuda', 'cpu'). If None, auto-detects."
     )
     working_resolution: int = Field(

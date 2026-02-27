@@ -543,7 +543,11 @@ app.add_typer(project_app, name="project")
 def project_init(
     project_dir: str = typer.Argument(..., help="Directory for the new project"),
     name: Optional[str] = typer.Option(None, help="Project name (defaults to directory name)"),
-    pipeline: str = typer.Option("full-workflow", help="Pipeline type"),
+    pipeline: str = typer.Option(
+        "full-workflow",
+        help="Recipe name. Available: full-workflow, cloud-height-comparison. "
+             "The chosen recipe is embedded in project.yaml and can be edited directly.",
+    ),
     clone: Optional[str] = typer.Option(None, help="Clone configs from an existing project directory"),
 ):
     """
@@ -579,25 +583,121 @@ def project_run(
     force: bool = typer.Option(False, help="Reprocess all steps (ignore cache)"),
     unsafe: bool = typer.Option(False, help="Skip file provenance validation on cached outputs"),
     crop_window: Optional[str] = typer.Option(None, help="Spatial crop: 'col_off,row_off,width,height'"),
+    parallel: bool = typer.Option(
+        False, "--parallel",
+        help=(
+            "Enable parallel pipeline: scenes are read and processed concurrently across "
+            "stages. Use --workers / --queue-depth to tune. Default is serial (one scene "
+            "at a time)."
+        ),
+    ),
+    workers: Optional[List[str]] = typer.Option(
+        None, "--workers", "-j",
+        help=(
+            "Per-stage worker count as STAGE=N (repeatable). Requires --parallel. "
+            "Stage names: reader, cloud_mask, cloud_height_emulator, cloud_height, albedo, refocus, cloud_properties. "
+            "A bare integer sets all stages to that count. "
+            "Example: -j cloud_height=2 -j albedo=2"
+        ),
+    ),
+    queue_depth: int = typer.Option(
+        2, "--queue-depth",
+        help="Max scenes buffered between adjacent pipeline stages (requires --parallel).",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v",
+        help=(
+            "Print INFO-level logs to the terminal. By default only warnings and errors "
+            "are shown on screen; full logs always go to <project>/logs/<scene>/pipeline.log."
+        ),
+    ),
+    no_progress: bool = typer.Option(
+        False, "--no-progress",
+        help="Disable the live pipeline progress display (only relevant with --parallel).",
+    ),
+    no_stats: bool = typer.Option(
+        False, "--no-stats",
+        help="Skip automatic stats computation after the pipeline finishes.",
+    ),
+    force_overwrite: bool = typer.Option(
+        False, "--force-overwrite",
+        help=(
+            "Reset 'done' scenes whose configs have changed since they were processed "
+            "and re-run them with the current config."
+        ),
+    ),
+    ignore_integrity: bool = typer.Option(
+        False, "--ignore-integrity",
+        help=(
+            "Skip config integrity check. Stale 'done' scenes will not be re-run "
+            "(not recommended)."
+        ),
+    ),
 ):
     """
     Run the project pipeline on one or more scenes.
 
-    Pass scene paths directly — they are auto-registered in the project.
-    If no scenes are given, all previously registered scenes are processed.
+    Pass scene paths directly — they are staged and then processed.
+    If no scenes are given, all scenes with status ``staged`` or ``failed``
+    are processed (use --force to reprocess ``done`` scenes too).
     Skips steps that are already complete (output exists, config unchanged).
 
-    Example:
-        clouds-decoded project run ./my_analysis /data/S2A_scene.SAFE
-        clouds-decoded project run ./my_analysis /data/scene1.SAFE /data/scene2.SAFE
-        clouds-decoded project run ./my_analysis --force
+    By default, scenes are processed serially (one at a time). Use --parallel
+    to enable concurrent scene/stage processing:
+
+    \b
+        clouds-decoded project run ./analysis scene.SAFE
+        clouds-decoded project run ./analysis --force --verbose
+        clouds-decoded project run ./analysis --parallel -j cloud_height=2
+        clouds-decoded project run ./analysis --parallel -j 4
     """
-    from clouds_decoded.project import Project
+    from clouds_decoded.project import Project, _ALL_STAGE_NAMES
+
+    # Parse --workers values: accept bare int (all stages) or STAGE=N pairs
+    parallelism: Optional[Dict[str, int]] = None
+    if workers:
+        parallelism = {}
+        for w in workers:
+            if w.isdigit():
+                # Bare integer — apply to all stages
+                n = int(w)
+                parallelism = {stage: n for stage in _ALL_STAGE_NAMES}
+            elif "=" in w:
+                stage, _, val = w.partition("=")
+                stage = stage.strip()
+                if stage not in _ALL_STAGE_NAMES:
+                    logger.error(
+                        f"Unknown stage '{stage}'. Valid stages: {', '.join(_ALL_STAGE_NAMES)}"
+                    )
+                    raise typer.Exit(1)
+                try:
+                    parallelism[stage] = int(val)
+                except ValueError:
+                    logger.error(f"Invalid worker count '{val}' for stage '{stage}'.")
+                    raise typer.Exit(1)
+            else:
+                logger.error(
+                    f"Invalid --workers value '{w}'. Use a bare integer or STAGE=N."
+                )
+                raise typer.Exit(1)
 
     try:
         project = Project.load(project_dir)
-        project.run(scenes=scenes, force=force, unsafe=unsafe, crop_window=crop_window)
-    except FileNotFoundError as e:
+        project.run(
+            scenes=scenes,
+            force=force,
+            unsafe=unsafe,
+            crop_window=crop_window,
+            parallel=parallel,
+            parallelism=parallelism,
+            queue_depth=queue_depth,
+            verbose=verbose,
+            progress=not no_progress,
+            run_stats=not no_stats,
+            force_overwrite=force_overwrite,
+            ignore_integrity=ignore_integrity,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
         logger.error(str(e))
         raise typer.Exit(1)
 
@@ -617,18 +717,111 @@ def project_status(
         raise typer.Exit(1)
 
 
-@project_app.command("add-scene")
-def project_add_scene(
+@project_app.command("stage")
+def project_stage(
     project_dir: str = typer.Argument(..., help="Path to project directory"),
-    scene: List[str] = typer.Option(..., help="Path(s) to .SAFE scene(s) to add"),
+    scenes: List[str] = typer.Argument(..., help="Path(s) to .SAFE scene(s) or directories to scan for .SAFE dirs"),
 ):
-    """Add one or more scenes to an existing project."""
+    """Register scenes in the project without processing them.
+
+    Each argument can be a path to a .SAFE directory or a parent directory
+    containing multiple .SAFE directories (scanned with *.SAFE glob).
+
+    \b
+        clouds-decoded project stage ./analysis ./scene.SAFE
+        clouds-decoded project stage ./analysis /data/sentinel2/
+    """
     from clouds_decoded.project import Project
 
     try:
         project = Project.load(project_dir)
-        for s in scene:
-            project.add_scene(s)
+        resolved: List[str] = []
+        for s in scenes:
+            p = Path(s)
+            if p.is_dir() and not s.endswith(".SAFE"):
+                found = sorted(p.glob("*.SAFE"))
+                if not found:
+                    logger.warning(f"No .SAFE directories found in {p}")
+                resolved.extend(str(f.resolve()) for f in found)
+            else:
+                resolved.append(str(p.resolve()))
+        before = len(project.db.get_all())
+        project.stage(*resolved)
+        after = len(project.db.get_all())
+        new_count = after - before
+        logger.info(f"Staged {new_count} new scene(s) ({after - new_count} already registered).")
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
+
+
+@project_app.command("list")
+def project_list(
+    project_dir: str = typer.Argument(..., help="Path to project directory"),
+    status: Optional[str] = typer.Option(None, help="Filter by status: staged, started, done, failed"),
+    crop_window: Optional[str] = typer.Option(None, "--crop-window", help="Filter by crop window"),
+):
+    """List all registered runs and their status.
+
+    \b
+        clouds-decoded project list ./analysis
+        clouds-decoded project list ./analysis --status staged
+        clouds-decoded project list ./analysis --crop-window 0,0,512,512
+    """
+    from clouds_decoded.project import Project
+
+    try:
+        project = Project.load(project_dir)
+        rows = project.db.get_all()
+        if status:
+            rows = [r for r in rows if r["status"] == status]
+        if crop_window is not None:
+            rows = [r for r in rows if r.get("crop_window") == crop_window]
+        if not rows:
+            print("No runs found.")
+            return
+        header = (f"{'run_id':<18} {'scene_id':<50} {'crop_window':<16} "
+                  f"{'status':<10} {'staged_at':<22} {'completed_at'}")
+        print(header)
+        print("-" * len(header))
+        for r in rows:
+            completed = r.get("completed_at") or "-"
+            cw = r.get("crop_window") or "(full)"
+            print(f"{r['run_id']:<18} {r['scene_id']:<50} {cw:<16} "
+                  f"{r['status']:<10} {r['staged_at']:<22} {completed}")
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
+
+
+@project_app.command("stats")
+def project_stats(
+    project_dir: str = typer.Argument(..., help="Path to project directory"),
+    force: bool = typer.Option(False, help="Re-compute stats even if already stored"),
+    method: Optional[List[str]] = typer.Option(None, "--method",
+                                                help="Stats method(s) to run, e.g. cloud_height::percentiles"),
+    run_id: Optional[str] = typer.Option(None, "--run-id", help="Compute stats for a single run_id only"),
+):
+    """Compute and store statistics for all completed runs.
+
+    Stats are written to per-step tables in scenes.db. Already-computed stats
+    are skipped unless --force is passed.
+
+    \b
+        clouds-decoded project stats ./analysis
+        clouds-decoded project stats ./analysis --force
+        clouds-decoded project stats ./analysis --method cloud_mask::class_fractions
+        clouds-decoded project stats ./analysis --run-id abc123def456abcd
+    """
+    from clouds_decoded.project import Project
+
+    try:
+        project = Project.load(project_dir)
+        project.run_stats(
+            force=force,
+            methods=list(method) if method else None,
+            run_id_filter=run_id,
+        )
     except FileNotFoundError as e:
         logger.error(str(e))
         raise typer.Exit(1)
