@@ -281,7 +281,7 @@ def test_emulator_full_workflow(tmp_path, mock_unet, mock_scene):
     """
     project_dir = tmp_path / "workflow_proj"
     project = Project.init(str(project_dir))
-    project.add_scene("mock_scene.SAFE")
+    project.stage("mock_scene.SAFE")
 
     captured_height_config = []
 

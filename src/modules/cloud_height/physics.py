@@ -42,7 +42,11 @@ def offsetsToHeights(offsets,bands,pixel_size):
     """
     Convert the offset to a height in meters
     """
-    assert len(offsets) == len(bands) or len(bands) == 1, "Length of offsets must be the same as the number of bands, or the number of bands must be 1"
+    if not (len(offsets) == len(bands) or len(bands) == 1):
+        raise ValueError(
+            f"Length of offsets ({len(offsets)}) must equal number of bands "
+            f"({len(bands)}), or bands must be a single-element list."
+        )
 
     if isinstance(offsets,list):
         offsets = np.array(offsets)

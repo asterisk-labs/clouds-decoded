@@ -323,7 +323,8 @@ class Sentinel2Scene(Data):
         # Second pass: evaluate uncached bands (sequential or parallel).
         if to_compute:
             if n_workers == -1:
-                n_workers = len(to_compute)
+                import os
+                n_workers = min(len(to_compute), os.cpu_count() or 1)
 
             if n_workers > 1:
                 from concurrent.futures import ThreadPoolExecutor
@@ -476,6 +477,36 @@ class Sentinel2Scene(Data):
         with rio.open(b02_path) as src:
             return src.width, src.height
 
+    @staticmethod
+    def _scale_crop_window(
+        crop_window: tuple,
+        b02_w: int,
+        b02_h: int,
+        src_w: int,
+        src_h: int,
+    ) -> "Window":
+        """Scale a B02-pixel crop window to the coordinate space of a band raster.
+
+        Args:
+            crop_window: ``(col_off, row_off, width, height)`` in B02 (10 m) pixels.
+            b02_w: Full-scene B02 pixel width (from the actual file, not BAND_RESOLUTIONS).
+            b02_h: Full-scene B02 pixel height.
+            src_w: Pixel width of the target band raster.
+            src_h: Pixel height of the target band raster.
+
+        Returns:
+            A rasterio ``Window`` in the target band's pixel coordinates.
+        """
+        col_off, row_off, width, height = crop_window
+        scale_x = src_w / b02_w
+        scale_y = src_h / b02_h
+        return Window(
+            col_off=int(col_off * scale_x),
+            row_off=int(row_off * scale_y),
+            width=int(width * scale_x),
+            height=int(height * scale_y),
+        )
+
     def _get_bands(self, scene_directory: Path, bands: List[str], crop_window=None):
         paths = self._get_band_paths(scene_directory, bands)
         bands_data = BandDict()
@@ -484,15 +515,7 @@ class Sentinel2Scene(Data):
         for band, path in paths.items():
             with rio.open(path) as src:
                 if crop_window:
-                    col_off, row_off, width, height = crop_window
-                    scale_x = src.width / b02_w
-                    scale_y = src.height / b02_h
-                    window = Window(
-                        col_off=int(col_off * scale_x),
-                        row_off=int(row_off * scale_y),
-                        width=int(width * scale_x),
-                        height=int(height * scale_y),
-                    )
+                    window = self._scale_crop_window(crop_window, b02_w, b02_h, src.width, src.height)
                     bands_data[band] = src.read(1, window=window)
                 else:
                     bands_data[band] = src.read(1)
@@ -507,15 +530,7 @@ class Sentinel2Scene(Data):
         for band, path in paths.items():
             with rio.open(path) as src:
                 if crop_window:
-                    col_off, row_off, width, height = crop_window
-                    scale_x = src.width / b02_w
-                    scale_y = src.height / b02_h
-                    window = Window(
-                        col_off=int(col_off * scale_x),
-                        row_off=int(row_off * scale_y),
-                        width=int(width * scale_x),
-                        height=int(height * scale_y),
-                    )
+                    window = self._scale_crop_window(crop_window, b02_w, b02_h, src.width, src.height)
                     footprints[band] = src.read(1, window=window)
                 else:
                     footprints[band] = src.read(1)

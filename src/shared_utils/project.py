@@ -10,7 +10,7 @@ Usage:
 
     # Later, resume or add scenes:
     project = Project.load("./my_analysis")
-    project.add_scene("/data/S2B_....SAFE")
+    project.stage("/data/S2B_....SAFE")
     project.run()
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ import hashlib
 import importlib.metadata
 import json
 import logging
-import sqlite3
+import duckdb
 import subprocess
 import threading
 import time
@@ -31,11 +31,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import re
+
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 from clouds_decoded.constants import METADATA_TAG
 
 logger = logging.getLogger(__name__)
+
+_SAFE_ID_RE = re.compile(r'^[a-z][a-z0-9_]*$')
+
+
+def _require_safe_sql_id(name: str, label: str = "identifier") -> None:
+    """Raise ValueError if *name* is not a safe SQL identifier (lowercase, alphanumeric + underscore)."""
+    if not _SAFE_ID_RE.match(name):
+        raise ValueError(
+            f"Unsafe SQL {label} {name!r}: must match [a-z][a-z0-9_]*"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -433,10 +445,6 @@ def _get_recipe(name: str) -> WorkflowDef:
     return WorkflowDef(steps=data["steps"])
 
 
-# ---------------------------------------------------------------------------
-# Backward-compatibility exports
-# ---------------------------------------------------------------------------
-
 _default_wf = _get_recipe("full-workflow")
 
 PIPELINE_STEPS: Dict[str, List[str]] = {
@@ -452,17 +460,12 @@ STEP_CONFIG_FILE: Dict[str, str] = {
 }
 
 
-def _get_properties_output_file(step_config=None) -> str:
-    """Return the output filename for cloud_properties. Kept for test compatibility."""
-    return _cloud_properties_output_file(step_config) if step_config else "properties.tif"
-
-
 # ---------------------------------------------------------------------------
 # Scene database
 # ---------------------------------------------------------------------------
 
 class SceneDB:
-    """SQLite-backed scene registry for a project.
+    """DuckDB-backed scene registry for a project.
 
     Each row in the ``runs`` table represents one ``(scene, crop_window)``
     processing unit, identified by a content-addressed ``run_id``.
@@ -470,73 +473,52 @@ class SceneDB:
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        self._lock = threading.Lock()
+        self._db = duckdb.connect(str(db_path))
+        try:
+            self._db.execute("INSTALL spatial")
+            self._db.execute("LOAD spatial")
+            self._spatial_available = True
+        except Exception as exc:
+            logger.warning(
+                "DuckDB spatial extension unavailable: %s. "
+                "Spatial footprint queries will not work.",
+                exc,
+            )
+            self._spatial_available = False
         self._init_schema()
 
     @contextlib.contextmanager
     def _conn(self):
-        conn = sqlite3.connect(str(self.db_path), timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    def _migrate_scenes_to_runs(self, conn) -> None:
-        """Migrate the legacy ``scenes`` table to ``runs`` (one-time, in-place)."""
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
-        if "scenes" not in tables or "runs" in tables:
-            return
-        conn.execute("""
-            CREATE TABLE runs (
-                run_id TEXT PRIMARY KEY, scene_id TEXT NOT NULL, path TEXT NOT NULL,
-                crop_window TEXT, staged_at TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'staged',
-                started_at TEXT, completed_at TEXT, error TEXT, footprint BLOB
-            )
-        """)
-        rows = conn.execute(
-            "SELECT path, scene_id, added_at, status, last_run_at, error FROM scenes"
-        ).fetchall()
-        for row in rows:
-            rid = _make_run_id(row["scene_id"], None)
-            conn.execute(
-                "INSERT OR IGNORE INTO runs "
-                "(run_id,scene_id,path,crop_window,staged_at,status,completed_at,error) "
-                "VALUES (?,?,?,NULL,?,?,?,?)",
-                (rid, row["scene_id"], row["path"],
-                 row["added_at"], row["status"], row["last_run_at"], row["error"]),
-            )
-        conn.execute("DROP TABLE scenes")
+        with self._lock:
+            self._db.begin()
+            try:
+                yield self._db
+                self._db.commit()
+            except Exception:
+                try:
+                    self._db.rollback()
+                except Exception:
+                    pass
+                raise
 
     def _init_schema(self):
         with self._conn() as conn:
-            self._migrate_scenes_to_runs(conn)
-
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS runs (
-                    run_id       TEXT PRIMARY KEY,
-                    scene_id     TEXT NOT NULL,
-                    path         TEXT NOT NULL,
-                    crop_window  TEXT,
-                    staged_at    TEXT NOT NULL,
-                    status       TEXT NOT NULL DEFAULT 'staged',
-                    started_at   TEXT,
-                    completed_at TEXT,
-                    error        TEXT,
-                    footprint    BLOB
+                    run_id                TEXT PRIMARY KEY,
+                    scene_id              TEXT NOT NULL,
+                    path                  TEXT NOT NULL,
+                    crop_window           TEXT,
+                    staged_at             TEXT NOT NULL,
+                    status                TEXT NOT NULL DEFAULT 'staged',
+                    started_at            TEXT,
+                    completed_at          TEXT,
+                    error                 TEXT,
+                    footprint             BLOB,
+                    pipeline_config_hash  TEXT
                 )
             """)
-
-            # Migrate: add pipeline_config_hash column if absent (one-time, safe for existing DBs)
-            existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
-            if "pipeline_config_hash" not in existing_cols:
-                conn.execute("ALTER TABLE runs ADD COLUMN pipeline_config_hash TEXT")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scene_metadata (
@@ -556,7 +538,7 @@ class SceneDB:
 
     def stage(self, path: str, scene_id: str,
               crop_window: Optional[str] = None, status: str = "staged") -> bool:
-        """INSERT OR IGNORE into runs. Returns True if a new row was inserted.
+        """Insert a new run row. Returns True if a new row was inserted.
 
         Args:
             path: Absolute path to the .SAFE directory.
@@ -569,13 +551,18 @@ class SceneDB:
         """
         run_id = _make_run_id(scene_id, crop_window)
         with self._conn() as conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO runs "
+            existing = conn.execute(
+                "SELECT 1 FROM runs WHERE run_id=?", [run_id]
+            ).fetchone()
+            if existing:
+                return False
+            conn.execute(
+                "INSERT INTO runs "
                 "(run_id,scene_id,path,crop_window,staged_at,status) VALUES (?,?,?,?,?,?)",
                 (run_id, scene_id, path, crop_window,
                  datetime.now().isoformat(), status),
             )
-            return cur.rowcount > 0
+            return True
 
     def set_status(self, run_id: str, status: str,
                    error: Optional[str] = None,
@@ -627,11 +614,12 @@ class SceneDB:
         """
         cols = ["scene_id"] + list(data.keys())
         vals = [scene_id] + list(data.values())
-        placeholders = ", ".join(["?"] * len(cols))
+        ph = ", ".join(["?" for _ in cols])
+        update_set = ", ".join(f"{c}=EXCLUDED.{c}" for c in data.keys())
         with self._conn() as conn:
             conn.execute(
-                f"INSERT OR REPLACE INTO scene_metadata ({', '.join(cols)}) "
-                f"VALUES ({placeholders})",
+                f"INSERT INTO scene_metadata ({', '.join(cols)}) VALUES ({ph}) "
+                f"ON CONFLICT (scene_id) DO UPDATE SET {update_set}",
                 vals,
             )
 
@@ -647,11 +635,15 @@ class SceneDB:
             Number of rows reset.
         """
         with self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE runs SET status='staged', started_at=NULL, error=NULL "
-                "WHERE status='started'"
-            )
-            return cur.rowcount
+            count = conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE status='started'"
+            ).fetchone()[0]
+            if count:
+                conn.execute(
+                    "UPDATE runs SET status='staged', started_at=NULL, error=NULL "
+                    "WHERE status='started'"
+                )
+            return count
 
     def get_pending(self, force: bool = False,
                     crop_window: Optional[str] = None) -> List[Tuple[str, Optional[str]]]:
@@ -671,30 +663,33 @@ class SceneDB:
         cw_params: List[Any] = [] if crop_window is None else [crop_window]
         with self._conn() as conn:
             if force:
-                q = f"SELECT path, crop_window FROM runs WHERE 1=1 {cw_filter} ORDER BY rowid"
+                q = f"SELECT path, crop_window FROM runs WHERE 1=1 {cw_filter} ORDER BY staged_at"
             else:
                 q = (f"SELECT path, crop_window FROM runs "
-                     f"WHERE status IN ('staged','failed') {cw_filter} ORDER BY rowid")
-            rows = conn.execute(q, cw_params).fetchall()
-        return [(r["path"], r["crop_window"]) for r in rows]
+                     f"WHERE status IN ('staged','failed') {cw_filter} ORDER BY staged_at")
+            result = conn.execute(q, cw_params)
+            rows = result.fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     def get_all(self) -> List[Dict[str, Any]]:
         """Return all runs as a list of dicts."""
         with self._conn() as conn:
-            rows = conn.execute(
+            result = conn.execute(
                 "SELECT run_id,scene_id,path,crop_window,status,"
                 "staged_at,started_at,completed_at,error,pipeline_config_hash "
-                "FROM runs ORDER BY rowid"
-            ).fetchall()
-        return [dict(r) for r in rows]
+                "FROM runs ORDER BY staged_at"
+            )
+            cols = [d[0] for d in result.description]
+            return [dict(zip(cols, row)) for row in result.fetchall()]
 
     def count_by_status(self) -> Dict[str, int]:
         """Return a dict mapping status → count across all runs."""
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT status, COUNT(*) as n FROM runs GROUP BY status"
-            ).fetchall()
-        return {r["status"]: r["n"] for r in rows}
+            result = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM runs GROUP BY status"
+            )
+            rows = result.fetchall()
+        return {r[0]: r[1] for r in rows}
 
     def write_stats(self, run_id: str, table_name: str,
                     stats: Dict[str, Any]) -> None:
@@ -710,22 +705,31 @@ class SceneDB:
         """
         if not stats:
             return
+        _require_safe_sql_id(table_name, "table name")
+        for col in stats:
+            _require_safe_sql_id(col, "column name")
         with self._conn() as conn:
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {table_name} "
                 f"(run_id TEXT PRIMARY KEY)"
             )
-            existing = {r[1] for r in conn.execute(
-                f"PRAGMA table_info({table_name})")}
+            existing = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name=? AND table_schema='main'",
+                    [table_name],
+                ).fetchall()
+            }
             for col in stats:
                 if col not in existing:
-                    conn.execute(
-                        f"ALTER TABLE {table_name} ADD COLUMN {col} REAL")
+                    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} REAL")
             cols = ["run_id"] + list(stats.keys())
-            ph = ", ".join(["?"] * len(cols))
+            ph = ", ".join(["?" for _ in cols])
+            update_set = ", ".join(f"{c}=EXCLUDED.{c}" for c in stats.keys())
             conn.execute(
-                f"INSERT OR REPLACE INTO {table_name} "
-                f"({', '.join(cols)}) VALUES ({ph})",
+                f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({ph}) "
+                f"ON CONFLICT (run_id) DO UPDATE SET {update_set}",
                 [run_id] + list(stats.values()),
             )
 
@@ -745,13 +749,14 @@ class SceneDB:
             keys for each stale run.
         """
         with self._conn() as conn:
-            rows = conn.execute(
+            result = conn.execute(
                 "SELECT run_id, scene_id, path, crop_window, pipeline_config_hash "
                 "FROM runs WHERE status='done' "
                 "AND (pipeline_config_hash IS NULL OR pipeline_config_hash != ?)",
-                (current_hash,),
-            ).fetchall()
-        return [dict(r) for r in rows]
+                [current_hash],
+            )
+            cols = [d[0] for d in result.description]
+            return [dict(zip(cols, row)) for row in result.fetchall()]
 
     def reset_to_staged(self, run_ids: List[str]) -> None:
         """Reset specific runs back to 'staged' status.
@@ -783,20 +788,24 @@ class SceneDB:
             ``True`` if a row exists, ``False`` otherwise.
         """
         with self._conn() as conn:
-            tables = {r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
+                ).fetchall()
+            }
             if table_name not in tables:
                 return False
-            cur = conn.execute(
-                f"SELECT 1 FROM {table_name} WHERE run_id=?", (run_id,))
-            return cur.fetchone() is not None
+            result = conn.execute(
+                f"SELECT 1 FROM {table_name} WHERE run_id=?", [run_id]
+            )
+            return result.fetchone() is not None
+
 
 
 # ---------------------------------------------------------------------------
 # Pipeline constants
 # ---------------------------------------------------------------------------
-
-_ALL_STAGE_NAMES = ["reader"] + list(PROCESSORS.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -991,7 +1000,6 @@ class Project:
             )
         project = cls(project_dir)
         _ = project.config
-        project._migrate_yaml_scenes_to_db()
         logger.info(f"Loaded project '{project.config.name}' from {project_dir}")
         return project
 
@@ -1032,12 +1040,7 @@ class Project:
 
     @functools.cached_property
     def db(self) -> SceneDB:
-        db_path = self.project_dir / "project.db"
-        old_path = self.project_dir / "scenes.db"
-        if not db_path.exists() and old_path.exists():
-            old_path.rename(db_path)
-            logger.info("Migrated scenes.db → project.db")
-        return SceneDB(db_path)
+        return SceneDB(self.project_dir / "project.db")
 
     def stage(self, *paths: str, crop_window: Optional[str] = None) -> None:
         """Register scenes in project.db without processing.
@@ -1056,43 +1059,9 @@ class Project:
             else:
                 logger.debug(f"Already registered: {scene_id}")
 
-    def _migrate_yaml_scenes_to_db(self) -> None:
-        """Migrate legacy scenes list from project.yaml to project.db (one-time).
-
-        Reads any ``scenes:`` key from the raw YAML, inserts rows into project.db
-        (marking already-processed scenes as ``done``), then rewrites project.yaml
-        without the key. Skips silently if project.db (or the legacy scenes.db)
-        already exists.
-        """
-        db_path = self.project_dir / "project.db"
-        old_db_path = self.project_dir / "scenes.db"
-        if db_path.exists() or old_db_path.exists():
-            return
-        with open(self.config_path) as f:
-            raw = yaml.safe_load(f) or {}
-        old_scenes: List[str] = raw.pop("scenes", [])
-        if old_scenes:
-            logger.info(f"Migrating {len(old_scenes)} scene(s) from project.yaml → project.db")
-            for path in old_scenes:
-                resolved = str(Path(path).resolve())
-                scene_id = self._scene_id(resolved)
-                manifest_path = self._scene_output_dir(scene_id, None) / "manifest.json"
-                status = "done" if manifest_path.exists() else "staged"
-                self.db.stage(resolved, scene_id, status=status)
-            with open(self.config_path, "w") as f:
-                yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
-            logger.info("Migration complete — project.db is now the scene registry.")
-        else:
-            # No scenes to migrate; still trigger DB creation so subsequent loads skip this.
-            _ = self.db
-
     # ------------------------------------------------------------------
     # Scene management
     # ------------------------------------------------------------------
-
-    def add_scene(self, scene_path: str) -> None:
-        """Register a scene. Delegates to stage(); kept for compatibility."""
-        self.stage(scene_path)
 
     def _scene_id(self, scene_path: str) -> str:
         return Path(scene_path).stem
@@ -1352,7 +1321,7 @@ class Project:
         return result
 
     def _create_processors(self) -> Dict[str, Any]:
-        """Create all processors merged into a single dict. Kept for test compatibility."""
+        """Create all processors for the current workflow, merged into a single dict."""
         result: Dict[str, Any] = {}
         for step_name in self.steps:
             result.update(self._create_processor_for_step(step_name))
@@ -2324,10 +2293,6 @@ class Project:
                 except Exception as exc:
                     logger.warning(f"[{scene_id}] stats {ident} failed: {exc}")
 
-    # ------------------------------------------------------------------
-    # Compat: _process_one_scene
-    # ------------------------------------------------------------------
-
     def _process_one_scene(
         self,
         scene_path: str,
@@ -2337,7 +2302,7 @@ class Project:
         processors: Optional[Dict[str, Any]] = None,
         git_hash: Optional[str] = None,
     ):
-        """Serial wrapper around the pipeline stages. Kept for test compatibility."""
+        """Serial wrapper around the pipeline stages."""
         scene_id = self._scene_id(scene_path)
         ctx = _PipelineCtx(
             scene_path=scene_path, crop_window=crop_window,

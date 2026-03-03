@@ -517,7 +517,7 @@ class TestProjectSceneManagement:
 
         project_dir = tmp_path / "proj"
         project = Project.init(str(project_dir), name="T")
-        project.add_scene("/data/S2A_TEST.SAFE")
+        project.stage("/data/S2A_TEST.SAFE")
 
         assert len(project.db.get_all()) == 1
         # Reload to verify persistence
@@ -530,8 +530,8 @@ class TestProjectSceneManagement:
 
         project_dir = tmp_path / "proj"
         project = Project.init(str(project_dir), name="T")
-        project.add_scene("/data/S2A_TEST.SAFE")
-        project.add_scene("/data/S2A_TEST.SAFE")
+        project.stage("/data/S2A_TEST.SAFE")
+        project.stage("/data/S2A_TEST.SAFE")
 
         assert len(project.db.get_all()) == 1
 
@@ -572,7 +572,7 @@ class TestProjectSceneManagement:
 
         project_dir = tmp_path / "proj"
         project = Project.init(str(project_dir), name="Status Test")
-        project.add_scene("/data/scene1.SAFE")
+        project.stage("/data/scene1.SAFE")
         output = project.status()
         assert "Status Test" in output
         assert "scene1" in output
@@ -731,39 +731,8 @@ class TestSceneDB:
         assert counts.get("done") == 1
         assert counts.get("failed") == 1
 
-    def test_migration_scenes_to_runs(self, tmp_path):
-        """Old-format DB with 'scenes' table is transparently migrated to 'runs'."""
-        import sqlite3
-        from clouds_decoded.project import SceneDB
-
-        # Build an old-schema DB
-        db_path = tmp_path / "old.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "CREATE TABLE scenes ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "path TEXT UNIQUE NOT NULL, scene_id TEXT UNIQUE NOT NULL, "
-            "added_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'staged', "
-            "last_run_at TEXT, error TEXT)"
-        )
-        conn.execute(
-            "INSERT INTO scenes (path,scene_id,added_at,status) VALUES (?,?,?,?)",
-            ("/data/s1.SAFE", "s1", "2026-01-01", "staged"),
-        )
-        conn.commit()
-        conn.close()
-
-        # Open with SceneDB — migration should run automatically
-        db = SceneDB(db_path)
-        rows = db.get_all()
-        assert len(rows) == 1
-        assert rows[0]["scene_id"] == "s1"
-        assert rows[0]["status"] == "staged"
-        assert rows[0]["crop_window"] is None
-
     def test_scene_metadata_upsert(self, tmp_path):
         """upsert_scene_metadata() stores and retrieves scene-level metadata."""
-        import sqlite3
         from clouds_decoded.project import SceneDB
 
         db = SceneDB(tmp_path / "project.db")
@@ -775,52 +744,48 @@ class TestSceneDB:
             "lat_center": -0.5,
             "lon_center": -179.0,
         })
-        # Verify directly via sqlite3
-        conn = sqlite3.connect(str(tmp_path / "project.db"))
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM scene_metadata WHERE scene_id='S2A_001'"
-        ).fetchone()
-        conn.close()
-        assert row is not None
+        # Verify via the SceneDB's own connection
+        with db._conn() as conn:
+            result = conn.execute(
+                "SELECT satellite, tile_id, orbit_rel FROM scene_metadata WHERE scene_id='S2A_001'"
+            )
+            cols = [d[0] for d in result.description]
+            row = dict(zip(cols, result.fetchone()))
         assert row["satellite"] == "S2A"
         assert row["tile_id"] == "T01KGB"
         assert row["orbit_rel"] == 86
 
     def test_write_stats_creates_table_and_columns(self, tmp_path):
         """write_stats() creates the table and columns dynamically."""
-        import sqlite3
         from clouds_decoded.project import SceneDB
 
         db = SceneDB(tmp_path / "project.db")
         db.write_stats("abc123", "stats_cloud_mask", {
             "clear_frac": 0.6, "n_pixels": 1000
         })
-        conn = sqlite3.connect(str(tmp_path / "project.db"))
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM stats_cloud_mask WHERE run_id='abc123'"
-        ).fetchone()
-        conn.close()
+        with db._conn() as conn:
+            result = conn.execute(
+                "SELECT clear_frac, n_pixels FROM stats_cloud_mask WHERE run_id='abc123'"
+            )
+            cols = [d[0] for d in result.description]
+            row = dict(zip(cols, result.fetchone()))
         assert row is not None
         assert abs(row["clear_frac"] - 0.6) < 1e-6
         assert row["n_pixels"] == 1000
 
     def test_write_stats_adds_new_column(self, tmp_path):
         """write_stats() adds missing columns via ALTER TABLE."""
-        import sqlite3
         from clouds_decoded.project import SceneDB
 
         db = SceneDB(tmp_path / "project.db")
         db.write_stats("run1", "stats_albedo", {"b02_mean": 0.1})
         db.write_stats("run2", "stats_albedo", {"b02_mean": 0.2, "b03_mean": 0.3})
-        conn = sqlite3.connect(str(tmp_path / "project.db"))
-        conn.row_factory = sqlite3.Row
-        row2 = conn.execute(
-            "SELECT * FROM stats_albedo WHERE run_id='run2'"
-        ).fetchone()
-        conn.close()
-        assert abs(row2["b03_mean"] - 0.3) < 1e-6
+        with db._conn() as conn:
+            result = conn.execute(
+                "SELECT b03_mean FROM stats_albedo WHERE run_id='run2'"
+            )
+            row2 = result.fetchone()
+        assert abs(row2[0] - 0.3) < 1e-6
 
     def test_has_stats(self, tmp_path):
         """has_stats() returns True only after write_stats() has been called."""
@@ -1009,7 +974,6 @@ class TestConfigIntegrity:
 
     def test_set_status_stores_pipeline_config_hash(self, tmp_path):
         """set_status('done', pipeline_config_hash=...) writes the hash column."""
-        import sqlite3
         from clouds_decoded.project import SceneDB, _make_run_id
 
         db = SceneDB(tmp_path / "project.db")
@@ -1017,11 +981,10 @@ class TestConfigIntegrity:
         run_id = _make_run_id("S2A", None)
         db.set_status(run_id, "done", pipeline_config_hash="abc12345678abcde")
 
-        conn = sqlite3.connect(str(tmp_path / "project.db"))
-        row = conn.execute(
-            "SELECT pipeline_config_hash FROM runs WHERE run_id=?", (run_id,)
-        ).fetchone()
-        conn.close()
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT pipeline_config_hash FROM runs WHERE run_id=?", [run_id]
+            ).fetchone()
         assert row[0] == "abc12345678abcde"
 
     # ------------------------------------------------------------------
@@ -1116,123 +1079,6 @@ class TestConfigIntegrity:
         # force=True skips integrity check entirely and re-runs everything
         project.run(force=True)
         assert len(processed) == 1
-
-
-class TestMigration:
-    """Tests for migrating legacy scenes list from project.yaml to project.db."""
-
-    def test_migration_from_yaml_scenes(self, tmp_path):
-        """Load of old-style project.yaml migrates scenes to project.db."""
-        from clouds_decoded.project import Project
-
-        project_dir = tmp_path / "proj"
-        project_dir.mkdir()
-        (project_dir / "configs").mkdir()
-
-        # Write an old-style project.yaml with scenes list
-        import yaml as _yaml
-        from clouds_decoded.project import ProjectConfig, _get_recipe
-        config_data = {
-            "name": "Old",
-            "pipeline": "full-workflow",
-            "scenes": ["/data/S2A_001.SAFE", "/data/S2A_002.SAFE"],
-            "created_at": "2025-01-01T00:00:00",
-        }
-        # Also need to embed workflow so ProjectConfig parses cleanly
-        recipe = _get_recipe("full-workflow")
-        config_data["workflow"] = ProjectConfig(
-            name="Old", pipeline="full-workflow"
-        ).model_copy(update={"workflow": recipe}).model_dump(mode="json")["workflow"]
-        with open(project_dir / "project.yaml", "w") as f:
-            _yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
-
-        # Write default configs (needed for Project.load)
-        project_no_load = Project(project_dir)
-        project_no_load._write_default_configs()
-
-        project = Project.load(str(project_dir))
-        rows = project.db.get_all()
-        assert len(rows) == 2
-        scene_ids = {r["scene_id"] for r in rows}
-        assert "S2A_001" in scene_ids
-        assert "S2A_002" in scene_ids
-
-    def test_migration_marks_processed_scene_done(self, tmp_path):
-        """Migration marks scenes with existing manifest.json as done."""
-        from clouds_decoded.project import Project, SceneManifest
-
-        project_dir = tmp_path / "proj"
-        project_dir.mkdir()
-        (project_dir / "configs").mkdir()
-
-        import yaml as _yaml
-        from clouds_decoded.project import _get_recipe
-        config_data = {
-            "name": "Old",
-            "pipeline": "full-workflow",
-            "scenes": ["/data/S2A_DONE.SAFE", "/data/S2A_NEW.SAFE"],
-            "created_at": "2025-01-01T00:00:00",
-        }
-        recipe = _get_recipe("full-workflow")
-        with open(project_dir / "project.yaml", "w") as f:
-            _yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
-
-        # Write a manifest for S2A_DONE to simulate a previously processed scene
-        done_dir = project_dir / "outputs" / "S2A_DONE"
-        done_dir.mkdir(parents=True)
-        manifest = SceneManifest(scene_id="S2A_DONE", scene_path="/data/S2A_DONE.SAFE")
-        manifest.to_json(done_dir / "manifest.json")
-
-        project_no_load = Project(project_dir)
-        project_no_load._write_default_configs()
-
-        project = Project.load(str(project_dir))
-        rows = {r["scene_id"]: r for r in project.db.get_all()}
-        assert rows["S2A_DONE"]["status"] == "done"
-        assert rows["S2A_NEW"]["status"] == "staged"
-
-    def test_migration_only_runs_once(self, tmp_path):
-        """Migration is a no-op if project.db already exists."""
-        from clouds_decoded.project import Project
-
-        project_dir = tmp_path / "proj"
-        Project.init(str(project_dir), name="T")
-        project = Project.load(str(project_dir))
-
-        # Stage a scene after init
-        project.stage("/data/S2A.SAFE")
-        assert len(project.db.get_all()) == 1
-
-        # Reload — migration must not wipe or re-run
-        reloaded = Project.load(str(project_dir))
-        assert len(reloaded.db.get_all()) == 1
-
-    def test_migration_removes_scenes_from_yaml(self, tmp_path):
-        """After migration, project.yaml no longer contains a scenes key."""
-        from clouds_decoded.project import Project
-
-        project_dir = tmp_path / "proj"
-        project_dir.mkdir()
-        (project_dir / "configs").mkdir()
-
-        import yaml as _yaml
-        config_data = {
-            "name": "Old",
-            "pipeline": "full-workflow",
-            "scenes": ["/data/S2A.SAFE"],
-            "created_at": "2025-01-01T00:00:00",
-        }
-        with open(project_dir / "project.yaml", "w") as f:
-            _yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
-
-        project_no_load = Project(project_dir)
-        project_no_load._write_default_configs()
-
-        Project.load(str(project_dir))
-
-        with open(project_dir / "project.yaml") as f:
-            raw = _yaml.safe_load(f)
-        assert "scenes" not in raw
 
 
 # ---------------------------------------------------------------------------
@@ -1583,7 +1429,7 @@ class TestCropWindowDirectoryStructure:
         from clouds_decoded.project import Project, SceneManifest, StepResult
 
         project = Project.init(str(tmp_path / "proj"), name="CropStatus")
-        project.add_scene("/data/scene1.SAFE")
+        project.stage("/data/scene1.SAFE")
 
         crop = SceneManifest(
             scene_id="scene1",
@@ -1730,7 +1576,7 @@ class TestParallelWorkerCount:
         scenes = [f"/nonexistent/S2A_MSIL1C_2023010{i}T100000_N0509_R022_T31UFU_2023010{i}T100000.SAFE"
                   for i in range(1, 5)]
         for s in scenes:
-            project.add_scene(s)
+            project.stage(s)
 
         # max_workers=2 shorthand: sets all stages to 2 workers.
         # All scenes are invalid — readers will fail and mark ctx.failed.
@@ -1768,7 +1614,7 @@ class TestParallelWorkerCount:
 
         n_scenes = 3
         for i in range(n_scenes):
-            project.add_scene(f"/fake/S2A_scene{i}.SAFE")
+            project.stage(f"/fake/S2A_scene{i}.SAFE")
 
         project.run(parallel=True)
 
@@ -1810,7 +1656,7 @@ class TestErrorIsolation:
 
         scenes = ["/fake/S2A_scene0.SAFE", "/fake/S2A_scene1.SAFE"]
         for s in scenes:
-            project.add_scene(s)
+            project.stage(s)
 
         project.run()
 
@@ -1828,7 +1674,7 @@ class TestErrorIsolation:
             "/nonexistent/S2A_MSIL1C_20230102T100000_N0509_R022_T31UFU_20230102T100000.SAFE",
         ]
         for s in scenes:
-            project.add_scene(s)
+            project.stage(s)
 
         # Must complete without raising even though both scenes are invalid.
         project.run(parallel=True, parallelism={"reader": 2}, force=True)
@@ -1869,7 +1715,7 @@ class TestGitHashCaching:
         )
 
         for i in range(3):
-            project.add_scene(f"/fake/S2A_scene{i}.SAFE")
+            project.stage(f"/fake/S2A_scene{i}.SAFE")
 
         project.run()
         assert len(call_count) == 1

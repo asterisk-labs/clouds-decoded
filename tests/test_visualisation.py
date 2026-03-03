@@ -89,22 +89,28 @@ def _make_scene_output_dir(tmp_path, scene_id="TEST_SCENE", include_mask=True, i
 
 
 def _make_project(tmp_path, scene_ids=None, include_mask=True, include_albedo=False):
-    """Create a minimal project directory structure.
+    """Create a minimal project directory structure backed by project.db.
+
+    Registers scenes directly in the database (status='done') rather than
+    relying on the legacy yaml-migration path.
 
     Returns:
         (project_dir, {scene_id: output_dir})
     """
+    import sqlite3
+    from datetime import datetime
+
     if scene_ids is None:
         scene_ids = ["SCENE_A"]
 
     project_dir = tmp_path / "project"
     project_dir.mkdir()
 
-    # project.yaml
+    # project.yaml — output_dir matches where we create the GeoTIFFs below
     config = {
         "name": "test_project",
         "pipeline": "full-workflow",
-        "scenes": [f"/data/{sid}.SAFE" for sid in scene_ids],
+        "output_dir": "outputs",
         "created_at": "2024-01-01T00:00:00",
     }
     with open(project_dir / "project.yaml", "w") as f:
@@ -113,10 +119,50 @@ def _make_project(tmp_path, scene_ids=None, include_mask=True, include_albedo=Fa
     # configs directory (required by Project.load)
     (project_dir / "configs").mkdir()
 
-    # scenes with outputs
+    # Bootstrap project.db so Project.load() skips the legacy yaml migration
+    db_path = project_dir / "project.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS runs (
+            run_id TEXT PRIMARY KEY,
+            scene_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            crop_window TEXT,
+            staged_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'staged',
+            started_at TEXT,
+            completed_at TEXT,
+            error TEXT,
+            footprint BLOB,
+            pipeline_config_hash TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scene_metadata (
+            scene_id TEXT PRIMARY KEY,
+            sensing_time TEXT, satellite TEXT, tile_id TEXT,
+            orbit_rel INTEGER, lat_center REAL, lon_center REAL,
+            sun_zenith REAL, sun_azimuth REAL, footprint BLOB,
+            crs TEXT DEFAULT 'EPSG:4326'
+        )
+    """)
+    for sid in scene_ids:
+        import hashlib
+        run_id = hashlib.sha256(f"{sid}:".encode()).hexdigest()[:16]
+        conn.execute(
+            "INSERT OR IGNORE INTO runs "
+            "(run_id, scene_id, path, staged_at, status, completed_at) "
+            "VALUES (?, ?, ?, ?, 'done', ?)",
+            (run_id, sid, f"/data/{sid}.SAFE",
+             datetime.now().isoformat(), datetime.now().isoformat()),
+        )
+    conn.commit()
+    conn.close()
+
+    # Scene output files at project_dir/outputs/<scene_id>/
     scene_dirs = {}
     for sid in scene_ids:
-        output_dir = project_dir / "scenes" / sid
+        output_dir = project_dir / "outputs" / sid
         output_dir.mkdir(parents=True)
 
         np.random.seed(hash(sid) % 2**31)
@@ -131,17 +177,6 @@ def _make_project(tmp_path, scene_ids=None, include_mask=True, include_albedo=Fa
             albedo_arr = np.random.uniform(0.0, 0.5, (3, 50, 40)).astype(np.float32)
             meta = {"band_names": ["B02", "B03", "B04"]}
             _write_geotiff(output_dir / "albedo.tif", albedo_arr, metadata=meta)
-
-        # manifest.json
-        manifest = {
-            "scene_id": sid,
-            "scene_path": f"/data/{sid}.SAFE",
-            "steps": {
-                "cloud_height": {"status": "completed", "output_file": str(output_dir / "cloud_height.tif")},
-            },
-        }
-        with open(output_dir / "manifest.json", "w") as f:
-            json.dump(manifest, f)
 
         scene_dirs[sid] = output_dir
 
@@ -476,12 +511,13 @@ class TestSceneData:
         )
         assert faces.shape[0] < max_faces  # curtain faces removed
 
-    def test_get_mesh_data_drops_zero_edge_faces(self, tmp_path):
-        """Faces bridging z=0 and z>0 are removed; all-zero faces are kept."""
+    def test_get_mesh_data_keeps_zero_edge_faces(self, tmp_path):
+        """Faces bridging z=0 and z>0 are kept (no zero-edge filter); only
+        curtain faces exceeding max_z_diff are removed."""
         output_dir = tmp_path / "scenes" / "ZERO_EDGE_SCENE"
         output_dir.mkdir(parents=True)
         # Top half at 500 m, bottom half at 0 m — 500 m jump is within
-        # max_z_diff=1000 so only the zero-edge filter should remove boundaries
+        # max_z_diff=1000, so no faces should be dropped.
         height_arr = np.zeros((10, 10), dtype=np.float32)
         height_arr[:5, :] = 500.0
         _write_geotiff(output_dir / "cloud_height.tif", height_arr)
@@ -495,7 +531,7 @@ class TestSceneData:
             z_scale=1.0, texture_name="Height", step=1,
             median_kernel=1, max_z_diff=1000.0,
         )
-        assert faces.shape[0] < max_faces  # boundary faces removed
+        assert faces.shape[0] == max_faces  # no faces dropped within max_z_diff
 
     def test_get_mesh_data_no_faces_dropped_when_uniform(self, tmp_path):
         """No faces are dropped when height is uniform and non-zero."""
@@ -543,7 +579,7 @@ class TestViserViewer:
     """Tests for ViserViewer construction (no server started)."""
 
     def test_instantiation_with_mock_project(self, tmp_path):
-        """ViserViewer loads scenes from a valid project directory."""
+        """ViserViewer discovers scenes from a valid project directory."""
         project_dir, _ = _make_project(
             tmp_path, scene_ids=["SCENE_A", "SCENE_B"]
         )
@@ -553,9 +589,10 @@ class TestViserViewer:
             max_grid_dim=100,
         )
 
-        assert len(viewer._scene_data) == 2
-        assert "SCENE_A" in viewer._scene_data
-        assert "SCENE_B" in viewer._scene_data
+        # _scene_meta is populated at init; _scene_data is empty until a scene is selected
+        assert len(viewer._scene_meta) == 2
+        assert "SCENE_A" in viewer._scene_meta
+        assert "SCENE_B" in viewer._scene_meta
 
     def test_instantiation_skips_scenes_without_height(self, tmp_path):
         """Scenes without cloud_height.tif are skipped."""
@@ -571,9 +608,9 @@ class TestViserViewer:
             max_grid_dim=100,
         )
 
-        assert len(viewer._scene_data) == 1
-        assert "HAS_HEIGHT" in viewer._scene_data
-        assert "NO_HEIGHT" not in viewer._scene_data
+        assert len(viewer._scene_meta) == 1
+        assert "HAS_HEIGHT" in viewer._scene_meta
+        assert "NO_HEIGHT" not in viewer._scene_meta
 
     def test_instantiation_fails_no_scenes(self, tmp_path):
         """ViserViewer raises RuntimeError when no scenes have cloud height."""
@@ -599,7 +636,7 @@ class TestViserViewer:
         assert viewer._scene_order == ["ALPHA", "BETA", "GAMMA"]
 
     def test_scene_data_has_textures(self, tmp_path):
-        """Loaded scenes have at least the Height texture."""
+        """Scenes have the expected textures after lazy load."""
         project_dir, _ = _make_project(
             tmp_path,
             scene_ids=["TEXTURED"],
@@ -612,7 +649,16 @@ class TestViserViewer:
             max_grid_dim=100,
         )
 
-        sd = viewer._scene_data["TEXTURED"]
+        # Trigger lazy load explicitly (normally done on scene selection)
+        meta = viewer._scene_meta["TEXTURED"]
+        from clouds_decoded.visualisation.viser_viewer import SceneData
+        sd = SceneData(
+            scene_id="TEXTURED",
+            output_dir=meta["output_dir"],
+            scene_path=meta["scene_path"],
+        )
+        sd.load(max_grid_dim=100)
+
         assert "Height" in sd.texture_names
         assert "Cloud Mask" in sd.texture_names
         assert "Albedo" in sd.texture_names

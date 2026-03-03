@@ -302,12 +302,12 @@ def cloud_mask(
     method: str = typer.Option("senseiv2", help="Method: 'senseiv2' or 'threshold'"),
     threshold_band: str = typer.Option("B08", help="Band for thresholding"),
     threshold_value: float = typer.Option(1600, help="Reflectance threshold (DN)"),
-    resolution: int = typer.Option(10, help="Model resolution in meters (SEnSeIv2)"),
+    resolution: int = typer.Option(20, help="Model resolution in meters (default 20 for deep learning)"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
 ):
     """
     Calculate Cloud Mask from Sentinel-2 data.
-    Supports SEnSeIv2 (Deep Learning) and simple thresholding.
+    Supports deep learning (SegFormer-B2) and simple thresholding.
     """
     from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
     scene = _load_scene(scene_path, crop_window)
@@ -379,7 +379,7 @@ def albedo(
     output_path: str = typer.Option("albedo_output.tif", help="Output path"),
     mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file (.tif). Enables GP fitting."),
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
-    method: str = typer.Option("gp", help="Method: 'gp' (Gaussian Process), 'idw' (inverse-distance weighting), or 'datadriven' (trained MLP). gp/idw need a mask."),
+    method: str = typer.Option("gp", help="Method: 'gp' (Gaussian Process, default), 'idw' (inverse-distance weighting), or 'datadriven' (trained MLP). gp/idw require --mask-path."),
     fallback: str = typer.Option("datadriven", help="Fallback when GP conditions not met: 'datadriven' or 'constant'"),
     model_path: Optional[str] = typer.Option(None, help="Path to trained data-driven albedo model checkpoint"),
     output_resolution: int = typer.Option(300, help="Output resolution in meters/pixel"),
@@ -474,14 +474,15 @@ def full_workflow(
         cloud_height_config = CloudHeightEmulatorConfig(**height_cfg_dict)
     else:
         cloud_height_config = CloudHeightConfig(**height_cfg_dict)
-    albedo_config = AlbedoEstimatorConfig(method="gp", **albedo_cfg_dict)
+    albedo_method = albedo_cfg_dict.pop("method", "gp")
+    albedo_config = AlbedoEstimatorConfig(method=albedo_method, **albedo_cfg_dict)
     refocus_config = RefocusConfig(**refocus_cfg_dict)
 
     # Load scene once
     scene = _load_scene(scene_path, crop_window)
 
     # Step 1: Cloud Mask
-    logger.info("Step 1/5: Cloud Mask")
+    logger.info("Step 1: Cloud Mask")
     raw_mask = run_cloud_mask(
         scene, cloud_mask_config,
         output_path=str(out / "cloud_mask.tif"),
@@ -492,7 +493,7 @@ def full_workflow(
     mask_result = postprocessor.postprocess(raw_mask, PostProcessParams())
 
     # Step 2: Cloud Height
-    logger.info("Step 2/5: Cloud Height")
+    logger.info("Step 2: Cloud Height")
     height_result = run_cloud_height(
         scene, cloud_height_config,
         output_path=str(out / "cloud_height.tif"),
@@ -500,7 +501,7 @@ def full_workflow(
     )
 
     # Step 3: Albedo (uses cloud mask for clear-sky GP fit)
-    logger.info("Step 3/5: Albedo Estimation")
+    logger.info("Step 3: Albedo Estimation")
     albedo_result = run_albedo(
         scene, albedo_config,
         cloud_mask=mask_result,
@@ -508,12 +509,12 @@ def full_workflow(
     )
 
     # Step 4: Refocus (parallax correction using cloud height)
-    logger.info("Step 4/5: Refocus")
+    logger.info("Step 4: Refocus")
     refocus_out = str(out / "refocused") if refocus_config.save_refocused else None
     refocused_scene = run_refocus(scene, height_result, refocus_config, output_dir=refocus_out)
 
     # Step 5: Cloud Properties (on refocused scene, with pre-computed albedo)
-    logger.info("Step 5/5: Cloud Properties")
+    logger.info("Step 5: Cloud Properties")
     props_method = props_cfg_dict.get("method", "standard")
     if props_method == "shading":
         props_config = ShadingRefl2PropConfig(**props_cfg_dict)
@@ -804,7 +805,7 @@ def project_stats(
 ):
     """Compute and store statistics for all completed runs.
 
-    Stats are written to per-step tables in scenes.db. Already-computed stats
+    Stats are written to per-step tables in project.db. Already-computed stats
     are skipped unless --force is passed.
 
     \b
@@ -825,6 +826,7 @@ def project_stats(
     except FileNotFoundError as e:
         logger.error(str(e))
         raise typer.Exit(1)
+
 
 
 @app.command()
@@ -861,27 +863,65 @@ def view(
 
 @app.command()
 def serve(
-    scene_dir: str = typer.Argument(..., help="Path to project scene output directory"),
-    scene_path: Optional[str] = typer.Option(None, help="Path to .SAFE directory for RGB composites"),
+    project_dir: str = typer.Argument(..., help="Path to a clouds-decoded project directory"),
+    scene_id: Optional[str] = typer.Option(None, "--scene-id", help="Scene ID to serve (default: first scene with outputs)"),
     port: int = typer.Option(5006, help="Port to serve on"),
     show: bool = typer.Option(False, help="Open browser automatically (disable for remote)"),
 ):
     """Launch a web-based viewer for a processed scene (Panel + Bokeh).
+
+    Reads scenes from the project database. Use --scene-id to select a
+    specific scene when a project has multiple scenes.
 
     Ideal for remote servers — port-forward with:
         ssh -L 5006:localhost:5006 user@server
 
     Then open http://localhost:5006 in your browser.
     """
+    from clouds_decoded.project import Project
     from clouds_decoded.visualisation import load_scene_layers
     from clouds_decoded.visualisation.web_viewer import WebViewer
 
-    layers = load_scene_layers(scene_dir, scene_path=scene_path)
-    if not layers:
-        logger.error(f"No layers found in {scene_dir}")
+    try:
+        project = Project.load(project_dir)
+    except FileNotFoundError as e:
+        logger.error(str(e))
         raise typer.Exit(1)
 
-    logger.info(f"Loaded {len(layers)} layers — serving on port {port}")
+    rows = project.db.get_all()
+    if not rows:
+        logger.error("No scenes registered in project. Run 'project run' first.")
+        raise typer.Exit(1)
+
+    if scene_id:
+        matching = [r for r in rows if r["scene_id"] == scene_id]
+        if not matching:
+            available = [r["scene_id"] for r in rows]
+            logger.error(
+                f"Scene {scene_id!r} not found. Available: {available}"
+            )
+            raise typer.Exit(1)
+        row = matching[0]
+    else:
+        if len(rows) > 1:
+            ids = [r["scene_id"] for r in rows]
+            logger.info(
+                f"Multiple scenes available: {ids}. "
+                f"Serving first. Use --scene-id to select."
+            )
+        row = rows[0]
+
+    _scene_id = row["scene_id"]
+    crop_window = row.get("crop_window")
+    output_dir = str(project._scene_output_dir(_scene_id, crop_window))
+    scene_path = row["path"]
+
+    layers = load_scene_layers(output_dir, scene_path=scene_path)
+    if not layers:
+        logger.error(f"No output layers found for scene {_scene_id!r} in {output_dir}")
+        raise typer.Exit(1)
+
+    logger.info(f"Serving scene {_scene_id!r} ({len(layers)} layers) on port {port}")
     viewer = WebViewer(layers)
     viewer.serve(port=port, show=show)
 

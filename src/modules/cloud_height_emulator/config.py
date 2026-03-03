@@ -38,7 +38,7 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         description="Overlap between windows in pixels."
     )
     batch_size: int = Field(
-        default=1,
+        default=4,
         ge=1,
         description="Batch size for inference."
     )
@@ -52,7 +52,7 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         description="Device to run inference on (e.g., 'cuda', 'cpu'). If None, auto-detects."
     )
     working_resolution: int = Field(
-        default=20,
+        default=10,
         ge=10,
         description="Resolution in metres at which inference is performed.",
     )

@@ -34,7 +34,9 @@ def load_scene_layers(
         scene_dir: Path to the project scene output directory
             (e.g. ``mynewproject/scenes/S2A_MSIL1C_.../``).
         scene_path: Path to the .SAFE directory for RGB composites.
-            If None, tries to read from manifest.json. Skipped if the
+            Preferred source is the ``path`` column from the project DB
+            (``project.db.get_all()``). Falls back to ``manifest.json``
+            in ``scene_dir`` for legacy compatibility. Skipped if the
             path doesn't exist on disk.
         rgb_config: Gamma/gain/offset for RGB composites.
 
@@ -44,16 +46,13 @@ def load_scene_layers(
     scene_dir = Path(scene_dir)
     layers: List[Layer] = []
 
-    # Try to read manifest for scene_path fallback
-    manifest_path = scene_dir / "manifest.json"
-    manifest = None
-    if manifest_path.exists():
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-
-    # Resolve scene_path from manifest if not provided
-    if scene_path is None and manifest:
-        scene_path = manifest.get("scene_path")
+    # Fall back to manifest.json for scene_path (legacy compatibility)
+    if scene_path is None:
+        manifest_path = scene_dir / "manifest.json"
+        if manifest_path.exists():
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            scene_path = manifest.get("scene_path")
 
     # --- RGB composites (loaded first so they appear at the top) ---
     if scene_path and Path(scene_path).exists():

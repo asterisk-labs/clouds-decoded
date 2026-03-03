@@ -124,7 +124,7 @@ class AlbedoPixelSampler:
         # 3. Interpolated sun and view angles
         angles = scene.get_angles_at_pixels(
             sample_rows, sample_cols,
-            resolution=self.config.reference_resolution,
+            resolution=BAND_RESOLUTIONS['B02'],
         )
 
         # 4. Wind speed and direction
@@ -261,7 +261,7 @@ class AlbedoPixelSampler:
             clear_mask &= ~dilated_cloud
 
         # Exclude edge pixels so averaging windows stay within bounds
-        edge_margin = int(self.config.window_size_m / (2 * self.config.reference_resolution))
+        edge_margin = int(self.config.window_size_m / (2 * BAND_RESOLUTIONS['B02']))
         if edge_margin > 0:
             clear_mask[:edge_margin, :] = False
             clear_mask[-edge_margin:, :] = False

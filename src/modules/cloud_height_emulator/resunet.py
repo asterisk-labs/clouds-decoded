@@ -1,9 +1,13 @@
+import logging
+
 import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
 import torchvision.models
 from torchvision.models import ResNet34_Weights
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -108,7 +112,7 @@ class Res34_Unet(nn.Module):
             raise TypeError("pretrained argument should be a bool")
         weights = ResNet34_Weights.IMAGENET1K_V1 if pretrained else None
         if weights is not None:
-            print(f"using weights from {weights}")
+            logger.info("Using ImageNet pretrained weights for ResNet34 encoder: %s", weights)
         encoder = torchvision.models.resnet34(weights=weights)
         if in_channels != 3:
             # reproduce the behavior of torchvision for different in_channels

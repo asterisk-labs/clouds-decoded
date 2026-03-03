@@ -6,6 +6,7 @@ with per-vertex texturing from pipeline outputs (cloud mask, albedo, RGB, etc.).
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -82,6 +83,117 @@ def _build_grid_faces(H: int, W: int) -> np.ndarray:
     ]).astype(np.uint32)
 
 
+def _sun_wxyz(azimuth_deg: float, zenith_deg: float) -> Tuple[float, float, float, float]:
+    """Quaternion (w, x, y, z) that orients a directional light from the sun.
+
+    Viser's directional light shines in its local -Z direction.  With the
+    identity quaternion (1,0,0,0) that is straight down (-Z world = below
+    scene), equivalent to an overhead sun.  This function returns the
+    quaternion that rotates that default direction to the position of the sun
+    described by *azimuth_deg* / *zenith_deg*, so the light casts shadows
+    consistent with the actual solar geometry.
+
+    Scene coordinate convention: x = East, y = North, z = Up.
+    Azimuth: degrees clockwise from North.  Zenith: degrees from overhead.
+    """
+    az = math.radians(azimuth_deg)
+    zen = math.radians(zenith_deg)
+
+    # Sun position as a unit vector in world space (East, North, Up)
+    sun = np.array([
+        math.sin(az) * math.sin(zen),
+        math.cos(az) * math.sin(zen),
+        math.cos(zen),
+    ])
+
+    # Rotate from the default "overhead" direction (+Z) to the sun direction.
+    # This makes the light's -Z axis align with "from sun toward scene".
+    default = np.array([0.0, 0.0, 1.0])
+    cross = np.cross(default, sun)
+    cross_norm = float(np.linalg.norm(cross))
+    dot = float(np.dot(default, sun))
+
+    if cross_norm < 1e-6:
+        # Already aligned (overhead) or exactly opposite (below horizon)
+        return (1.0, 0.0, 0.0, 0.0) if dot >= 0 else (0.0, 1.0, 0.0, 0.0)
+
+    axis = cross / cross_norm
+    angle = math.acos(max(-1.0, min(1.0, dot)))
+    w = math.cos(angle / 2)
+    s = math.sin(angle / 2)
+    return (w, float(axis[0] * s), float(axis[1] * s), float(axis[2] * s))
+
+
+def _glb_double_sided(mesh) -> bytes:
+    """Export a trimesh to GLB and patch all materials to be double-sided.
+
+    ``add_mesh_trimesh`` doesn't expose a ``side`` parameter, but the underlying
+    glTF material spec has a ``doubleSided`` boolean.  We export to GLB, parse
+    the embedded JSON chunk, set ``doubleSided: true`` on every material, and
+    rebuild the binary.  This is equivalent to ``side="double"`` on
+    ``add_mesh_simple`` but works with per-vertex colours.
+    """
+    import json
+    import struct
+
+    glb = mesh.export(file_type="glb")
+
+    # GLB layout: 12-byte file header, then one or more chunks.
+    # Chunk 0 is always JSON (type 0x4E4F534A).
+    c0_len = struct.unpack_from("<I", glb, 12)[0]
+    gltf = json.loads(glb[20 : 20 + c0_len])
+
+    for mat in gltf.get("materials", []):
+        mat["doubleSided"] = True
+
+    json_bytes = json.dumps(gltf, separators=(",", ":")).encode()
+    # GLB requires 4-byte alignment; pad with spaces (valid JSON whitespace)
+    json_bytes += b" " * (-len(json_bytes) % 4)
+
+    binary_chunk = glb[20 + c0_len :]  # binary data chunk(s), unchanged
+    new_total = 12 + 8 + len(json_bytes) + len(binary_chunk)
+    magic, version = struct.unpack_from("<II", glb)
+    return (
+        struct.pack("<III", magic, version, new_total)
+        + struct.pack("<II", len(json_bytes), 0x4E4F534A)
+        + json_bytes
+        + binary_chunk
+    )
+
+
+def _infer_texture_names(output_dir: Path, scene_path: Optional[str]) -> List[str]:
+    """Predict which texture names will be available for a scene without loading data.
+
+    Checks file existence only; reads band descriptions from properties.tif metadata
+    so the full texture list can be populated before any scene data is loaded.
+
+    Args:
+        output_dir: Scene output directory to check.
+        scene_path: Path to the .SAFE directory (or None).
+
+    Returns:
+        Ordered list of texture names that will be available after ``SceneData.load()``.
+    """
+    names: List[str] = ["Height"]  # cloud_height.tif is required (caller already checked)
+    if (output_dir / "cloud_mask.tif").exists():
+        names.append("Cloud Mask")
+    if scene_path is not None and Path(scene_path).exists():
+        names.extend(["True Colour", "Ice Composite"])
+    if (output_dir / "albedo.tif").exists():
+        names.append("Albedo")
+    props_path = output_dir / "properties.tif"
+    if props_path.exists():
+        try:
+            import rasterio
+            with rasterio.open(str(props_path)) as ds:
+                for i in range(ds.count):
+                    desc = (ds.descriptions[i] or f"band_{i}").strip()
+                    names.append(f"Properties: {desc}")
+        except Exception:
+            names.append("Properties: band_0")
+    return names
+
+
 # ---------------------------------------------------------------------------
 # SceneData — loads and holds data for one scene
 # ---------------------------------------------------------------------------
@@ -115,6 +227,8 @@ class SceneData:
         self.xy_extent: float = 1.0                 # max(x_range, y_range) in metres
         self.mesh_faces: Optional[np.ndarray] = None  # (M, 3) uint32 triangle indices
         self._textures: Dict[str, np.ndarray] = {}  # name → (N, 3) uint8
+        self.sun_zenith: Optional[float] = None     # degrees from overhead
+        self.sun_azimuth: Optional[float] = None    # degrees clockwise from North
 
     # ------------------------------------------------------------------
     # Loading
@@ -184,11 +298,23 @@ class SceneData:
         # Precompute triangle face indices for mesh rendering
         self.mesh_faces = _build_grid_faces(H, W)
 
+        # Load .SAFE scene once — used for RGB textures and sun angles
+        safe_scene = None
+        if self.scene_path is not None and Path(self.scene_path).exists():
+            try:
+                from clouds_decoded.data import Sentinel2Scene
+                safe_scene = Sentinel2Scene()
+                safe_scene.read(self.scene_path)
+                self.sun_zenith = safe_scene.sun_zenith
+                self.sun_azimuth = safe_scene.sun_azimuth
+            except Exception as e:
+                logger.warning(f"  [{self.scene_id}] Could not load .SAFE scene: {e}")
+                safe_scene = None
+
         # Compute textures
         self._compute_height_texture()
         self._try_load_cloud_mask_texture()
-        self._try_load_true_colour_texture()
-        self._try_load_ice_composite_texture()
+        self._try_load_rgb_textures(safe_scene)
         self._try_load_albedo_texture()
         self._try_load_properties_textures()
 
@@ -223,55 +349,72 @@ class SceneData:
             anti_aliasing=(order > 0),
         ).astype(np.float32)
 
-    def _load_rgb_composite(
-        self, band_r: str, band_g: str, band_b: str, texture_name: str
-    ) -> None:
-        """Load an RGB composite from .SAFE scene bands and store as a texture.
+    def _try_load_rgb_textures(self, scene) -> None:
+        """Load True Colour and Ice Composite textures from a pre-loaded scene.
 
-        Applies joint normalization (all channels share one scale, preserving
-        inter-band colour ratios / hue) followed by gamma correction.
+        Reads each required band once at the display grid resolution using
+        rasterio's decimated read (``out_shape``), avoiding full JP2 decode.
+        Bands shared between composites (e.g. B04) are read only once.
 
         Args:
-            band_r: Band name for red channel.
-            band_g: Band name for green channel.
-            band_b: Band name for blue channel.
-            texture_name: Key to store in self._textures.
+            scene: A loaded ``Sentinel2Scene``, or ``None`` to skip.
         """
-        if self.scene_path is None or not Path(self.scene_path).exists():
+        if scene is None:
             return
+
+        import rasterio
+        from rasterio.enums import Resampling
+
+        H, W = self.grid_shape
+        composites = [
+            ("B04", "B03", "B02", "True Colour"),
+            ("B12", "B11", "B04", "Ice Composite"),
+        ]
+        needed = list({b for tri in composites for b in tri[:3]})
+
         try:
-            from clouds_decoded.data import Sentinel2Scene
-
-            scene = Sentinel2Scene()
-            scene.read(self.scene_path)
-
-            r = scene.get_band(band_r, reflectance=True).astype(np.float32)
-            g = scene.get_band(band_g, reflectance=True).astype(np.float32)
-            b = scene.get_band(band_b, reflectance=True).astype(np.float32)
-
-            r_ds = self._resize_to_grid(r, order=1)
-            g_ds = self._resize_to_grid(g, order=1)
-            b_ds = self._resize_to_grid(b, order=1)
-
-            rgb = np.stack([r_ds, g_ds, b_ds], axis=-1)
-
-            # Clip negatives (nodata edges and anti-aliasing artefacts)
-            rgb = np.clip(rgb, 0.0, None)
-
-            # Joint normalisation: a single scale for all channels preserves
-            # inter-band colour ratios so the result has correct hue.
-            positive = rgb[rgb > 0]
-            if positive.size > 0:
-                p98 = float(np.percentile(positive, 98))
-                rgb = np.clip(rgb / max(p98, 1e-9), 0.0, 1.0)
-
-            # Gamma correction for perceptual brightness
-            rgb = np.power(rgb, 0.7)
-            self._textures[texture_name] = (rgb.reshape(-1, 3) * 255).astype(np.uint8)
+            band_paths = scene._get_band_paths(scene.scene_directory, needed)
         except Exception as e:
-            logger.warning(
-                f"  [{self.scene_id}] Could not load {texture_name} texture: {e}"
-            )
+            logger.warning(f"  [{self.scene_id}] Could not resolve band paths: {e}")
+            return
+
+        quant = scene.quantification_value
+        offsets = scene.radio_add_offset
+
+        # Read each unique band once at target resolution
+        band_arrs: Dict[str, np.ndarray] = {}
+        for name in needed:
+            if name not in band_paths:
+                continue
+            try:
+                with rasterio.open(str(band_paths[name])) as ds:
+                    arr = ds.read(
+                        1, out_shape=(H, W), resampling=Resampling.bilinear,
+                    ).astype(np.float32)
+                band_arrs[name] = (arr + offsets.get(name, 0.0)) / quant
+            except Exception as e:
+                logger.warning(
+                    f"  [{self.scene_id}] Could not read band {name}: {e}"
+                )
+
+        for r_name, g_name, b_name, tex_name in composites:
+            if not all(n in band_arrs for n in (r_name, g_name, b_name)):
+                continue
+            try:
+                rgb = np.stack(
+                    [band_arrs[r_name], band_arrs[g_name], band_arrs[b_name]], axis=-1,
+                )
+                rgb = np.clip(rgb, 0.0, None)
+                positive = rgb[rgb > 0]
+                if positive.size > 0:
+                    p98 = float(np.percentile(positive, 98))
+                    rgb = np.clip(rgb / max(p98, 1e-9), 0.0, 1.0)
+                rgb = np.power(rgb, 0.7)
+                self._textures[tex_name] = (rgb.reshape(-1, 3) * 255).astype(np.uint8)
+            except Exception as e:
+                logger.warning(
+                    f"  [{self.scene_id}] Could not build {tex_name} texture: {e}"
+                )
 
     # ------------------------------------------------------------------
     # Texture computation
@@ -311,14 +454,6 @@ class SceneData:
             self._textures["Cloud Mask"] = colors
         except Exception as e:
             logger.warning(f"  [{self.scene_id}] Could not load cloud mask texture: {e}")
-
-    def _try_load_true_colour_texture(self) -> None:
-        """RGB composite from B04/B03/B02 (true colour)."""
-        self._load_rgb_composite("B04", "B03", "B02", "True Colour")
-
-    def _try_load_ice_composite_texture(self) -> None:
-        """SWIR false-colour composite from B12/B11/B04 (ice/snow detection)."""
-        self._load_rgb_composite("B12", "B11", "B04", "Ice Composite")
 
     def _try_load_albedo_texture(self) -> None:
         """Mean albedo across bands, mapped to grayscale."""
@@ -434,13 +569,8 @@ class SceneData:
         """Return coarsened mesh vertices, face indices, and RGBA vertex colors.
 
         Height is median-filtered before subsampling for smooth geometry.
-        Two categories of faces are then dropped:
-
-        1. **Curtain faces** — physical z-range across the triangle exceeds
-           ``max_z_diff`` metres.
-        2. **Zero-edge faces** — at least one vertex sits at z=0 (clear-sky /
-           invalid pixel) while at least one other vertex is above z=0.
-           Faces entirely at z=0 are kept so the ground plane is preserved.
+        Faces whose physical z-range exceeds ``max_z_diff`` metres (curtain
+        faces) are dropped.
 
         XY positions and vertex colors are sampled from the full-resolution
         grid at the coarse positions — no filtering applied to either.
@@ -489,12 +619,8 @@ class SceneData:
         face_min = face_z.min(axis=1)
         face_max = face_z.max(axis=1)
 
-        # 1. Drop curtain faces (large height jump)
+        # Drop curtain faces (large height jump)
         keep = (face_max - face_min) <= max_z_diff
-
-        # 2. Drop zero-edge faces: some vertices at z=0, some above
-        #    (keeps the flat z=0 ground plane but removes walls rising from it)
-        keep &= ~((face_min == 0.0) & (face_max > 0.0))
 
         faces = faces[keep]
 
@@ -576,41 +702,45 @@ class ViserViewer:
         self.max_grid_dim = max_grid_dim
 
         project = Project.load(project_dir)
+        # Lightweight metadata — populated at init without loading any raster data.
+        self._scene_meta: Dict[str, dict] = {}
+        # Heavy scene data — populated lazily on first access per scene.
         self._scene_data: Dict[str, SceneData] = {}
         self._scene_order: List[str] = []
+        all_tex_names: List[str] = []
+        seen_tex: set = set()
 
         for row in project.db.get_all():
             scene_path = row["path"]
             scene_id = row["scene_id"]
-            output_dir = project._scene_output_dir(scene_id)
+            crop_window = row.get("crop_window")
+            output_dir = project._scene_output_dir(scene_id, crop_window)
 
             if not (output_dir / "cloud_height.tif").exists():
                 logger.info(f"  Skipping {scene_id} (no cloud_height.tif)")
                 continue
 
-            manifest = project._load_manifest(scene_id, scene_path)
-            safe_path = manifest.scene_path or scene_path
+            self._scene_meta[scene_id] = {
+                "output_dir": str(output_dir),
+                "scene_path": scene_path,
+            }
+            self._scene_order.append(scene_id)
 
-            sd = SceneData(
-                scene_id=scene_id,
-                output_dir=str(output_dir),
-                scene_path=safe_path,
-            )
-            try:
-                sd.load(max_grid_dim=max_grid_dim)
-                self._scene_data[scene_id] = sd
-                self._scene_order.append(scene_id)
-            except Exception as e:
-                logger.warning(f"  Failed to load scene {scene_id}: {e}")
+            for name in _infer_texture_names(output_dir, scene_path):
+                if name not in seen_tex:
+                    all_tex_names.append(name)
+                    seen_tex.add(name)
 
-        if not self._scene_data:
+        if not self._scene_meta:
             raise RuntimeError(
                 "No scenes with cloud_height.tif found in project. "
                 "Run the pipeline first."
             )
 
+        self._all_texture_names = all_tex_names
         logger.info(
-            f"ViserViewer ready: {len(self._scene_data)} scene(s) loaded"
+            f"ViserViewer ready: {len(self._scene_meta)} scene(s) found "
+            f"(data loaded on demand)"
         )
 
     def serve(self) -> None:
@@ -621,15 +751,8 @@ class ViserViewer:
         server.scene.set_background_image(np.zeros((1, 1, 3), dtype=np.uint8))
         logger.info(f"Viser server running at http://{self.host}:{self.port}")
 
-        # Precompute union of all texture names in first-appearance order.
-        # We fix the dropdown options once so viser doesn't reconnect on update.
-        all_texture_names: List[str] = []
-        seen: set = set()
-        for scene_id in self._scene_order:
-            for name in self._scene_data[scene_id].texture_names:
-                if name not in seen:
-                    all_texture_names.append(name)
-                    seen.add(name)
+        # Texture list was precomputed from file-existence in __init__.
+        all_texture_names = self._all_texture_names
 
         # Mutable state shared across callbacks
         state: Dict = {"handle": None, "scene_id": None}
@@ -669,24 +792,71 @@ class ViserViewer:
                 initial_value=all_texture_names[0],
             )
 
+        with server.gui.add_folder("Lighting"):
+            sun_intensity_slider = server.gui.add_slider(
+                "Sun Intensity",
+                min=0.0,
+                max=5.0,
+                step=0.1,
+                initial_value=2.0,
+            )
+            ambient_intensity_slider = server.gui.add_slider(
+                "Ambient Intensity",
+                min=0.0,
+                max=2.0,
+                step=0.05,
+                initial_value=0.5,
+            )
+
+        # Add scene lights — sun directional + soft ambient fill
+        # Default orientation: overhead sun (identity quaternion = zenith 0°)
+        sun_light = server.scene.add_light_directional(
+            "/sun_light",
+            color=(255, 240, 200),   # warm white sunlight
+            intensity=sun_intensity_slider.value,
+        )
+        ambient_light = server.scene.add_light_ambient(
+            "/ambient_light",
+            color=(180, 210, 255),   # cool skylight tint
+            intensity=ambient_intensity_slider.value,
+        )
+
         # -- Helpers -----------------------------------------------------------
 
-        def _camera_params(sd: SceneData) -> Tuple[Tuple, float]:
-            """Return (position, far) for the current scene and z_scale."""
+        def _get_or_load_scene(scene_id: str) -> SceneData:
+            """Return cached SceneData, loading from disk on first access."""
+            if scene_id not in self._scene_data:
+                logger.info(f"Loading scene {scene_id}...")
+                meta = self._scene_meta[scene_id]
+                sd = SceneData(
+                    scene_id=scene_id,
+                    output_dir=meta["output_dir"],
+                    scene_path=meta["scene_path"],
+                )
+                sd.load(max_grid_dim=self.max_grid_dim)
+                self._scene_data[scene_id] = sd
+            return self._scene_data[scene_id]
+
+        def _camera_params(sd: SceneData) -> Tuple[Tuple, float, float]:
+            """Return (position, near, far) for the current scene and z_scale."""
             z_max = max(float(np.nanmax(sd.base_z)) * z_scale_slider.value, 1.0)
             # Place camera high enough to see the full horizontal extent.
             # For a ~60° FOV camera, visible radius ≈ height * tan(30°) ≈ 0.58*h.
             # So h ≈ xy_extent / 0.58 ≈ 1.7 * xy_extent.  Use 2× for margin.
             camera_height = z_max + sd.xy_extent * 2.0
-            far = max(camera_height * 6.0, 50_000.0)
-            return (0.0, 0.0, camera_height), far
+            far = max(camera_height * 3.0, 50_000.0)
+            # near must be large enough relative to far to preserve depth buffer
+            # precision. Target near/far ≤ 1:10 000 (well within 24-bit range).
+            near = max(far / 10_000.0, 1.0)
+            return (0.0, 0.0, camera_height), near, far
 
         def _reset_cameras(sd: SceneData) -> None:
-            pos, far = _camera_params(sd)
+            pos, near, far = _camera_params(sd)
             for client in server.get_clients().values():
                 client.camera.position = pos
                 client.camera.look_at = (0.0, 0.0, 0.0)
                 client.camera.up = (0.0, 1.0, 0.0)
+                client.camera.near = near
                 client.camera.far = far
 
         def _best_texture(sd: SceneData) -> str:
@@ -713,9 +883,9 @@ class ViserViewer:
                     vertex_colors=rgba,
                     process=False,
                 )
-                state["handle"] = server.scene.add_mesh_trimesh(
+                state["handle"] = server.scene.add_glb(
                     name="/scene_object",
-                    mesh=mesh,
+                    glb_data=_glb_double_sided(mesh),
                 )
             else:
                 pts = sd.get_points(z_scale_slider.value)
@@ -728,9 +898,20 @@ class ViserViewer:
                     point_shape="square",
                 )
 
-        def _load_scene(scene_id: str) -> None:
+        def _update_sun_light(scene_id: str) -> None:
+            """Orient the directional light to match the scene's solar geometry."""
             sd = self._scene_data[scene_id]
+            if sd.sun_zenith is not None and sd.sun_azimuth is not None:
+                sun_light.wxyz = _sun_wxyz(sd.sun_azimuth, sd.sun_zenith)
+                logger.debug(
+                    f"[{scene_id}] Sun light: az={sd.sun_azimuth:.1f}°, "
+                    f"zen={sd.sun_zenith:.1f}°"
+                )
+
+        def _load_scene(scene_id: str) -> None:
+            sd = _get_or_load_scene(scene_id)
             state["scene_id"] = scene_id
+            _update_sun_light(scene_id)
             _rebuild(sd)
             _reset_cameras(sd)
 
@@ -744,13 +925,13 @@ class ViserViewer:
         def _on_render_mode(ev) -> None:
             if state["scene_id"] is None:
                 return
-            _rebuild(self._scene_data[state["scene_id"]])
+            _rebuild(_get_or_load_scene(state["scene_id"]))
 
         @z_scale_slider.on_update
         def _on_z_scale(ev) -> None:
             if state["handle"] is None or state["scene_id"] is None:
                 return
-            sd = self._scene_data[state["scene_id"]]
+            sd = _get_or_load_scene(state["scene_id"])
             if render_mode_select.value == "Surface":
                 _rebuild(sd)
             else:
@@ -767,20 +948,30 @@ class ViserViewer:
         def _on_texture(ev) -> None:
             if state["handle"] is None or state["scene_id"] is None:
                 return
-            sd = self._scene_data[state["scene_id"]]
+            sd = _get_or_load_scene(state["scene_id"])
             if render_mode_select.value == "Surface":
                 _rebuild(sd)
             else:
                 state["handle"].colors = sd.get_colors(_best_texture(sd))
 
+        @sun_intensity_slider.on_update
+        def _on_sun_intensity(ev) -> None:
+            sun_light.intensity = sun_intensity_slider.value
+
+        @ambient_intensity_slider.on_update
+        def _on_ambient_intensity(ev) -> None:
+            ambient_light.intensity = ambient_intensity_slider.value
+
         @server.on_client_connect
         def _on_client(client: viser.ClientHandle) -> None:
-            if state["scene_id"] is not None:
-                sd = self._scene_data[state["scene_id"]]
-                pos, far = _camera_params(sd)
+            scene_id = state["scene_id"]
+            if scene_id is not None and scene_id in self._scene_data:
+                sd = self._scene_data[scene_id]
+                pos, near, far = _camera_params(sd)
                 client.camera.position = pos
                 client.camera.look_at = (0.0, 0.0, 0.0)
                 client.camera.up = (0.0, 1.0, 0.0)
+                client.camera.near = near
                 client.camera.far = far
 
         # -- Initial load ------------------------------------------------------

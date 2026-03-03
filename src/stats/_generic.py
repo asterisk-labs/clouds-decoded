@@ -1,12 +1,19 @@
 """Generic stats functions usable for any single- or multi-band raster step."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 import numpy as np
 
 if TYPE_CHECKING:
     from clouds_decoded.stats import StatsCaller
+
+
+def _band_name(band_names: Optional[list], i: int, n_bands: int) -> Optional[str]:
+    """Return the display name for band index *i*, or None for unnamed single-band data."""
+    if band_names and i < len(band_names):
+        return band_names[i]
+    return f"b{i:02d}" if n_bands > 1 else None
 
 
 def mean(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]]:
@@ -30,14 +37,15 @@ def mean(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]]:
     band_names = getattr(data.metadata, "band_names", None)
     result: Dict[str, Union[float, int]] = {}
     for i, band in enumerate(arr):
-        name = (band_names[i] if band_names and i < len(band_names)
-                else (f"b{i:02d}" if arr.shape[0] > 1 else None))
+        name = _band_name(band_names, i, arr.shape[0])
         valid = band[band != 0]
         if valid.size == 0:
             continue
         prefix = f"{name}__" if name else ""
         result[f"{prefix}mean"] = float(valid.mean())
+        result[f"{prefix}n_pixels"] = int(valid.size)
     return result
+
 
 def median(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]]:
     """Compute band-wise median over valid (non-zero) pixels.
@@ -45,6 +53,7 @@ def median(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]
     Args:
         caller: The :class:`~clouds_decoded.stats.StatsCaller` for this run.
         step_name: The step whose output to analyse.
+
     Returns:
         Dict with keys ``{band}__median`` and ``{band}__n_pixels`` for each band
         (prefix omitted for single-band data with no band names).
@@ -59,26 +68,33 @@ def median(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]
     band_names = getattr(data.metadata, "band_names", None)
     result: Dict[str, Union[float, int]] = {}
     for i, band in enumerate(arr):
-        name = (band_names[i] if band_names and i < len(band_names)
-                else (f"b{i:02d}" if arr.shape[0] > 1 else None))
+        name = _band_name(band_names, i, arr.shape[0])
         valid = band[band != 0]
         if valid.size == 0:
             continue
         prefix = f"{name}__" if name else ""
         result[f"{prefix}median"] = float(np.median(valid))
+        result[f"{prefix}n_pixels"] = int(valid.size)
     return result
 
 
-def percentiles(caller: "StatsCaller", step_name: str, percentiles: list[int] = list(range(101))) -> Dict[str, Union[float, int]]:
-    """Compute per-band 0–100th percentiles and mean over valid (non-zero) pixels.
+_DEFAULT_PERCENTILES = [0, 5, 25, 50, 75, 95, 100]
+
+
+def percentiles(
+    caller: "StatsCaller",
+    step_name: str,
+    percentiles: list[int] = _DEFAULT_PERCENTILES,
+) -> Dict[str, Union[float, int]]:
+    """Compute per-band percentiles and pixel count over valid (non-zero) pixels.
 
     Args:
         caller: The :class:`~clouds_decoded.stats.StatsCaller` for this run.
         step_name: The step whose output to analyse.
+        percentiles: Integer percentile values to compute (default: 0,5,25,50,75,95,100).
 
     Returns:
-        Dict with keys ``{band}__p{pct:03d}``, ``{band}__mean``,
-        ``{band}__n_pixels`` for each band.
+        Dict with keys ``{band}__p{pct:03d}`` and ``{band}__n_pixels`` for each band.
         Returns an empty dict if the step output is unavailable.
     """
     data = caller.load(step_name)
@@ -90,8 +106,7 @@ def percentiles(caller: "StatsCaller", step_name: str, percentiles: list[int] = 
     band_names = getattr(data.metadata, "band_names", None)
     result: Dict[str, Union[float, int]] = {}
     for i, band in enumerate(arr):
-        name = (band_names[i] if band_names and i < len(band_names)
-                else (f"b{i:02d}" if arr.shape[0] > 1 else None))
+        name = _band_name(band_names, i, arr.shape[0])
         valid = band[band != 0]
         if valid.size == 0:
             continue
@@ -99,4 +114,6 @@ def percentiles(caller: "StatsCaller", step_name: str, percentiles: list[int] = 
         prefix = f"{name}__" if name else ""
         for j, v in zip(percentiles, pcts):
             result[f"{prefix}p{j:03d}"] = float(v)
+        result[f"{prefix}mean"] = float(valid.mean())
+        result[f"{prefix}n_pixels"] = int(valid.size)
     return result

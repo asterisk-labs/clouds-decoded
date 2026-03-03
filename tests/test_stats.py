@@ -144,8 +144,8 @@ class TestGenericMean:
 
 class TestGenericPercentiles:
     def test_percentile_keys_single_band(self, tmp_path):
-        """percentiles() produces 101 p-keys and a mean key for a single-band tif."""
-        from clouds_decoded.stats._generic import percentiles
+        """percentiles() produces p-keys, mean, and n_pixels for a single-band tif."""
+        from clouds_decoded.stats._generic import percentiles, _DEFAULT_PERCENTILES
 
         vals = np.arange(100, dtype=np.float32).reshape(1, 10, 10)
         tif = tmp_path / "height.tif"
@@ -158,8 +158,8 @@ class TestGenericPercentiles:
         assert "p100" in result
         assert "mean" in result
         assert "n_pixels" in result
-        # 101 p-keys + mean + n_pixels
-        assert len(result) == 103
+        # one key per default percentile, plus mean and n_pixels
+        assert len(result) == len(_DEFAULT_PERCENTILES) + 2
 
     def test_p050_approx_median(self, tmp_path):
         """p050 is approximately the median of valid pixels."""
@@ -341,7 +341,7 @@ class TestRunStats:
         run_id = _make_run_id("S2A_001", None)
         project.db.set_status(run_id, "done")
 
-        scene_dir = project.scenes_dir / "S2A_001"
+        scene_dir = project.output_dir / "S2A_001"
         scene_dir.mkdir(parents=True, exist_ok=True)
         mask_tif = scene_dir / "cloud_mask.tif"
         data = np.zeros((10, 10), dtype=np.uint8)
@@ -364,10 +364,8 @@ class TestRunStats:
         assert project.db.has_stats(run_id, "stats_cloud_mask") is True
 
         project.run_stats(methods=["cloud_mask::class_fractions"])
-        import sqlite3
-        conn = sqlite3.connect(str(project_dir / "scenes.db"))
-        count = conn.execute("SELECT COUNT(*) FROM stats_cloud_mask").fetchone()[0]
-        conn.close()
+        with project.db._conn() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM stats_cloud_mask").fetchone()[0]
         assert count == 1
 
     def test_run_stats_force_overwrites(self, tmp_path):
@@ -382,7 +380,7 @@ class TestRunStats:
         project.db.set_status(run_id, "done")
         project.db.write_stats(run_id, "stats_cloud_mask", {"clear_frac": 0.99})
 
-        scene_dir = project.scenes_dir / "S2A_001"
+        scene_dir = project.output_dir / "S2A_001"
         scene_dir.mkdir(parents=True, exist_ok=True)
         mask_tif = scene_dir / "cloud_mask.tif"
         data = np.zeros((10, 10), dtype=np.uint8)  # all clear
@@ -403,11 +401,8 @@ class TestRunStats:
 
         project.run_stats(force=True, methods=["cloud_mask::class_fractions"])
 
-        import sqlite3
-        conn = sqlite3.connect(str(project_dir / "scenes.db"))
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT clear_frac FROM stats_cloud_mask WHERE run_id=?", (run_id,)
-        ).fetchone()
-        conn.close()
-        assert abs(row["clear_frac"] - 1.0) < 1e-6
+        with project.db._conn() as conn:
+            row = conn.execute(
+                "SELECT clear_frac FROM stats_cloud_mask WHERE run_id=?", [run_id]
+            ).fetchone()
+        assert abs(row[0] - 1.0) < 1e-6

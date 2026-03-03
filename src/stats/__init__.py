@@ -18,11 +18,14 @@ directly — the cache ensures each file is opened only once.
 from __future__ import annotations
 
 import importlib
+import logging
 from typing import Any, Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from clouds_decoded.data.base import GeoRasterData
     from clouds_decoded.project import SceneManifest
+
+logger = logging.getLogger(__name__)
 
 
 # Map step_name → (module_path, class_name) for typed loading.
@@ -86,7 +89,8 @@ class StatsCaller:
         data_cls = self._data_class(step_name)
         try:
             obj = data_cls.from_file(str(path))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to load %s output from %s: %s", step_name, path, exc)
             obj = None
         self._cache[step_name] = obj
         return obj
@@ -96,6 +100,8 @@ class StatsCaller:
 
         Passes this caller so the function can load any step it needs,
         plus *step_name* so generic functions know their primary step.
+        Exceptions propagate to the caller (typically :meth:`~clouds_decoded.project.Project.run_stats`
+        which logs them and continues).
 
         Args:
             fn: A stats function with signature
@@ -103,7 +109,7 @@ class StatsCaller:
             step_name: Passed through to *fn* as the primary step name.
 
         Returns:
-            The dict returned by *fn*, or ``{}`` on any exception.
+            The dict returned by *fn*.
         """
         return fn(self, step_name)
 
@@ -121,9 +127,14 @@ def resolve_stats_fn(identifier: str) -> Tuple[Callable, str]:
         A ``(callable, step_name)`` tuple.
 
     Raises:
+        ValueError: If *identifier* does not contain ``::``.
         AttributeError: If the function is not found in either module.
     """
-    step_name, fn_name = identifier.split("::")
+    if "::" not in identifier:
+        raise ValueError(
+            f"Invalid stats identifier {identifier!r}: expected 'step_name::fn_name'"
+        )
+    step_name, fn_name = identifier.split("::", maxsplit=1)
     for module_path in (
         f"clouds_decoded.stats.{step_name}",
         "clouds_decoded.stats._generic",

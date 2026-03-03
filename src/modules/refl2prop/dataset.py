@@ -400,29 +400,28 @@ class Refl2PropDataset(Dataset):
             # --- 5. Construct Output Vectors ---
             inputs = []
             inputs.extend(final_refl)
-            
-            # Albedos
-            if surface_albedo_vector is not None:
-                inputs.extend(surface_albedo_vector)
-            else:
-                # Constant albedo mode or fixed albedo
-                alb_val = fixed_coords.get(P_LUT.SURFACE_ALBEDO, 
-                                         interp_details.get(P_LUT.SURFACE_ALBEDO, (0.5,))[0])
-                # If interpolated, we calculated it:
-                if P_LUT.SURFACE_ALBEDO in interp_vals:
-                     alb_val = interp_vals[P_LUT.SURFACE_ALBEDO]
-                inputs.extend([alb_val] * self.num_bands)
-            
-            # Geometry & Priors
-            geo_order = [P_LUT.INCIDENCE_ANGLE, P_LUT.SHADING_RATIO, P_LUT.CLOUD_TOP_HEIGHT, P_LUT.MU, P_LUT.PHI]
-            
-            # Calculate interpolated values for non-array params
-            # We need the factors used in the loop
+
+            # Calculate interpolated values for non-array params (needed for albedo and geometry below)
             interp_vals = {}
             for dim in interp_dims:
                 v1, v2 = interp_details[dim]
                 f = interp_factors[dim]
                 interp_vals[dim] = (1 - f) * v1 + f * v2
+
+            # Albedos
+            if surface_albedo_vector is not None:
+                inputs.extend(surface_albedo_vector)
+            else:
+                # Constant albedo mode or fixed albedo
+                alb_val = fixed_coords.get(P_LUT.SURFACE_ALBEDO,
+                                         interp_details.get(P_LUT.SURFACE_ALBEDO, (0.5,))[0])
+                # If interpolated, use the interpolated value
+                if P_LUT.SURFACE_ALBEDO in interp_vals:
+                    alb_val = interp_vals[P_LUT.SURFACE_ALBEDO]
+                inputs.extend([alb_val] * self.num_bands)
+
+            # Geometry & Priors
+            geo_order = [P_LUT.INCIDENCE_ANGLE, P_LUT.SHADING_RATIO, P_LUT.CLOUD_TOP_HEIGHT, P_LUT.MU, P_LUT.PHI]
 
             for k in geo_order:
                 if k in interp_vals:
