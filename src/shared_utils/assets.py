@@ -105,26 +105,33 @@ class Asset:
 
 
 KNOWN_ASSETS: dict[str, Asset] = {
+    "cloud_mask": Asset(
+        key="cloud_mask",
+        relative_path="models/cloud_mask/default.pt",
+        url="https://huggingface.co/asterisk-labs/clouds-decoded/resolve/main/cloud_mask/weights.pt",
+        size_hint="~105 MB",
+        description="Cloud mask SegFormer model weights",
+    ),
     "emulator": Asset(
         key="emulator",
         relative_path="models/cloud_height_emulator/default.pth",
-        url="",  # TBD
-        size_hint="~500 MB",
+        url="https://huggingface.co/asterisk-labs/clouds-decoded/resolve/main/cloud_height_emulator/weights.pth",
+        size_hint="~100 MB",
         description="Height emulator model weights",
     ),
     "refl2prop": Asset(
         key="refl2prop",
         relative_path="models/refl2prop/default.pth",
-        url="",  # TBD
-        size_hint="~50 MB",
+        url="https://huggingface.co/asterisk-labs/clouds-decoded/resolve/main/refl2prop/weights.pth",
+        size_hint="~1 MB",
         description="Refl2prop model weights",
     ),
-    "cloud_mask": Asset(
-        key="cloud_mask",
-        relative_path="models/cloud_mask/default.pt",
-        url="https://huggingface.co/aliFrancis/SEnSeIv2/resolve/main/full-models/SegFormerB2-S2-unambiguous/weights.pt",
-        size_hint="~105 MB",
-        description="Cloud mask SegFormer model weights",
+    "albedo_datadriven": Asset(
+        key="albedo_datadriven",
+        relative_path="models/albedo_datadriven/default.pth",
+        url="https://huggingface.co/asterisk-labs/clouds-decoded/resolve/main/albedo_datadriven/weights.pth",
+        size_hint="~1 MB",
+        description="Data-driven albedo model weights",
     ),
     "gebco": Asset(
         key="gebco",

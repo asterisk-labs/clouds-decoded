@@ -110,7 +110,7 @@ class CloudMaskProcessor(BaseProcessor):
             cfg = SegformerConfig(**_SEGFORMER_B2)
             self.model = SegformerForSemanticSegmentation(cfg).to(self.device)
 
-            state_dict = torch.load(weights_path, map_location=self.device)
+            state_dict = torch.load(weights_path, map_location=self.device, weights_only=True)
             # Checkpoint keys carry a "segmenter." prefix from the senseiv2
             # FullModel wrapper — strip it before loading.
             stripped = {k[len("segmenter."):]: v for k, v in state_dict.items()}

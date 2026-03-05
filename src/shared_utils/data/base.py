@@ -59,16 +59,19 @@ class Metadata(BaseModel):
 class GeoRasterData(Data):
     """
     Data model for geospatial raster data (e.g. GeoTIFF).
-    
+
     Attributes:
         data: The raster data as a numpy array.
         transform: The affine transform of the raster (maps pixel coordinates to map coordinates).
         crs: The coordinate reference system of the raster.
+        nodata: The value used to indicate missing/invalid pixels. Default is NaN
+            for float rasters. Subclasses may override (e.g. 255 for uint8 masks).
         metadata: Metadata object containing additional information.
     """
     data: Optional[np.ndarray] = None
     transform: Optional[Any] = None
     crs: Optional[Any] = None
+    nodata: Optional[float] = Field(default=np.nan, description="Nodata value")
     metadata: Metadata = Field(default_factory=Metadata)
 
     @field_validator("data")
@@ -187,6 +190,7 @@ class GeoRasterData(Data):
             'dtype': self.data.dtype,
             'crs': self.crs,
             'transform': self.transform,
+            'nodata': self.nodata,
             'compress': 'deflate',
             'predictor': predictor,
             'tiled': True,

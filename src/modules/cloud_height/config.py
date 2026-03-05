@@ -48,7 +48,17 @@ class CloudHeightConfig(BaseProcessorConfig):
         default=180,
         ge=10,
         le=5000,
-        description="Stride between retrieval points (meters)"
+        description="Stride between retrieval points (meters). Controls how "
+                    "densely parallax correlations are sampled. Independent of "
+                    "the output grid resolution."
+    )
+    grid_resolution: Optional[int] = Field(
+        default=None,
+        ge=10,
+        le=5000,
+        description="Output grid pixel size in metres. When None, defaults to "
+                    "the retrieval stride. Set lower than stride to get a "
+                    "smoother output without increasing retrieval density."
     )
     convolved_size_along_track: int = Field(
         default=200,
@@ -95,14 +105,14 @@ class CloudHeightConfig(BaseProcessorConfig):
         description="Use deep learning emulator for cloud height retrieval"
     )
     n_workers: int = Field(
-        default=48,
+        default=16,
         ge=1,
         le=64,
         description="Number of parallel workers for processing"
     )
     temp_dir: Optional[str] = Field(
         default=None,
-        description="Temporary directory for intermediate files (None=use /dev/shm)"
+        description="Temporary directory for intermediate files (default: /dev/shm)"
     )
 
     @field_validator('bands')

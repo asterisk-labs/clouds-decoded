@@ -241,9 +241,18 @@ class TestDownloadAsset:
     def test_raises_when_no_url(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))
 
-        from clouds_decoded.assets import download_asset
-        with pytest.raises(ValueError, match="No download URL"):
-            download_asset("emulator")
+        import clouds_decoded.assets as assets_mod
+        from clouds_decoded.assets import download_asset, Asset
+        # Temporarily register a fake asset with no URL
+        assets_mod.KNOWN_ASSETS["_test_no_url"] = Asset(
+            key="_test_no_url", relative_path="models/_test/x.pth",
+            url="", size_hint="0", description="test asset",
+        )
+        try:
+            with pytest.raises(ValueError, match="No download URL"):
+                download_asset("_test_no_url")
+        finally:
+            del assets_mod.KNOWN_ASSETS["_test_no_url"]
 
     def test_downloads_non_zip(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLOUDS_DECODED_ASSETS_DIR", str(tmp_path))

@@ -16,6 +16,8 @@ dependencies = [
     "pandas",
     "pyarrow",
     "torch>=1.10.0",
+    "torchvision",
+    "duckdb",
     "xarray",
     "netCDF4",
     "scikit-image",

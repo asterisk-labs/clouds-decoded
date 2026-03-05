@@ -50,7 +50,12 @@ class DataDrivenAlbedoEstimator:
         # Load model
         model_path = Path(config.model_path)
         if not model_path.exists():
-            raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+            raise FileNotFoundError(
+                f"Data-driven albedo weights not found at {model_path}.\n"
+                f"Run:  clouds-decoded download albedo_datadriven\n"
+                f"or set CLOUDS_DECODED_ASSETS_DIR to a directory containing "
+                f"models/albedo_datadriven/default.pth"
+            )
 
         state = torch.load(model_path, map_location=self.device, weights_only=True)
 
@@ -136,6 +141,22 @@ class DataDrivenAlbedoEstimator:
                     order=0, preserve_range=True,
                 ) > 0.5
                 albedo_array[:, nodata_resized] = np.nan
+
+        # Average each band to a single scene-wide value to avoid
+        # detector-dependent striping artefacts in the current model.
+        for b in range(albedo_array.shape[0]):
+            band_data = albedo_array[b]
+            valid = band_data[np.isfinite(band_data)]
+            if valid.size > 0:
+                albedo_array[b] = np.where(
+                    np.isfinite(band_data), valid.mean(), np.nan,
+                )
+
+        logger.warning(
+            "Data-driven albedo is still a work in progress and results may "
+            "be suboptimal. Per-pixel predictions are averaged to a single "
+            "scene-wide value per band to mitigate known striping artefacts."
+        )
 
         metadata = AlbedoMetadata(
             band_names=band_names,

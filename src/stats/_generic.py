@@ -16,8 +16,18 @@ def _band_name(band_names: Optional[list], i: int, n_bands: int) -> Optional[str
     return f"b{i:02d}" if n_bands > 1 else None
 
 
+def _valid_mask(band: "np.ndarray", nodata: object = np.nan) -> "np.ndarray":
+    """Return a boolean mask of valid (non-nodata) pixels.
+
+    Uses ``isnan`` for NaN nodata, equality check otherwise.
+    """
+    if nodata is None or (isinstance(nodata, float) and np.isnan(nodata)):
+        return np.isfinite(band)
+    return band != nodata
+
+
 def mean(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]]:
-    """Compute band-wise mean over valid (non-zero) pixels.
+    """Compute band-wise mean over valid pixels (excluding nodata).
 
     Args:
         caller: The :class:`~clouds_decoded.stats.StatsCaller` for this run.
@@ -34,11 +44,12 @@ def mean(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]]:
     arr = data.data
     if arr.ndim == 2:
         arr = arr[np.newaxis]
+    nodata = getattr(data, "nodata", np.nan)
     band_names = getattr(data.metadata, "band_names", None)
     result: Dict[str, Union[float, int]] = {}
     for i, band in enumerate(arr):
         name = _band_name(band_names, i, arr.shape[0])
-        valid = band[band != 0]
+        valid = band[_valid_mask(band, nodata)]
         if valid.size == 0:
             continue
         prefix = f"{name}__" if name else ""
@@ -48,7 +59,7 @@ def mean(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]]:
 
 
 def median(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]]:
-    """Compute band-wise median over valid (non-zero) pixels.
+    """Compute band-wise median over valid pixels (excluding nodata).
 
     Args:
         caller: The :class:`~clouds_decoded.stats.StatsCaller` for this run.
@@ -65,11 +76,12 @@ def median(caller: "StatsCaller", step_name: str) -> Dict[str, Union[float, int]
     arr = data.data
     if arr.ndim == 2:
         arr = arr[np.newaxis]
+    nodata = getattr(data, "nodata", np.nan)
     band_names = getattr(data.metadata, "band_names", None)
     result: Dict[str, Union[float, int]] = {}
     for i, band in enumerate(arr):
         name = _band_name(band_names, i, arr.shape[0])
-        valid = band[band != 0]
+        valid = band[_valid_mask(band, nodata)]
         if valid.size == 0:
             continue
         prefix = f"{name}__" if name else ""
@@ -86,7 +98,7 @@ def percentiles(
     step_name: str,
     percentiles: list[int] = _DEFAULT_PERCENTILES,
 ) -> Dict[str, Union[float, int]]:
-    """Compute per-band percentiles and pixel count over valid (non-zero) pixels.
+    """Compute per-band percentiles and pixel count over valid pixels (excluding nodata).
 
     Args:
         caller: The :class:`~clouds_decoded.stats.StatsCaller` for this run.
@@ -103,11 +115,12 @@ def percentiles(
     arr = data.data
     if arr.ndim == 2:
         arr = arr[np.newaxis]
+    nodata = getattr(data, "nodata", np.nan)
     band_names = getattr(data.metadata, "band_names", None)
     result: Dict[str, Union[float, int]] = {}
     for i, band in enumerate(arr):
         name = _band_name(band_names, i, arr.shape[0])
-        valid = band[band != 0]
+        valid = band[_valid_mask(band, nodata)]
         if valid.size == 0:
             continue
         pcts = np.percentile(valid, percentiles)

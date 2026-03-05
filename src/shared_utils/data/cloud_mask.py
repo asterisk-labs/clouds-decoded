@@ -48,13 +48,14 @@ class CloudMaskData(GeoRasterData):
     Data model for cloud masks using the SEnSeI-v2 variants.
     Supports either discrete 4-class classification or 4-channel probability maps.
     """
+    nodata: Optional[float] = Field(default=255, description="Nodata sentinel for uint8 cloud masks")
     metadata: CloudMaskMetadata = Field(default_factory=CloudMaskMetadata)
 
     def validate(self) -> bool:
         """Validate that data conforms to the categorical strictness."""
         if self.data is None:
-            return True 
-        
+            return True
+
         if self.metadata.categorical:
             # Discrete values check
             # Expecting 2D array of integers
@@ -64,10 +65,13 @@ class CloudMaskData(GeoRasterData):
                      pass
                  else:
                      return False
-            
+
+            allowed = set(self.metadata.classes.keys())
+            if self.nodata is not None:
+                allowed.add(int(self.nodata))
             unique_vals = np.unique(self.data)
             for val in unique_vals:
-                if val not in self.metadata.classes:
+                if val not in allowed:
                     return False
         else:
             # Probabilities check

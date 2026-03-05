@@ -290,5 +290,11 @@ class ColumnIterator:
             raise StopIteration
         return column
 
+    def close(self):
+        """Terminate the producer process if still running."""
+        if self.process.is_alive():
+            self.process.terminate()
+        self.process.join(timeout=5)
+
     def __len__(self):
         return self.length

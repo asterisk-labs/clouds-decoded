@@ -414,6 +414,8 @@ PROCESSORS: Dict[str, ProcessorDef] = {
     ),
 }
 
+_ALL_STAGE_NAMES: List[str] = list(PROCESSORS.keys())
+
 
 # ---------------------------------------------------------------------------
 # Recipe loading

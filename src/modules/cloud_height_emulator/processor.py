@@ -62,7 +62,7 @@ class CloudHeightEmulatorProcessor(BaseProcessor):
                 )
 
             logger.info(f"Loading checkpoint from {model_path}")
-            state_dict = torch.load(model_path, map_location=self.device)
+            state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
             if any(k.startswith("model.") for k in state_dict.keys()):
                 import re
                 state_dict = {

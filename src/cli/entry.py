@@ -36,10 +36,12 @@ def _load_scene(scene_path: str, crop_window: Optional[str] = None) -> Sentinel2
         logger.info(f"Applying crop window: {crop_window}")
         try:
             col_off, row_off, width, height = map(int, crop_window.split(","))
-            scene.read(scene_path, crop_window=(col_off, row_off, width, height))
-        except Exception as e:
-            logger.error(f"Failed to parse crop window: {e}. Format: 'col_off,row_off,width,height'. Processing full scene.")
-            scene.read(scene_path)
+        except (ValueError, TypeError) as e:
+            raise typer.BadParameter(
+                f"Invalid crop window '{crop_window}': {e}. "
+                f"Expected format: 'col_off,row_off,width,height' (4 integers)."
+            )
+        scene.read(scene_path, crop_window=(col_off, row_off, width, height))
     else:
         scene.read(scene_path)
     return scene

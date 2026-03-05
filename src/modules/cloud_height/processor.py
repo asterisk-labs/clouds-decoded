@@ -67,7 +67,8 @@ class CloudHeightProcessor(BaseProcessor):
                   # ColumnExtractor's interpolator handles this somewhat, but resolution mismatch might be weird.
                   # Assuming 10m based mask for now.
 
-        with tempfile.TemporaryDirectory(dir="/dev/shm") as temp_dir:
+        shm_dir = self.config.temp_dir or "/dev/shm"
+        with tempfile.TemporaryDirectory(dir=shm_dir) as temp_dir:
             logger.info("Using temporary directory: %s", temp_dir)
 
             
@@ -90,32 +91,38 @@ class CloudHeightProcessor(BaseProcessor):
             # Worker and Queue logic
             result_queue = multiprocessing.Queue()
             workers = []
-            for _ in range(self.config.n_workers):
-                p = multiprocessing.Process(target=self._worker_job, args=(column_iterator.queue, result_queue))
-                workers.append(p)
-                p.start()
+            try:
+                for _ in range(self.config.n_workers):
+                    p = multiprocessing.Process(target=self._worker_job, args=(column_iterator.queue, result_queue))
+                    workers.append(p)
+                    p.start()
 
-            total_columns = len(column_iterator)
-            with tqdm(total=total_columns, desc="Processing Columns") as pbar:
-                for _ in range(total_columns):
-                    result = result_queue.get()
-                    if 'error' in result:
-                        logger.error(result['error'])
-                    else:
-                        retrievals = result.get('retrievals')
-                        if retrievals and len(retrievals) > 0:
-                            num = len(retrievals)
-                            if count + num > max_points:
-                                logger.warning("Exceeded buffer space")
-                            else:
-                                heights_buffer[count:count+num] = retrievals
-                                coords_buffer[count:count+num] = result.get('coords')
-                                count += num
-                                
-                    pbar.update(1)
+                total_columns = len(column_iterator)
+                with tqdm(total=total_columns, desc="Processing Columns") as pbar:
+                    for _ in range(total_columns):
+                        result = result_queue.get()
+                        if 'error' in result:
+                            logger.error(result['error'])
+                        else:
+                            retrievals = result.get('retrievals')
+                            if retrievals and len(retrievals) > 0:
+                                num = len(retrievals)
+                                if count + num > max_points:
+                                    logger.warning("Exceeded buffer space")
+                                else:
+                                    heights_buffer[count:count+num] = retrievals
+                                    coords_buffer[count:count+num] = result.get('coords')
+                                    count += num
 
-            for p in workers:
-                p.join()
+                        pbar.update(1)
+            finally:
+                column_iterator.close()
+                for p in workers:
+                    p.join(timeout=10)
+                for p in workers:
+                    if p.is_alive():
+                        logger.warning("Terminating unresponsive worker %s", p.pid)
+                        p.terminate()
                 
             if count == 0:
                  logger.warning("No valid points retrieved. Process aborting.")
@@ -124,7 +131,8 @@ class CloudHeightProcessor(BaseProcessor):
                  ref_shape = scene.bands[ref_band].shape
                  actual_res = abs(scene.transform.a)
                  ref_res = BAND_RESOLUTIONS[ref_band]
-                 geo_pixel_size = self.config.stride * actual_res / ref_res
+                 out_stride = self.config.grid_resolution or self.config.stride
+                 geo_pixel_size = out_stride * actual_res / ref_res
                  t = Affine(geo_pixel_size, 0, scene.transform.c, 0, -geo_pixel_size, scene.transform.f)
                  return CloudHeightGridData(data=None, transform=t, crs=scene.crs)
 
@@ -150,7 +158,8 @@ class CloudHeightProcessor(BaseProcessor):
         ref_band = self.config.reference_band
         actual_res = abs(scene.transform.a)
         ref_res = BAND_RESOLUTIONS[ref_band]
-        geo_pixel_size = self.config.stride * actual_res / ref_res
+        out_stride = self.config.grid_resolution or self.config.stride
+        geo_pixel_size = out_stride * actual_res / ref_res
         transform = Affine(geo_pixel_size, 0, scene.transform.c, 0, -geo_pixel_size, scene.transform.f)
         crs = scene.crs
         
@@ -288,7 +297,7 @@ class CloudHeightProcessor(BaseProcessor):
         retrievalcube = RetrievalCube(heights, coords, self.config)
         retrievalcube.createRtree()
 
-        grid_stride = self.config.stride
+        grid_stride = self.config.grid_resolution or self.config.stride
         smoothing_sigma = self.config.spatial_smoothing_sigma
 
         # Use actual scene dimensions

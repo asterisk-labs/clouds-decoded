@@ -1,7 +1,6 @@
 """Configuration for albedo estimation."""
-from pathlib import Path
 from typing import Dict, Literal, Optional
-from pydantic import Field
+from pydantic import Field, model_validator
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import DEFAULT_SURFACE_ALBEDO
 
@@ -95,10 +94,11 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
                     "neighbours more smoothly."
     )
 
-    # Data-driven model paths
-    model_path: str = Field(
-        default=str(Path(__file__).parent / "datadriven" / "models" / "albedo_model.pth"),
-        description="Path to trained unconditional albedo model checkpoint"
+    # Data-driven model path (resolved via managed assets when None)
+    model_path: Optional[str] = Field(
+        default=None,
+        description="Path to trained unconditional albedo model checkpoint. "
+                    "When None, resolved from the managed assets directory."
     )
     # Constant fallback
     default_albedo: Dict[str, float] = Field(
@@ -106,3 +106,12 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
         description="Default albedo per band when estimation fails [0-1]. "
                     "Bands not listed fall back to 0.05."
     )
+
+    @model_validator(mode="after")
+    def _resolve_model_path(self) -> "AlbedoEstimatorConfig":
+        if self.model_path is None:
+            from clouds_decoded.assets import get_asset
+            self.model_path = str(
+                get_asset("models/albedo_datadriven/default.pth")
+            )
+        return self

@@ -1,8 +1,7 @@
 """Configuration for the data-driven albedo estimation model."""
-from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 from clouds_decoded.constants import BANDS
 
@@ -68,9 +67,10 @@ class AlbedoModelConfig(BaseModel):
     num_workers: int = Field(default=4, ge=0)
 
     # --- Paths ---
-    model_path: str = Field(
-        default=str(Path(__file__).parent / "models" / "albedo_model.pth"),
-        description="Path to save/load the model checkpoint",
+    model_path: Optional[str] = Field(
+        default=None,
+        description="Path to save/load the model checkpoint. "
+                    "When None, resolved from the managed assets directory.",
     )
     plot_dir: str = Field(
         default="plots/albedo",
@@ -92,3 +92,12 @@ class AlbedoModelConfig(BaseModel):
     @property
     def input_feature_names(self) -> List[str]:
         return list(INPUT_FEATURE_NAMES)
+
+    @model_validator(mode="after")
+    def _resolve_model_path(self) -> "AlbedoModelConfig":
+        if self.model_path is None:
+            from clouds_decoded.assets import get_asset
+            self.model_path = str(
+                get_asset("models/albedo_datadriven/default.pth")
+            )
+        return self
