@@ -57,12 +57,12 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
                     "Sample targets are the mean reflectance over this "
                     "window, suppressing pixel noise. 0 = single-pixel."
     )
-    dilation_pixels: int = Field(
-        default=20,
+    idw_cloud_mask_dilation_m: float = Field(
+        default=100.0,
         ge=0,
-        le=50,
-        description="Cloud mask dilation buffer in pixels (at B02 resolution). "
-                    "Samples within this distance of a cloud edge are excluded."
+        description="Cloud mask dilation distance in metres. Clear pixels "
+                    "within this distance of a cloud edge are excluded from "
+                    "IDW sampling to avoid adjacency contamination."
     )
 
     # IDW parameters

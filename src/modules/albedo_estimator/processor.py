@@ -133,11 +133,12 @@ class AlbedoEstimator(BaseProcessor):
         # 3. Farthest-point sample clear locations
         window_px_ref = max(1, int(self.config.window_m / scene_res))
         edge_margin = window_px_ref // 2
+        dilation_px = max(0, int(self.config.idw_cloud_mask_dilation_m / scene_res))
 
         rows, cols = farthest_point_sample(
             clear_mask, n_samples=self.config.max_samples,
             seed=42, edge_margin=edge_margin,
-            cloud_dilation_px=self.config.dilation_pixels,
+            cloud_dilation_px=dilation_px,
         )
         n_train = len(rows)
         if n_train < 10:
