@@ -127,6 +127,7 @@ def test_emulator_input_output_shapes(mock_unet, mock_scene, mock_weights_file):
     """Verify that output grid matches input scene dimensions."""
     config = CloudHeightEmulatorConfig(
         window_size=(64, 64), overlap=16, device="cpu", working_resolution=10,
+        output_resolution=None,
     )
     processor = CloudHeightEmulatorProcessor(config)
 

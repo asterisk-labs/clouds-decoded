@@ -56,6 +56,11 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         ge=10,
         description="Resolution in metres at which inference is performed.",
     )
+    output_resolution: Optional[int] = Field(
+        default=60,
+        ge=10,
+        description="Output resolution in metres. Defaults to 60m for cloud height.",
+    )
 
     @model_validator(mode='after')
     def _resolve_model_path(self) -> CloudHeightEmulatorConfig:

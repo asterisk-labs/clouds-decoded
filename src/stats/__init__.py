@@ -51,7 +51,14 @@ class StatsCaller:
         manifest: The scene manifest whose step outputs will be loaded.
     """
 
+    _warned = False
+
     def __init__(self, manifest: "SceneManifest") -> None:
+        if not StatsCaller._warned:
+            logger.warning(
+                "Stats module is a work in progress — outputs may change in future releases."
+            )
+            StatsCaller._warned = True
         self._manifest = manifest
         self._cache: Dict[str, Optional[Any]] = {}
 

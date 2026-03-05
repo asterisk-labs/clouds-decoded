@@ -92,10 +92,10 @@ class TestGenericMean:
         caller = _make_caller(tmp_path, "albedo", str(tif))
 
         result = mean(caller, "albedo")
-        assert "B02__mean" in result
-        assert "B03__mean" in result
-        assert abs(result["B02__mean"] - 0.2) < 1e-4
-        assert abs(result["B03__mean"] - 0.4) < 1e-4
+        assert "b02__mean" in result
+        assert "b03__mean" in result
+        assert abs(result["b02__mean"] - 0.2) < 1e-4
+        assert abs(result["b03__mean"] - 0.4) < 1e-4
 
     def test_returns_empty_on_missing_file(self, tmp_path):
         """mean() returns {} when the output file does not exist."""

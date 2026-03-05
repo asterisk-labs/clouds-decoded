@@ -1,4 +1,15 @@
 """Visualisation tools for clouds-decoded outputs."""
+import logging as _logging
+import warnings as _warnings
+
+_warnings.warn(
+    "clouds_decoded.visualisation is a work in progress — API and outputs may change in future releases.",
+    stacklevel=2,
+)
+_logging.getLogger(__name__).warning(
+    "Visualisation module is a work in progress — API and outputs may change in future releases."
+)
+
 from .layers import Layer, RenderConfig, RGBConfig
 from .loader import load_scene_layers
 from .static import plot_layer, plot_overview, save_figure

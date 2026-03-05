@@ -10,9 +10,12 @@ if TYPE_CHECKING:
 
 
 def _band_name(band_names: Optional[list], i: int, n_bands: int) -> Optional[str]:
-    """Return the display name for band index *i*, or None for unnamed single-band data."""
+    """Return the display name for band index *i*, or None for unnamed single-band data.
+
+    Names are lowercased to satisfy DuckDB column name constraints.
+    """
     if band_names and i < len(band_names):
-        return band_names[i]
+        return band_names[i].lower()
     return f"b{i:02d}" if n_bands > 1 else None
 
 
