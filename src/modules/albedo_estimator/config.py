@@ -8,28 +8,24 @@ from clouds_decoded.constants import DEFAULT_SURFACE_ALBEDO
 class AlbedoEstimatorConfig(BaseProcessorConfig):
     """Configuration for surface albedo estimation.
 
-    Supports three methods:
-    - 'gp': Fits a Gaussian Process to clear-sky pixels (requires cloud mask).
-      Reverts to the mean albedo far from observed clear pixels, avoiding the
-      divergence issues of polynomial extrapolation.
+    Supports two methods:
     - 'idw': Inverse-distance weighting with farthest-point sampling
-      (requires cloud mask). Much faster than GP while producing smooth
-      spatial interpolation.
+      (requires cloud mask). Produces smooth spatial interpolation.
     - 'datadriven': Predicts albedo using a trained MLP from physical conditions.
     """
 
-    method: Literal["gp", "idw", "datadriven"] = Field(
+    method: Literal["idw", "datadriven"] = Field(
         default="idw",
-        description="Estimation method: 'gp' (Gaussian Process), "
-                    "'idw' (inverse-distance weighting), or 'datadriven' (trained MLP)"
+        description="Estimation method: 'idw' (inverse-distance weighting) "
+                    "or 'datadriven' (trained MLP)"
     )
     fallback: Literal["datadriven", "constant"] = Field(
         default="datadriven",
-        description="Fallback when GP conditions aren't met: 'datadriven' (MLP) "
+        description="Fallback when insufficient clear pixels: 'datadriven' (MLP) "
                     "or 'constant' (per-band defaults)"
     )
 
-    # GP fitting parameters
+    # Clear-sky sampling parameters
     min_clear_fraction: float = Field(
         default=0.05,
         ge=0.0,
@@ -51,25 +47,17 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
     max_samples: int = Field(
         default=1000,
         ge=10,
-        description="Max clear-sky pixels to use for GP training. "
-                    "GP is O(n³) so keep this low (100–500). Samples are drawn "
-                    "randomly from clear pixels after dilation and edge-margin filtering."
+        description="Max clear-sky pixels to use for fitting. Samples are drawn "
+                    "using farthest-point sampling after dilation and edge-margin filtering."
     )
-    gp_length_scale: Optional[float] = Field(
-        default=None,
-        ge=0.01,
-        le=10.0,
-        description="GP RBF length scale in normalised [0,1] coords. "
-                    "None = auto-select via marginal likelihood."
-    )
-    gp_window_m: float = Field(
+    window_m: float = Field(
         default=180.0,
         ge=0,
         description="Side length of spatial averaging window in metres. "
-                    "GP training targets are the mean reflectance over this "
+                    "Sample targets are the mean reflectance over this "
                     "window, suppressing pixel noise. 0 = single-pixel."
     )
-    gp_dilation_pixels: int = Field(
+    dilation_pixels: int = Field(
         default=20,
         ge=0,
         le=50,

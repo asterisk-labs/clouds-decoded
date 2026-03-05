@@ -379,10 +379,10 @@ def refocus(
 def albedo(
     scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
     output_path: str = typer.Option("albedo_output.tif", help="Output path"),
-    mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file (.tif). Enables GP fitting."),
+    mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file (.tif). Enables IDW fitting."),
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
-    method: str = typer.Option("gp", help="Method: 'gp' (Gaussian Process, default), 'idw' (inverse-distance weighting), or 'datadriven' (trained MLP). gp/idw require --mask-path."),
-    fallback: str = typer.Option("datadriven", help="Fallback when GP conditions not met: 'datadriven' or 'constant'"),
+    method: str = typer.Option("idw", help="Method: 'idw' (inverse-distance weighting, default) or 'datadriven' (trained MLP). idw requires --mask-path."),
+    fallback: str = typer.Option("datadriven", help="Fallback when insufficient clear pixels: 'datadriven' or 'constant'"),
     model_path: Optional[str] = typer.Option(None, help="Path to trained data-driven albedo model checkpoint"),
     output_resolution: int = typer.Option(300, help="Output resolution in meters/pixel"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
@@ -390,9 +390,8 @@ def albedo(
     """
     Estimate surface albedo from Sentinel-2 data.
 
-    Fits a Gaussian Process to clear-sky pixels (when a cloud mask is provided),
-    or uses a trained MLP for data-driven estimation. The GP reverts to the mean
-    albedo far from observed clear pixels, avoiding extrapolation artefacts.
+    Uses inverse-distance weighted interpolation of clear-sky pixels (when a
+    cloud mask is provided), or a trained MLP for data-driven estimation.
     """
     from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
     scene = _load_scene(scene_path, crop_window)
@@ -476,7 +475,7 @@ def full_workflow(
         cloud_height_config = CloudHeightEmulatorConfig(**height_cfg_dict)
     else:
         cloud_height_config = CloudHeightConfig(**height_cfg_dict)
-    albedo_method = albedo_cfg_dict.pop("method", "gp")
+    albedo_method = albedo_cfg_dict.pop("method", "idw")
     albedo_config = AlbedoEstimatorConfig(method=albedo_method, **albedo_cfg_dict)
     refocus_config = RefocusConfig(**refocus_cfg_dict)
 
@@ -502,7 +501,7 @@ def full_workflow(
         cloud_mask=mask_result,
     )
 
-    # Step 3: Albedo (uses cloud mask for clear-sky GP fit)
+    # Step 3: Albedo (uses cloud mask for clear-sky IDW interpolation)
     logger.info("Step 3: Albedo Estimation")
     albedo_result = run_albedo(
         scene, albedo_config,

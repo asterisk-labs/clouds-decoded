@@ -413,9 +413,8 @@ class PointCloudData(Data):
 class AlbedoMetadata(Metadata):
     """Metadata for albedo estimation outputs."""
     band_names: List[str] = Field(default_factory=list)
-    method: str = Field(default="gp", description="Estimation method used (gp, datadriven, constant)")
-    length_scale: Optional[float] = Field(default=None, description="GP RBF length scale (normalised coords)")
-    n_training_samples: int = Field(default=0, description="Number of clear-sky samples used for GP training")
+    method: str = Field(default="idw", description="Estimation method used (idw, datadriven, constant)")
+    n_training_samples: int = Field(default=0, description="Number of clear-sky samples used for fitting")
     clear_fraction: float = Field(default=0.0, description="Fraction of scene that was clear sky")
     fallback_used: bool = Field(default=False, description="True if insufficient clear pixels triggered fallback")
     fallback_values: Dict[str, float] = Field(

@@ -7,7 +7,7 @@ def pytest_addoption(parser):
         "--run-slow",
         action="store_true",
         default=False,
-        help="Include slow tests (e.g. GP albedo on real scenes).",
+        help="Include slow tests (e.g. albedo on real scenes).",
     )
 
 

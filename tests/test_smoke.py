@@ -113,7 +113,7 @@ def test_albedo_estimator(dummy_scene):
     assert result.metadata.fallback_used is True
     assert result.metadata.method == "constant"
 
-    # Test 2: GP fit with cloud mask
+    # Test 2: IDW fit with cloud mask
     from clouds_decoded.data import CloudMaskData, CloudMaskMetadata
     # Create a mask where top half is clear (0), bottom half is cloud (1)
     mask_arr = np.zeros((100, 100), dtype=np.uint8)
@@ -125,18 +125,18 @@ def test_albedo_estimator(dummy_scene):
         metadata=CloudMaskMetadata(categorical=True, classes={0: 'Clear', 1: 'Cloud'}),
     )
 
-    gp_config = AlbedoEstimatorConfig(method="gp")
-    gp_estimator = AlbedoEstimator(gp_config)
-    gp_result = gp_estimator.process(dummy_scene, cloud_mask=cloud_mask)
+    idw_config = AlbedoEstimatorConfig(method="idw")
+    idw_estimator = AlbedoEstimator(idw_config)
+    idw_result = idw_estimator.process(dummy_scene, cloud_mask=cloud_mask)
 
-    assert gp_result.data.ndim == 3
-    assert gp_result.data.shape[0] == len(dummy_scene.bands)
-    assert gp_result.metadata.method == "gp"
-    assert gp_result.metadata.fallback_used is False
-    assert gp_result.metadata.clear_fraction > 0
+    assert idw_result.data.ndim == 3
+    assert idw_result.data.shape[0] == len(dummy_scene.bands)
+    assert idw_result.metadata.method == "idw"
+    assert idw_result.metadata.fallback_used is False
+    assert idw_result.metadata.clear_fraction > 0
 
     print(f"✓ AlbedoEstimator: constant shape {result.data.shape}, "
-          f"GP shape {gp_result.data.shape}, "
+          f"IDW shape {idw_result.data.shape}, "
           f"bands {len(result.metadata.band_names)}")
 
 

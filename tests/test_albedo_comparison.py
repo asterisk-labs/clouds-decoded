@@ -1,6 +1,6 @@
 """Comparison tests for albedo estimation methods.
 
-Tests GP and unconditional MLP on the same scene and verifies they both
+Tests IDW and unconditional MLP on the same scene and verifies they both
 produce valid AlbedoData outputs with correct shapes.
 
 Uses the sample Sentinel-2 scene when available; skips gracefully otherwise.
@@ -125,23 +125,23 @@ def _validate_albedo_result(
 class TestAlbedoSmoke:
     """Fast smoke tests on synthetic data."""
 
-    def test_gp_with_mask(self):
-        """GP method runs on dummy scene with cloud mask."""
+    def test_idw_with_mask(self):
+        """IDW method runs on dummy scene with cloud mask."""
         scene = _create_dummy_scene()
         cloud_mask = _create_cloud_mask(scene)
 
-        config = AlbedoEstimatorConfig(method="gp", fallback="constant")
+        config = AlbedoEstimatorConfig(method="idw", fallback="constant")
         estimator = AlbedoEstimator(config)
         result = estimator.process(scene, cloud_mask=cloud_mask)
 
-        _validate_albedo_result(result, expected_method="gp")
+        _validate_albedo_result(result, expected_method="idw")
         assert result.metadata.clear_fraction > 0
 
-    def test_gp_no_mask_falls_back(self):
-        """GP without mask falls back to constant."""
+    def test_idw_no_mask_falls_back(self):
+        """IDW without mask falls back to constant."""
         scene = _create_dummy_scene()
 
-        config = AlbedoEstimatorConfig(method="gp", fallback="constant")
+        config = AlbedoEstimatorConfig(method="idw", fallback="constant")
         estimator = AlbedoEstimator(config)
         result = estimator.process(scene, cloud_mask=None)
 
@@ -173,7 +173,7 @@ NEED_REAL = not (HAS_SAMPLE_SCENE and HAS_UNCONDITIONAL)
 @pytest.mark.slow
 @pytest.mark.skipif(NEED_REAL, reason="Sample scene or model checkpoints not available")
 class TestAlbedoComparison:
-    """Compare GP and data-driven methods on the same real Sentinel-2 scene."""
+    """Compare IDW and data-driven methods on the same real Sentinel-2 scene."""
 
     @pytest.fixture(scope="class")
     def scene(self):
@@ -195,17 +195,17 @@ class TestAlbedoComparison:
         processor = ThresholdCloudMaskProcessor(config)
         return processor.process(scene)
 
-    def test_gp(self, scene, cloud_mask):
-        """GP estimation on real scene."""
+    def test_idw(self, scene, cloud_mask):
+        """IDW estimation on real scene."""
         config = AlbedoEstimatorConfig(
-            method="gp", fallback="constant", output_resolution=300,
+            method="idw", fallback="constant", output_resolution=300,
         )
         estimator = AlbedoEstimator(config)
         result = estimator.process(scene, cloud_mask=cloud_mask)
 
-        _validate_albedo_result(result, expected_method="gp")
+        _validate_albedo_result(result, expected_method="idw")
         logger.info(
-            f"GP: clear={result.metadata.clear_fraction:.1%}, "
+            f"IDW: clear={result.metadata.clear_fraction:.1%}, "
             f"samples={result.metadata.n_training_samples}, "
             f"shape={result.data.shape}"
         )
@@ -224,7 +224,7 @@ class TestAlbedoComparison:
     def test_shapes_match(self, scene, cloud_mask):
         """Both methods produce the same output grid shape."""
         results = {}
-        for method in ("gp", "datadriven"):
+        for method in ("idw", "datadriven"):
             config = AlbedoEstimatorConfig(
                 method=method, fallback="constant", output_resolution=300,
             )
@@ -234,10 +234,10 @@ class TestAlbedoComparison:
         shapes = {m: r.data.shape for m, r in results.items()}
         logger.info(f"Output shapes: {shapes}")
 
-        ref_shape = results["gp"].data.shape
+        ref_shape = results["idw"].data.shape
         for method, result in results.items():
             assert result.data.shape == ref_shape, (
-                f"{method} shape {result.data.shape} != GP shape {ref_shape}"
+                f"{method} shape {result.data.shape} != IDW shape {ref_shape}"
             )
 
     def test_clear_pixel_agreement(self, scene, cloud_mask):
@@ -246,7 +246,7 @@ class TestAlbedoComparison:
             m: AlbedoEstimatorConfig(
                 method=m, fallback="constant", output_resolution=300,
             )
-            for m in ("gp", "datadriven")
+            for m in ("idw", "datadriven")
         }
         results = {}
         for method, config in configs.items():

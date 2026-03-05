@@ -46,12 +46,12 @@ class TestToYaml:
         """AlbedoEstimatorConfig survives YAML roundtrip."""
         from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
 
-        original = AlbedoEstimatorConfig(method="gp", output_resolution=500)
+        original = AlbedoEstimatorConfig(method="idw", output_resolution=500)
         yaml_path = tmp_path / "albedo.yaml"
         original.to_yaml(str(yaml_path))
 
         loaded = AlbedoEstimatorConfig.from_yaml(str(yaml_path))
-        assert loaded.method == "gp"
+        assert loaded.method == "idw"
         assert loaded.output_resolution == 500
 
     def test_roundtrip_refl2prop(self, tmp_path):

@@ -1,6 +1,6 @@
 """Shared spatial-sampling utilities for albedo estimation.
 
-Used by the GP fitter (smooth training targets) and the data-driven
+Used by the IDW fitter (smooth training targets) and the data-driven
 training sampler (extract windowed reflectance).
 """
 import numpy as np
@@ -72,56 +72,6 @@ def windowed_clear_mean(
     with np.errstate(invalid="ignore", divide="ignore"):
         result = np.where(val_count > 0, val_sum / val_count, np.nan)
     return result.astype(np.float32)
-
-
-def sample_clear_locations(
-    clear_mask: np.ndarray,
-    n_samples: int,
-    seed: int = 42,
-    edge_margin: int = 0,
-    cloud_dilation_px: int = 0,
-) -> tuple:
-    """Randomly sample clear-sky pixel locations.
-
-    Args:
-        clear_mask: 2-D boolean array (H, W).
-        n_samples: Maximum number of locations to return.
-        seed: RNG seed for reproducibility.
-        edge_margin: Exclude this many pixels from each image edge
-            (useful when a spatial window will be applied later).
-        cloud_dilation_px: Dilate cloud regions by this many pixels
-            before sampling, so samples are kept away from cloud edges
-            where adjacency effects contaminate reflectance.
-
-    Returns:
-        ``(rows, cols)`` integer arrays of sampled coordinates.
-    """
-    mask = clear_mask.copy()
-
-    if cloud_dilation_px > 0:
-        cloud = ~clear_mask
-        dilated = maximum_filter(
-            cloud.view(np.uint8), size=2 * cloud_dilation_px + 1,
-        ).astype(bool)
-        mask &= ~dilated
-
-    if edge_margin > 0:
-        mask[:edge_margin, :] = False
-        mask[-edge_margin:, :] = False
-        mask[:, :edge_margin] = False
-        mask[:, -edge_margin:] = False
-
-    rows, cols = np.where(mask)
-    n_available = len(rows)
-    if n_available == 0:
-        return rows, cols
-
-    if n_available > n_samples:
-        rng = np.random.default_rng(seed)
-        idx = rng.choice(n_available, n_samples, replace=False)
-        rows, cols = rows[idx], cols[idx]
-
-    return rows, cols
 
 
 def farthest_point_sample(

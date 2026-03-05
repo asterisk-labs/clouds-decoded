@@ -8,7 +8,7 @@
   - [x] Improved manifest.json: hashing of IO files, crop-window tracking and support, intelligently assigning steps as "outdated" when a processor upstream of it is changed. More integrity checks between project.yaml and manifests, e.g. git repo commit hashes / release version numbers to cross-check.
   - [ ] Improve clarity and accessibility of configs: explore nested configs to avoid long lists of independent sets of parameters (e.g. the height emulator's parameters all sitting next to the original height algorithm's parameters), project recipes for different sensible configurations. How do we inject n_workers for band parallel ops across all processors - current n_workers in configs are useless.
   - [ ] Add improved write options for data classes: e.g. netcdf, zarr
-  - [ ] Remove Gaussian Process albedo method (IDW seems better and much faster)
+  - [x] Remove Gaussian Process albedo method (IDW seems better and much faster)
   - [ ] (major bug) datadriven albedo currently has strong detector dependency, creating unwanted stripes
   - [x] more flexibility and independence for _output_ resolutions of processors via the .write function, e.g. cloud height emulation processed @ 20m/pixel and saved at 60 m/pixel. Strict distinction between "working_resolution" and "output_resolution" in configs?
   - [ ] Decouple stride from output_resolution in original cloud_height algorithm, shouuld be two separate parameters. 

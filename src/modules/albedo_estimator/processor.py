@@ -1,19 +1,15 @@
 """Albedo estimation processor.
 
-Estimates per-band surface albedo by fitting a Gaussian Process to clear-sky
-pixels identified by a cloud mask.  The GP uses an RBF kernel with a constant
-mean, so predictions in data-sparse regions revert smoothly to the mean albedo
-instead of diverging like polynomial extrapolation.
-
-Falls back to a data-driven MLP or constant values when insufficient clear
-pixels are available or no mask is provided.
+Estimates per-band surface albedo using inverse-distance weighting (IDW) on
+clear-sky pixels identified by a cloud mask.  Falls back to a data-driven MLP
+or constant values when insufficient clear pixels are available or no mask is
+provided.
 """
 import numpy as np
 import logging
 from typing import Optional, Dict, List, Tuple
 
 import rasterio as rio
-from scipy.linalg import cho_factor, cho_solve
 from scipy.spatial.distance import cdist
 from skimage.transform import resize
 
@@ -23,67 +19,17 @@ from clouds_decoded.data import (
 from clouds_decoded.constants import BAND_RESOLUTIONS
 from clouds_decoded.base_processor import BaseProcessor
 from .config import AlbedoEstimatorConfig
-from .sampling import (
-    clear_pixel_count,
-    farthest_point_sample,
-    sample_clear_locations,
-    windowed_clear_mean,
-)
+from .sampling import farthest_point_sample
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# GP helpers
-# ---------------------------------------------------------------------------
-
-_GP_LS_CANDIDATES = (0.05, 0.1, 0.2, 0.3, 0.5, 0.8)
-_GP_NOISE_NORMALISED = 0.01  # observation noise in unit-variance space
-
-
-def _rbf_kernel(X1: np.ndarray, X2: np.ndarray, length_scale: float) -> np.ndarray:
-    """Squared-exponential (RBF) kernel."""
-    return np.exp(-cdist(X1, X2, "sqeuclidean") / (2.0 * length_scale ** 2))
-
-
-def _gp_log_marginal_likelihood(
-    X: np.ndarray, y_norm: np.ndarray, length_scale: float, noise_var: float,
-) -> float:
-    """Log marginal likelihood of a zero-mean GP (y already centred & scaled)."""
-    K = _rbf_kernel(X, X, length_scale)
-    K[np.diag_indices_from(K)] += noise_var
-    try:
-        L, low = cho_factor(K, lower=True)
-    except np.linalg.LinAlgError:
-        return -np.inf
-    alpha = cho_solve((L, low), y_norm)
-    log_det = 2.0 * np.sum(np.log(np.diag(L)))
-    return -0.5 * float(y_norm @ alpha) - 0.5 * log_det
-
-
-def _select_length_scale(
-    X: np.ndarray, y_norm: np.ndarray, noise_var: float,
-) -> float:
-    """Pick the RBF length scale that maximises the marginal likelihood."""
-    best_lml = -np.inf
-    best_ls = _GP_LS_CANDIDATES[len(_GP_LS_CANDIDATES) // 2]
-    for ls in _GP_LS_CANDIDATES:
-        lml = _gp_log_marginal_likelihood(X, y_norm, ls, noise_var)
-        if lml > best_lml:
-            best_lml, best_ls = lml, ls
-    return best_ls
-
-
-# ---------------------------------------------------------------------------
-# Processor
-# ---------------------------------------------------------------------------
 
 class AlbedoEstimator(BaseProcessor):
     """Estimates surface albedo from Sentinel-2 scenes.
 
-    When a cloud mask is provided, fits a Gaussian Process to clear-sky pixels
-    per band, producing a spatially varying albedo field at a configurable
-    coarse resolution.  The GP naturally reverts to the mean albedo in regions
-    with few clear-sky observations, avoiding polynomial-extrapolation artefacts.
+    When a cloud mask is provided, uses inverse-distance weighted interpolation
+    of clear-sky pixels to produce a spatially varying albedo field at a
+    configurable coarse resolution.
     """
 
     def __init__(self, config: AlbedoEstimatorConfig):
@@ -105,8 +51,8 @@ class AlbedoEstimator(BaseProcessor):
 
         Args:
             scene: Sentinel-2 scene with loaded bands.
-            cloud_mask: Optional cloud mask. When provided and method is
-                'gp', clear-sky pixels are used for fitting.
+            cloud_mask: Optional cloud mask. When provided, clear-sky
+                pixels are used for IDW fitting.
 
         Returns:
             AlbedoData with shape (n_bands, H_out, W_out) at
@@ -115,7 +61,6 @@ class AlbedoEstimator(BaseProcessor):
         if self.config.method == "datadriven":
             result = self._fit_datadriven(scene)
         else:
-            # method == "gp" or "idw"
             band_names = sorted(scene.bands.keys())
             if not band_names:
                 raise ValueError("Scene has no loaded bands. Call scene.read() first.")
@@ -123,259 +68,18 @@ class AlbedoEstimator(BaseProcessor):
             out_h, out_w, output_transform = self._compute_output_grid(scene)
 
             if cloud_mask is not None:
-                if self.config.method == "idw":
-                    result = self._fit_idw(
-                        scene, cloud_mask, band_names, out_h, out_w, output_transform,
-                    )
-                else:
-                    result = self._fit_gp(
-                        scene, cloud_mask, band_names, out_h, out_w, output_transform,
-                    )
+                result = self._fit_idw(
+                    scene, cloud_mask, band_names, out_h, out_w, output_transform,
+                )
             else:
-                logger.warning(f"{self.config.method.upper()} method requested but "
-                             "no cloud mask provided. Running fallback.")
+                logger.warning("IDW method requested but no cloud mask provided. "
+                             "Running fallback.")
                 result = self._run_fallback(
                     scene, band_names, out_h, out_w, output_transform,
                 )
 
         self._apply_nodata_mask(scene, result)
         return result
-
-    # ------------------------------------------------------------------
-    # Gaussian-process fitting path
-    # ------------------------------------------------------------------
-
-    def _fit_gp(
-        self,
-        scene: Sentinel2Scene,
-        cloud_mask: CloudMaskData,
-        band_names: List[str],
-        out_h: int,
-        out_w: int,
-        output_transform: rio.transform.Affine,
-    ) -> AlbedoData:
-        """Fit a GP with RBF kernel to spatially-averaged clear-sky pixels.
-
-        Training targets are windowed means (``gp_window_m``) rather than
-        individual noisy pixels, giving the GP much cleaner observations.
-
-        Optimisations
-        -------------
-        * Each band is smoothed at its **native resolution** (10 / 20 / 60 m)
-          instead of being resized to the 10 m reference grid first.
-          The ``uniform_filter`` denominator (``val_count``) is cached per
-          resolution group, halving the smoothing cost per band.
-        * The Cholesky factorisation of K_train and the K_star prediction
-          matrix are computed **once** and reused for all bands (the GP
-          geometry is identical; only the target vector changes).
-        """
-        n_bands = len(band_names)
-        scene_res = abs(scene.transform.a)
-        ref_res = BAND_RESOLUTIONS.get("B02", 10)
-
-        # 1. Use B02 (or largest band) as reference — matches _compute_output_grid
-        if "B02" in scene.bands:
-            ref_band = scene.get_band("B02", reflectance=False)
-        else:
-            ref_band = max(scene.bands.values(), key=lambda b: b.size)
-        ref_h, ref_w = (ref_band.shape[1:] if ref_band.ndim == 3 else ref_band.shape)
-
-        clear_mask = self._extract_clear_mask(cloud_mask, ref_h, ref_w)
-
-        # Exclude nodata pixels (DN=0 at scene edges / detector gaps)
-        ref_2d = ref_band[0] if ref_band.ndim == 3 else ref_band
-        valid_data = (ref_2d != 0)
-        clear_mask &= valid_data
-
-        clear_fraction = clear_mask.sum() / clear_mask.size
-        logger.info(f"Clear-sky fraction: {clear_fraction:.1%}")
-
-        # 2. Check if we have enough clear pixels
-        if clear_fraction < self.config.min_clear_fraction:
-            logger.warning(f"Clear fraction {clear_fraction:.1%} < "
-                         f"threshold {self.config.min_clear_fraction:.0%}. "
-                         f"Running fallback.")
-            result = self._run_fallback(
-                scene, band_names, out_h, out_w, output_transform,
-            )
-            result.metadata.clear_fraction = clear_fraction
-            return result
-
-        # 3. Sample clear-sky locations (B02 reference coordinates)
-        window_px_ref = max(1, int(self.config.gp_window_m / scene_res))
-        edge_margin = window_px_ref // 2
-
-        rows, cols = sample_clear_locations(
-            clear_mask, n_samples=self.config.max_samples,
-            seed=42, edge_margin=edge_margin,
-            cloud_dilation_px=self.config.gp_dilation_pixels,
-        )
-        n_train = len(rows)
-        if n_train < 10:
-            logger.warning(f"Only {n_train} clear samples after edge margin. "
-                         "Running fallback.")
-            result = self._run_fallback(
-                scene, band_names, out_h, out_w, output_transform,
-            )
-            result.metadata.clear_fraction = clear_fraction
-            return result
-
-        X_train = np.column_stack([
-            cols.astype(np.float64) / max(ref_w - 1, 1),
-            rows.astype(np.float64) / max(ref_h - 1, 1),
-        ])
-
-        logger.info(f"GP training: {n_train} samples "
-                   f"(window={window_px_ref}px / {self.config.gp_window_m:.0f}m)")
-
-        # 4. Build output coordinate grid (normalised)
-        gy = np.linspace(0, 1, out_h)
-        gx = np.linspace(0, 1, out_w)
-        grid_x, grid_y = np.meshgrid(gx, gy)
-        X_pred = np.column_stack([grid_x.ravel(), grid_y.ravel()])
-
-        # 5. Extract smoothed training values for ALL bands at native
-        #    resolution.  The clear-pixel count (uniform_filter denominator)
-        #    is cached per resolution group via clear_pixel_count() so it is
-        #    computed only once per group.
-        _res_cache: Dict[int, tuple] = {}
-        band_values: Dict[str, np.ndarray] = {}
-
-        prefetched = {
-            name: self._get_band_2d(obj.data)
-            for name, obj in zip(
-                band_names,
-                scene.get_bands(band_names, reflectance=True, n_workers=len(band_names)),
-            )
-        }
-
-        for band_name in band_names:
-            band_data = prefetched[band_name]
-            band_res = BAND_RESOLUTIONS.get(band_name, ref_res)
-
-            if band_res not in _res_cache:
-                native_h, native_w = band_data.shape[:2]
-                window_px = max(1, int(self.config.gp_window_m / band_res))
-
-                if band_res == ref_res:
-                    s_rows, s_cols = rows, cols
-                    native_clear = clear_mask
-                else:
-                    scale = ref_res / band_res
-                    s_rows = np.clip(
-                        (rows * scale).astype(int), 0, native_h - 1,
-                    )
-                    s_cols = np.clip(
-                        (cols * scale).astype(int), 0, native_w - 1,
-                    )
-                    native_clear = resize(
-                        clear_mask.astype(np.float32), (native_h, native_w),
-                        order=0, preserve_range=True,
-                    ) > 0.5
-
-                # Exclude nodata at native resolution (DN=0)
-                native_clear = native_clear & (band_data != 0)
-
-                val_count = clear_pixel_count(native_clear, window_px)
-                _res_cache[band_res] = (
-                    s_rows, s_cols, val_count, native_clear, window_px,
-                )
-
-            s_rows, s_cols, val_count, native_clear, window_px = _res_cache[band_res]
-
-            smoothed = windowed_clear_mean(
-                band_data, native_clear, window_px,
-                precomputed_count=val_count,
-            )
-            band_values[band_name] = smoothed[s_rows, s_cols].astype(np.float64)
-
-        # 6. Find globally valid samples (finite in ALL bands)
-        all_valid = np.ones(n_train, dtype=bool)
-        for values in band_values.values():
-            all_valid &= np.isfinite(values)
-
-        n_valid = int(all_valid.sum())
-        if n_valid < 10:
-            logger.warning(f"Only {n_valid} globally valid samples. "
-                         "Running fallback.")
-            result = self._run_fallback(
-                scene, band_names, out_h, out_w, output_transform,
-            )
-            result.metadata.clear_fraction = clear_fraction
-            return result
-
-        X_train_valid = X_train[all_valid]
-
-        # 7. Select GP length scale from first band
-        first_vals = band_values[band_names[0]][all_valid]
-        if self.config.gp_length_scale is not None:
-            length_scale = self.config.gp_length_scale
-            logger.info(f"Using configured GP length scale: {length_scale:.3f}")
-        else:
-            std = float(first_vals.std())
-            if std > 1e-12:
-                pilot_norm = (first_vals - first_vals.mean()) / std
-                length_scale = _select_length_scale(
-                    X_train_valid, pilot_norm, _GP_NOISE_NORMALISED,
-                )
-            else:
-                length_scale = 0.3
-            logger.info(f"Auto-selected GP length scale: {length_scale:.3f}")
-
-        # 8. Pre-compute GP matrices ONCE for all bands
-        K_train = _rbf_kernel(X_train_valid, X_train_valid, length_scale)
-        K_train[np.diag_indices_from(K_train)] += _GP_NOISE_NORMALISED
-        try:
-            L, low = cho_factor(K_train, lower=True)
-        except np.linalg.LinAlgError:
-            logger.warning("GP Cholesky failed — running fallback")
-            result = self._run_fallback(
-                scene, band_names, out_h, out_w, output_transform,
-            )
-            result.metadata.clear_fraction = clear_fraction
-            return result
-
-        K_star = _rbf_kernel(X_pred, X_train_valid, length_scale)
-        logger.info(f"GP matrices pre-computed: K_train={n_valid}x{n_valid}, "
-                   f"K_star={len(X_pred)}x{n_valid}")
-
-        # 9. Predict per band (cheap: cho_solve + matmul only)
-        albedo_array = np.zeros((n_bands, out_h, out_w), dtype=np.float32)
-
-        for idx, band_name in enumerate(band_names):
-            values = band_values[band_name][all_valid]
-            mu = float(np.mean(values))
-            std = float(np.std(values))
-
-            if std < 1e-12:
-                albedo_array[idx] = mu
-                continue
-
-            y_norm = (values - mu) / std
-            alpha = cho_solve((L, low), y_norm)
-            pred_norm = K_star @ alpha
-            pred = (pred_norm * std + mu).astype(np.float32)
-            albedo_array[idx] = np.clip(pred, 0.0, None).reshape(out_h, out_w)
-
-        metadata = AlbedoMetadata(
-            band_names=band_names,
-            method="gp",
-            length_scale=length_scale,
-            n_training_samples=n_valid,
-            clear_fraction=clear_fraction,
-            fallback_used=False,
-        )
-
-        logger.info(f"GP albedo estimation complete for {n_bands} bands "
-                   f"(length_scale={length_scale:.3f}, "
-                   f"train={n_valid}, grid={out_h}x{out_w})")
-
-        return AlbedoData(
-            data=albedo_array,
-            transform=output_transform,
-            crs=scene.crs,
-            metadata=metadata,
-        )
 
     # ------------------------------------------------------------------
     # IDW fitting path
@@ -400,7 +104,7 @@ class AlbedoEstimator(BaseProcessor):
         scene_res = abs(scene.transform.a)
         ref_res = BAND_RESOLUTIONS.get("B02", 10)
 
-        # 1. Reference band and clear mask (same logic as GP)
+        # 1. Reference band and clear mask
         if "B02" in scene.bands:
             ref_band = scene.bands["B02"]
         else:
@@ -427,13 +131,13 @@ class AlbedoEstimator(BaseProcessor):
             return result
 
         # 3. Farthest-point sample clear locations
-        window_px_ref = max(1, int(self.config.gp_window_m / scene_res))
+        window_px_ref = max(1, int(self.config.window_m / scene_res))
         edge_margin = window_px_ref // 2
 
         rows, cols = farthest_point_sample(
             clear_mask, n_samples=self.config.max_samples,
             seed=42, edge_margin=edge_margin,
-            cloud_dilation_px=self.config.gp_dilation_pixels,
+            cloud_dilation_px=self.config.dilation_pixels,
         )
         n_train = len(rows)
         if n_train < 10:
@@ -446,7 +150,7 @@ class AlbedoEstimator(BaseProcessor):
             return result
 
         logger.info(f"IDW: {n_train} farthest-point samples "
-                   f"(window={window_px_ref}px / {self.config.gp_window_m:.0f}m)")
+                   f"(window={window_px_ref}px / {self.config.window_m:.0f}m)")
 
         # 4. Compute windowed-mean band values at sample locations only.
         #    Instead of running uniform_filter over the full image, we
@@ -476,7 +180,7 @@ class AlbedoEstimator(BaseProcessor):
             actual_res = band_res if (native_h, native_w) != (ref_h, ref_w) else ref_res
 
             if actual_res not in _res_cache:
-                half_w = max(1, int(self.config.gp_window_m / actual_res)) // 2
+                half_w = max(1, int(self.config.window_m / actual_res)) // 2
 
                 if actual_res == ref_res:
                     s_rows, s_cols = rows, cols

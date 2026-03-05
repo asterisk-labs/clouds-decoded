@@ -5,7 +5,7 @@ output pixel the model receives engineered physical features (sun/view
 geometry, wind, bathymetry, location, time) and returns TOA reflectance
 estimates for all 13 Sentinel-2 bands.
 
-Produces an ``AlbedoData`` object identical to the GP estimator so
+Produces an ``AlbedoData`` object identical to the IDW estimator so
 it is a drop-in replacement in the processing chain.
 """
 import logging
