@@ -11,15 +11,15 @@ class CloudPropertiesMetadata(Metadata):
     """
     description: str = "Cloud Properties Inversion Results"
     band_names: List[str] = Field(
-        default=["tau", "ice_liq_ratio", "r_eff_liq", "r_eff_ice"],
+        default=["tau", "ice_liq_ratio", "r_eff_liq", "r_eff_ice", "uncertainty"],
         description="Names of the bands in the data array"
     )
 
 class CloudPropertiesData(GeoRasterData):
-    """4-band cloud property raster from reflectance-to-property inversion.
+    """5-band cloud property raster from reflectance-to-property inversion.
 
     Bands (in order): optical thickness (tau), ice-liquid ratio,
-    liquid effective radius, and ice effective radius.  NaN indicates
-    pixels where inversion was not performed (e.g. clear sky).
+    liquid effective radius, ice effective radius, and uncertainty.
+    NaN indicates pixels where inversion was not performed (e.g. clear sky).
     """
     metadata: CloudPropertiesMetadata = Field(default_factory=CloudPropertiesMetadata)

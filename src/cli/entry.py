@@ -820,6 +820,111 @@ def project_stats(
         raise typer.Exit(1)
 
 
+@project_app.command("delete")
+def project_delete(
+    project_dir: str = typer.Argument(..., help="Path to project directory"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+):
+    """Delete a project and all its outputs, logs, and database.
+
+    Shows a summary of directories that will be removed and asks for
+    confirmation before deleting anything.
+
+    \b
+        clouds-decoded project delete ./my_analysis
+        clouds-decoded project delete ./my_analysis --yes
+    """
+    import shutil
+    from pathlib import Path
+    from clouds_decoded.project import Project
+
+    project_path = Path(project_dir).resolve()
+    config_path = project_path / "project.yaml"
+    if not config_path.exists():
+        logger.error(f"No project found at {project_path} (missing project.yaml)")
+        raise typer.Exit(1)
+
+    try:
+        project = Project.load(str(project_path))
+    except Exception as e:
+        logger.error(f"Failed to load project: {e}")
+        raise typer.Exit(1)
+
+    # Collect directories to delete.  The output_dir may live outside the
+    # project directory (absolute path in config), so track it separately.
+    dirs_to_delete: list[tuple[str, Path]] = []
+    output_dir = project.output_dir
+    logs_dir = project.logs_dir
+
+    # Count scenes and outputs for the summary
+    n_scenes = 0
+    n_outputs = 0
+    try:
+        runs = project.db.get_all()
+        n_scenes = len(runs)
+    except Exception:
+        pass
+
+    if output_dir.exists():
+        n_outputs = sum(1 for _ in output_dir.rglob("*.tif"))
+
+    # If output_dir is outside the project tree, list it separately
+    output_is_external = False
+    try:
+        output_dir.relative_to(project_path)
+    except ValueError:
+        output_is_external = True
+
+    if output_is_external and output_dir.exists():
+        dirs_to_delete.append(("Outputs (external)", output_dir))
+
+    dirs_to_delete.append(("Project", project_path))
+
+    # Print summary
+    typer.echo(f"\nProject: {project.config.name}")
+    typer.echo(f"  Scenes registered:  {n_scenes}")
+    typer.echo(f"  Output files (.tif): {n_outputs}")
+    typer.echo(f"\nDirectories to delete:")
+    for label, path in dirs_to_delete:
+        size = _dir_size_human(path)
+        typer.echo(f"  {label}: {path}  ({size})")
+
+    typer.echo("")
+
+    if not yes:
+        confirm = typer.confirm("Are you sure you want to delete this project?")
+        if not confirm:
+            typer.echo("Aborted.")
+            raise typer.Exit(0)
+
+    # Close the database connection before deleting
+    try:
+        project.db._db.close()
+    except Exception:
+        pass
+
+    for label, path in dirs_to_delete:
+        shutil.rmtree(path)
+        typer.echo(f"  Deleted {path}")
+
+    typer.echo("Done.")
+
+
+def _dir_size_human(path: "Path") -> str:
+    """Return the total size of a directory in a human-readable string."""
+    total = 0
+    try:
+        for f in path.rglob("*"):
+            if f.is_file():
+                total += f.stat().st_size
+    except OSError:
+        return "unknown size"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if total < 1024:
+            return f"{total:.1f} {unit}"
+        total /= 1024
+    return f"{total:.1f} PB"
+
 
 @app.command()
 def view(
@@ -837,7 +942,13 @@ def view(
     Port-forward for remote servers:
         ssh -L 8080:localhost:8080 user@server
     """
-    from clouds_decoded.visualisation.viser_viewer import ViserViewer
+    import warnings
+    warnings.warn(
+        "The 3D viser viewer is deprecated. Use 'clouds-decoded serve' for the 2D viewer.",
+        DeprecationWarning,
+        stacklevel=1,
+    )
+    from clouds_decoded.visualisation._deprecated.viser_viewer import ViserViewer
 
     try:
         viewer = ViserViewer(
@@ -856,66 +967,64 @@ def view(
 @app.command()
 def serve(
     project_dir: str = typer.Argument(..., help="Path to a clouds-decoded project directory"),
-    scene_id: Optional[str] = typer.Option(None, "--scene-id", help="Scene ID to serve (default: first scene with outputs)"),
     port: int = typer.Option(5006, help="Port to serve on"),
     show: bool = typer.Option(False, help="Open browser automatically (disable for remote)"),
 ):
-    """Launch a web-based viewer for a processed scene (Panel + Bokeh).
+    """Launch an interactive 2D viewer for a project (Panel + Bokeh).
 
-    Reads scenes from the project database. Use --scene-id to select a
-    specific scene when a project has multiple scenes.
+    Provides scene navigation, layer selection, overlay compositing, and
+    RGB contrast controls in the browser.
 
     Ideal for remote servers — port-forward with:
         ssh -L 5006:localhost:5006 user@server
 
     Then open http://localhost:5006 in your browser.
     """
-    from clouds_decoded.project import Project
-    from clouds_decoded.visualisation import load_scene_layers
-    from clouds_decoded.visualisation.web_viewer import WebViewer
+    from clouds_decoded.visualisation.project_visualiser import ProjectVisualiser
 
     try:
-        project = Project.load(project_dir)
-    except FileNotFoundError as e:
+        pv = ProjectVisualiser(project_dir)
+    except (FileNotFoundError, RuntimeError) as e:
         logger.error(str(e))
         raise typer.Exit(1)
 
-    rows = project.db.get_all()
-    if not rows:
-        logger.error("No scenes registered in project. Run 'project run' first.")
+    if not pv.scene_ids:
+        logger.error("No scenes with outputs found. Run 'project run' first.")
         raise typer.Exit(1)
 
-    if scene_id:
-        matching = [r for r in rows if r["scene_id"] == scene_id]
-        if not matching:
-            available = [r["scene_id"] for r in rows]
-            logger.error(
-                f"Scene {scene_id!r} not found. Available: {available}"
-            )
-            raise typer.Exit(1)
-        row = matching[0]
-    else:
-        if len(rows) > 1:
-            ids = [r["scene_id"] for r in rows]
-            logger.info(
-                f"Multiple scenes available: {ids}. "
-                f"Serving first. Use --scene-id to select."
-            )
-        row = rows[0]
+    logger.info(f"Serving {len(pv)} scene(s) on port {port}")
+    pv.serve(port=port, show=show)
 
-    _scene_id = row["scene_id"]
-    crop_window = row.get("crop_window")
-    output_dir = str(project._scene_output_dir(_scene_id, crop_window))
-    scene_path = row["path"]
 
-    layers = load_scene_layers(output_dir, scene_path=scene_path)
-    if not layers:
-        logger.error(f"No output layers found for scene {_scene_id!r} in {output_dir}")
+@app.command()
+def overview(
+    project_dir: str = typer.Argument(..., help="Path to a clouds-decoded project directory"),
+    scene_id: Optional[str] = typer.Option(None, "--scene-id", help="Scene ID (default: first scene)"),
+    output: str = typer.Option("overview.png", "--output", "-o", help="Output file path"),
+    dpi: int = typer.Option(150, help="Figure resolution"),
+):
+    """Save a static overview figure for a scene's outputs."""
+    from clouds_decoded.visualisation.project_visualiser import ProjectVisualiser
+
+    try:
+        pv = ProjectVisualiser(project_dir)
+    except (FileNotFoundError, RuntimeError) as e:
+        logger.error(str(e))
         raise typer.Exit(1)
 
-    logger.info(f"Serving scene {_scene_id!r} ({len(layers)} layers) on port {port}")
-    viewer = WebViewer(layers)
-    viewer.serve(port=port, show=show)
+    if not pv.scene_ids:
+        logger.error("No scenes with outputs found. Run 'project run' first.")
+        raise typer.Exit(1)
+
+    sid = scene_id or pv.scene_ids[0]
+    if sid not in pv.scene_ids:
+        logger.error(f"Scene {sid!r} not found. Available: {pv.scene_ids}")
+        raise typer.Exit(1)
+
+    fig = pv.overview(sid)
+    from clouds_decoded.visualisation.static import save_figure
+    save_figure(fig, output, dpi=dpi)
+    typer.echo(f"Saved overview to {output}")
 
 
 # --- Asset Management Commands ---
@@ -975,6 +1084,7 @@ def download(
         help="Asset key: cloud_mask | emulator | refl2prop | albedo_datadriven | gebco | sample_scene | all",
     ),
     force: bool = typer.Option(False, "--force", help="Re-download even if file exists"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts"),
 ):
     """Download managed binary assets (model weights, data).
 
@@ -1013,10 +1123,11 @@ def download(
             continue
 
         typer.echo(f"\n[{k}] {a.description}  {a.size_hint}")
-        confirmed = typer.confirm("Download now?", default=True)
-        if not confirmed:
-            typer.echo(f"Skipped {k}.")
-            continue
+        if not yes:
+            confirmed = typer.confirm("Download now?", default=True)
+            if not confirmed:
+                typer.echo(f"Skipped {k}.")
+                continue
 
         try:
             download_asset(k, force=force)

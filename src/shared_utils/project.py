@@ -350,13 +350,27 @@ def _load_albedo_result(path: str):
 def _postprocess_cloud_mask(result):
     """Convert raw cloud mask to binary for downstream consumers.
 
+    Only needed when the processor returns a non-binary mask (e.g. standalone
+    use with an older checkpoint).  In the default pipeline the processor
+    already returns binary, so this is a no-op.
+
     Handles both categorical (uint8 argmax) and probability (float32 4×H×W)
-    masks.  Uses default classes [1, 2, 3] and threshold 0.5.
+    masks.  Uses default classes [1, 2] (thick + thin cloud) and threshold 0.5.
+    Shadow (class 3) is excluded — it is a ground-level phenomenon, not an
+    elevated target, so it should not receive cloud height or property retrievals.
     """
-    return result.to_binary(positive_classes=[1, 2, 3], threshold=0.5)
+    return result.to_binary(positive_classes=[1, 2], threshold=0.5)
 
 
 # -- Side-effect hooks -------------------------------------------------------
+
+def _cloud_mask_on_complete(result, config, scene_out: Path) -> None:
+    """Write the 4-class categorical mask alongside the binary output."""
+    categorical = getattr(result, '_categorical', None)
+    if categorical is not None:
+        categorical.metadata.provenance = getattr(result.metadata, 'provenance', None)
+        categorical.write(str(scene_out / 'cloud_mask_classes.tif'))
+
 
 def _refocus_on_complete(result_scene, config, scene_out: Path) -> None:
     if config.save_refocused:
@@ -376,8 +390,8 @@ PROCESSORS: Dict[str, ProcessorDef] = {
         processor_factory=_make_cloud_mask_processors,
         config_factory=_config_factory_cloud_mask,
         output_loader=_load_cloud_mask_result,
-        postprocess_fn=_postprocess_cloud_mask,
         prefetch_fn=_prefetch_cloud_mask,
+        on_complete=_cloud_mask_on_complete,
     ),
     "cloud_height_emulator": ProcessorDef(
         config_loader=_load_cloud_height_emulator_config,
@@ -2141,11 +2155,19 @@ class Project:
             return outer
 
         from rich.console import Console
-        with Live(_build(), console=Console(), refresh_per_second=2, transient=True) as live:
-            while not stop_event.is_set():
+        console = Console()
+        try:
+            with Live(_build(), console=console, refresh_per_second=2, transient=True) as live:
+                while not stop_event.is_set():
+                    live.update(_build())
+                    stop_event.wait(timeout=0.5)
                 live.update(_build())
-                stop_event.wait(timeout=0.5)
-            live.update(_build())
+        except BaseException:
+            # Ensure the cursor is restored if the thread is interrupted
+            # (e.g. KeyboardInterrupt killing a daemon thread).
+            console.show_cursor()
+        finally:
+            console.show_cursor()
 
     # ------------------------------------------------------------------
     # Scene metadata and footprint helpers

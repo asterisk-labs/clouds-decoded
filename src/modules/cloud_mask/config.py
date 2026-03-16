@@ -90,6 +90,33 @@ class CloudMaskConfig(BaseProcessorConfig):
         description="Stride for tiling inputs to model (pixels at model resolution)"
     )
 
+    # Shadow reclassification — fix self-shading artefacts inside clouds
+    reclassify_embedded_shadow: bool = Field(
+        default=True,
+        description="Reclassify shadow pixels (class 3) surrounded by cloud as thick cloud. "
+                    "Fixes self-shading artefacts predicted inside optically thick clouds.",
+    )
+    shadow_reclassify_radius: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Radius (pixels at working resolution) of the neighbourhood window "
+                    "used to compare cloud vs clear fractions around shadow pixels.",
+    )
+
+    # Binarization parameters (applied after inference to produce the output mask)
+    cloud_mask_classes: List[int] = Field(
+        default=[1, 2],
+        description="Class indices to treat as cloud for binarization (1=thick, 2=thin, 3=shadow).",
+    )
+    cloud_mask_threshold: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=1.0,
+        description="Probability threshold for the summed positive-class confidence. "
+                    "Lower values are more permissive (catch more cloud).",
+    )
+
     # Threshold Parameters
     threshold_band: str = Field(
         default="B08",

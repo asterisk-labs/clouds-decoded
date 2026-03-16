@@ -298,12 +298,6 @@ class CloudPropertyInverter(BaseProcessor):
         retrieval_obj.transform = output_transform
         retrieval_obj.crs = input_crs
         
-        if return_uncertainty:
-            current_bands = list(retrieval_obj.metadata.band_names)
-            if OutputFeature.UNCERTAINTY.value not in current_bands:
-                 current_bands.append(OutputFeature.UNCERTAINTY.value)
-                 retrieval_obj.metadata.band_names = current_bands
-
         return retrieval_obj
 
 

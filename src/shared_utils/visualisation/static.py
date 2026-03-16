@@ -42,16 +42,49 @@ def _build_cmap(render):
     return plt.get_cmap(render.cmap)
 
 
-def render_to_axes(layer: Layer, ax: plt.Axes) -> Optional[plt.cm.ScalarMappable]:
+def _inset_title(ax: plt.Axes, text: str) -> None:
+    """Place a title inside the top-left of the axes with a semi-transparent box."""
+    ax.text(
+        0.03, 0.97, text,
+        transform=ax.transAxes,
+        fontsize=9, fontweight="bold",
+        va="top", ha="left",
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7, edgecolor="none"),
+    )
+
+
+def _inset_colorbar(im, ax: plt.Axes) -> None:
+    """Add a compact colorbar inside the bottom-right of the axes."""
+    cax = ax.inset_axes([0.62, 0.04, 0.35, 0.03])  # [x0, y0, width, height]
+    plt.colorbar(im, cax=cax, orientation="horizontal")
+    cax.tick_params(labelsize=6, length=2, pad=1)
+
+
+def render_to_axes(
+    layer: Layer,
+    ax: plt.Axes,
+    alpha: Optional[float] = None,
+    show_title: bool = True,
+) -> Optional[plt.cm.ScalarMappable]:
     """Render a Layer onto an existing matplotlib Axes.
 
-    Returns the ScalarMappable (for colorbar) or None for RGB layers.
+    Args:
+        layer: The Layer to render.
+        ax: Target Axes.
+        alpha: Optional transparency (0–1). Useful for overlays.
+        show_title: If True, draw the layer name as an inset label.
+
+    Returns:
+        The ScalarMappable (for colorbar) or None for RGB layers.
     """
+    ax.set_xticks([])
+    ax.set_yticks([])
+
     if layer.is_rgb:
-        ax.imshow(layer.data, extent=layer.extent, origin="upper", aspect="equal")
-        ax.set_title(layer.name)
-        ax.set_xlabel("Easting (m)")
-        ax.set_ylabel("Northing (m)")
+        ax.imshow(layer.data, extent=layer.extent, origin="upper", aspect="equal",
+                  alpha=alpha)
+        if show_title:
+            _inset_title(ax, layer.name)
         return None
 
     render = layer.render
@@ -65,6 +98,8 @@ def render_to_axes(layer: Layer, ax: plt.Axes) -> Optional[plt.cm.ScalarMappable
         aspect="equal",
         interpolation="nearest",
     )
+    if alpha is not None:
+        kwargs["alpha"] = alpha
     if norm is not None:
         kwargs["norm"] = norm
     else:
@@ -74,12 +109,9 @@ def render_to_axes(layer: Layer, ax: plt.Axes) -> Optional[plt.cm.ScalarMappable
             kwargs["vmax"] = render.vmax
 
     im = ax.imshow(layer.data, **kwargs)
-    title = layer.render.label or layer.name
-    if render.units:
-        title += f" ({render.units})"
-    ax.set_title(title)
-    ax.set_xlabel("Easting (m)")
-    ax.set_ylabel("Northing (m)")
+
+    if show_title:
+        _inset_title(ax, render.label or layer.name)
 
     return im
 
@@ -115,12 +147,9 @@ def plot_layer(layer: Layer, ax: Optional[plt.Axes] = None, figsize=(8, 8)) -> F
             ]
             ax.legend(handles=handles, loc="upper right", framealpha=0.8)
         else:
-            label = render.label
-            if render.units:
-                label += f" ({render.units})"
-            fig.colorbar(im, ax=ax, label=label, shrink=0.8)
+            _inset_colorbar(im, ax)
 
-    fig.tight_layout()
+    fig.tight_layout(pad=0.5)
     return fig
 
 
@@ -150,17 +179,14 @@ def plot_overview(layers: List[Layer], ncols: int = 3, figsize=(16, 12)) -> Figu
         im = render_to_axes(layer, ax)
 
         if im is not None and not layer.render.categorical:
-            label = layer.render.label
-            if layer.render.units:
-                label += f" ({layer.render.units})"
-            fig.colorbar(im, ax=ax, label=label, shrink=0.8)
+            _inset_colorbar(im, ax)
 
     # Hide unused axes
     for idx in range(n, nrows * ncols):
         row, col = divmod(idx, ncols)
         axes[row][col].set_visible(False)
 
-    fig.tight_layout()
+    fig.tight_layout(pad=0.5)
     return fig
 
 

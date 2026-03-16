@@ -12,7 +12,7 @@ import yaml
 from rasterio.crs import CRS
 from rasterio.transform import Affine
 
-from clouds_decoded.visualisation.viser_viewer import (
+from clouds_decoded.visualisation._deprecated.viser_viewer import (
     SceneData,
     ViserViewer,
     _build_grid_faces,
@@ -651,7 +651,7 @@ class TestViserViewer:
 
         # Trigger lazy load explicitly (normally done on scene selection)
         meta = viewer._scene_meta["TEXTURED"]
-        from clouds_decoded.visualisation.viser_viewer import SceneData
+        from clouds_decoded.visualisation._deprecated.viser_viewer import SceneData
         sd = SceneData(
             scene_id="TEXTURED",
             output_dir=meta["output_dir"],

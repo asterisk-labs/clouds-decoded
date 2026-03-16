@@ -34,8 +34,8 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
     )
     # Cloud mask postprocessing — how to derive the clear-sky mask
     cloud_mask_classes: List[int] = Field(
-        default=[1, 2, 3],
-        description="Cloud mask class indices to treat as cloud (1=thick, 2=thin, 3=shadow). "
+        default=[1, 2],
+        description="Cloud mask class indices to treat as cloud (1=thick, 2=thin). "
                     "Pixels where these classes exceed the threshold are excluded from sampling.",
     )
     cloud_mask_threshold: float = Field(

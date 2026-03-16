@@ -7,7 +7,7 @@ import numpy as np
 from matplotlib.widgets import RadioButtons, Slider
 
 from .layers import Layer, RGBConfig, _apply_rgb_config
-from .static import _build_cmap, _build_norm, _CLOUD_MASK_CMAP
+from .static import _build_cmap, _build_norm, _inset_colorbar, _inset_title, _CLOUD_MASK_CMAP
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class InteractiveViewer:
         self._sliders = {}
 
         gamma_ax = self._fig.add_axes([0.25, 0.08, 0.40, 0.025])
-        self._sliders["gamma"] = Slider(gamma_ax, "Gamma", 0.1, 3.0, valinit=0.7)
+        self._sliders["gamma"] = Slider(gamma_ax, "Gamma", 0.1, 3.0, valinit=0.65)
         self._slider_axes["gamma"] = gamma_ax
 
         gain_ax = self._fig.add_axes([0.25, 0.045, 0.40, 0.025])
@@ -151,19 +151,11 @@ class InteractiveViewer:
                 ]
                 self._ax.legend(handles=handles, loc="upper right", framealpha=0.8)
             else:
-                label = render.label
-                if render.units:
-                    label += f" ({render.units})"
-                self._colorbar = self._fig.colorbar(
-                    self._current_im, ax=self._ax, label=label, shrink=0.8,
-                )
+                _inset_colorbar(self._current_im, self._ax)
 
-        title = layer.render.label or layer.name
-        if layer.render.units:
-            title += f" ({layer.render.units})"
-        self._ax.set_title(title)
-        self._ax.set_xlabel("Easting (m)")
-        self._ax.set_ylabel("Northing (m)")
+        _inset_title(self._ax, layer.render.label or layer.name)
+        self._ax.set_xticks([])
+        self._ax.set_yticks([])
 
         self._fig.canvas.draw_idle()
 

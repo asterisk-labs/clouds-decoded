@@ -5,7 +5,6 @@ steps:
     inputs: [scene]
     output: cloud_mask
     output_file: cloud_mask.tif
-    postprocess: true
 
   - name: cloud_height_physics
     processor: cloud_height

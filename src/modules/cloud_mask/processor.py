@@ -130,16 +130,20 @@ class CloudMaskProcessor(BaseProcessor):
             self.model.eval()
 
     def _process(self, scene: Sentinel2Scene) -> CloudMaskData:
-        """
-        Generates a cloud mask using SEnSeIv2 deep learning model.
-        The output is a 4-class categorical map (0=clear, 1=thick cloud,
-        2=thin cloud, 3=shadow) at the configured input resolution.
+        """Generate a binary cloud mask using the SEnSeIv2 deep learning model.
+
+        Runs SegFormer-B2 sliding-window inference to produce per-class
+        probabilities, then binarizes using ``cloud_mask_classes`` and
+        ``cloud_mask_threshold`` from config.  The 4-class categorical
+        argmax map is stashed on the result as ``_categorical`` for the
+        pipeline's ``on_complete`` hook to save as a side file
+        (``cloud_mask_classes.tif``).
 
         Args:
             scene: Sentinel2Scene object with loaded bands.
 
         Returns:
-            CloudMaskData: Cloud mask (raw classification).
+            CloudMaskData: Binary cloud mask (0=clear, 1=cloud, uint8).
         """
         self._load_model()
 
@@ -194,20 +198,107 @@ class CloudMaskProcessor(BaseProcessor):
         else:
             new_affine = scene.transform
 
-        # Save the full per-class probability map so downstream consumers
-        # can threshold at their preferred confidence level.
-        return CloudMaskData(
-            data=probs.astype(np.float32),
+        # 4. Derive categorical (argmax) and binary masks from probabilities.
+        #    The binary mask is the main output (tiny uint8, fast to write).
+        #    The categorical mask is stashed for on_complete to save separately.
+        categorical = np.argmax(probs, axis=0).astype(np.uint8)
+
+        # 4a. Reclassify shadow pixels that are embedded within cloud.
+        #     These are self-shading artefacts — shadow predicted in the
+        #     middle of optically thick cloud.  Genuine ground shadows sit
+        #     near clear-sky regions.
+        reclassified_mask = None
+        if self.config.reclassify_embedded_shadow:
+            pre = categorical.copy()
+            categorical = self._reclassify_embedded_shadow(categorical)
+            reclassified_mask = (categorical != pre)
+
+        cloud_prob = sum(
+            probs[c] for c in self.config.cloud_mask_classes
+            if c < probs.shape[0]
+        )
+        binary = (cloud_prob > self.config.cloud_mask_threshold).astype(np.uint8)
+
+        # Apply reclassification to the binary mask — pixels that were
+        # shadow-turned-cloud in the categorical must also be marked as
+        # cloud in the binary, since the probability array still reflects
+        # the original shadow prediction.
+        if reclassified_mask is not None:
+            binary[reclassified_mask] = 1
+
+        categorical_result = CloudMaskData(
+            data=categorical,
             transform=new_affine,
             crs=scene.crs,
-            nodata=None,
+            nodata=255,
             metadata=CloudMaskMetadata(
-                categorical=False,
+                categorical=True,
+                classes={0: 'Clear', 1: 'Thick Cloud', 2: 'Thin Cloud', 3: 'Cloud Shadow'},
                 method="senseiv2",
                 model=_MODEL_NAME,
                 resolution=target_res,
             )
         )
+
+        binary_result = CloudMaskData(
+            data=binary,
+            transform=new_affine,
+            crs=scene.crs,
+            nodata=255,
+            metadata=CloudMaskMetadata(
+                categorical=True,
+                classes={0: 'Clear', 1: 'Cloud'},
+                method="senseiv2",
+                model=_MODEL_NAME,
+                resolution=target_res,
+            )
+        )
+
+        # Stash categorical for the on_complete hook to write as a side file.
+        object.__setattr__(binary_result, '_categorical', categorical_result)
+
+        return binary_result
+
+    def _reclassify_embedded_shadow(self, categorical: np.ndarray) -> np.ndarray:
+        """Reclassify shadow pixels surrounded by cloud as thick cloud.
+
+        For each shadow pixel (class 3), compares the local fraction of cloud
+        (classes 1, 2) to clear (class 0) within a square window.  If cloud
+        fraction exceeds clear fraction the pixel is reclassified as thick
+        cloud (class 1), on the basis that genuine ground shadows are adjacent
+        to clear sky while self-shading artefacts are embedded in cloud.
+
+        Args:
+            categorical: 2-D uint8 array with classes 0–3.
+
+        Returns:
+            Modified categorical array (mutated in-place and returned).
+        """
+        from scipy.ndimage import uniform_filter
+
+        is_shadow = categorical == 3
+        n_shadow = int(is_shadow.sum())
+        if n_shadow == 0:
+            return categorical
+
+        window = 2 * self.config.shadow_reclassify_radius + 1
+
+        cloud_frac = uniform_filter(
+            np.isin(categorical, [1, 2]).astype(np.float32), size=window
+        )
+        clear_frac = uniform_filter(
+            (categorical == 0).astype(np.float32), size=window
+        )
+
+        reclassify = is_shadow & (cloud_frac > clear_frac)
+        n_reclassified = int(reclassify.sum())
+        categorical[reclassify] = 1  # thick cloud
+
+        logger.info(
+            f"Shadow reclassification: {n_reclassified}/{n_shadow} shadow pixels "
+            f"reclassified as thick cloud (window={window}px)"
+        )
+        return categorical
 
     def postprocess(self, mask_data: CloudMaskData, params: PostProcessParams) -> CloudMaskData:
         """

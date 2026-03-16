@@ -6,12 +6,12 @@
   - [x] Review and update all processors to use band-caching logic implemented in 0cd91c1
   - [x] Use raw weights files from sensei-v2 and stop using its sliding window inference feature. Deduplicate sliding window code so that height emulation window is reused for sensei-v2, and use asset and download helpers for the model weights instead of sensei-v2's own handling.
   - [x] Improved manifest.json: hashing of IO files, crop-window tracking and support, intelligently assigning steps as "outdated" when a processor upstream of it is changed. More integrity checks between project.yaml and manifests, e.g. git repo commit hashes / release version numbers to cross-check.
-  - [ ] Improve clarity and accessibility of configs: explore nested configs to avoid long lists of independent sets of parameters (e.g. the height emulator's parameters all sitting next to the original height algorithm's parameters), project recipes for different sensible configurations. How do we inject n_workers for band parallel ops across all processors - current n_workers in configs are useless.
+  - [x] Improve clarity and accessibility of configs: explore nested configs to avoid long lists of independent sets of parameters (e.g. the height emulator's parameters all sitting next to the original height algorithm's parameters), project recipes for different sensible configurations. How do we inject n_workers for band parallel ops across all processors - current n_workers in configs are useless.
   - [ ] Add improved write options for data classes: e.g. netcdf, zarr
   - [x] Remove Gaussian Process albedo method (IDW seems better and much faster)
   - [ ] (major bug) datadriven albedo currently has strong detector dependency, creating unwanted stripes
   - [x] more flexibility and independence for _output_ resolutions of processors via the .write function, e.g. cloud height emulation processed @ 20m/pixel and saved at 60 m/pixel. Strict distinction between "working_resolution" and "output_resolution" in configs?
-  - [ ] Decouple stride from output_resolution in original cloud_height algorithm, shouuld be two separate parameters. 
+  - [x] Decouple stride from output_resolution in original cloud_height algorithm, shouuld be two separate parameters. 
   - [x] Improve logging behaviour (log files per computation)
   - [x] Define computation graph in YAML spec, so that users can modify the pipeline without changing project.py or entry.py
 
