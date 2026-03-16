@@ -27,12 +27,8 @@ dependencies = [
     "rtree",
     "tqdm",
     "matplotlib",
-    "zarr",
     "platformdirs",
     "transformers>=4.30.0",
-    "panel",
-    "holoviews",
-    "bokeh",
     "shapely>=2.0",
 ]
 
@@ -55,6 +51,7 @@ dependencies = [
 "clouds_decoded.workflows" = ["recipes/*.yaml"]
 
 [project.optional-dependencies]
+viz = ["panel", "holoviews", "bokeh"]
 sampling = ["cfgrib>=0.9.10"]
 docs = [
     "mkdocs>=1.5",

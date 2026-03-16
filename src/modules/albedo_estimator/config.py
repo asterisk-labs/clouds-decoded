@@ -42,8 +42,9 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
         default=0.5,
         ge=0.0,
         le=1.0,
-        description="Probability threshold for cloud detection when using probability masks. "
-                    "Higher = more permissive (more pixels treated as clear).",
+        description="Probability threshold on summed cloud-class confidence. "
+                    "Pixels exceeding this are masked as cloud. "
+                    "Higher values detect less cloud (more pixels treated as clear).",
     )
     output_resolution: int = Field(
         default=300,
@@ -104,9 +105,11 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
 
     @model_validator(mode="after")
     def _resolve_model_path(self) -> "AlbedoEstimatorConfig":
+        """Resolve model_path from managed assets when not explicitly set."""
         if self.model_path is None:
             from clouds_decoded.assets import get_asset
-            self.model_path = str(
-                get_asset("models/albedo_datadriven/default.pth")
+            object.__setattr__(
+                self, "model_path",
+                str(get_asset("models/albedo_datadriven/default.pth")),
             )
         return self

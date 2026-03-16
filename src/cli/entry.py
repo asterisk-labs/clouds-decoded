@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import typer
-import yaml
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Dict, List, Union
 import logging
@@ -19,7 +18,7 @@ if TYPE_CHECKING:
 
 # Setup Logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("CLI")
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Clouds Decoded Command Line Interface")
 
@@ -64,6 +63,7 @@ def _load_pipeline_config(config_path: str) -> Dict:
     path = Path(config_path)
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
+    import yaml
     with open(path, 'r') as f:
         data = yaml.safe_load(f) or {}
     return data
@@ -704,7 +704,7 @@ def project_status(
 
     try:
         project = Project.load(project_dir)
-        print(project.status())
+        typer.echo(project.status())
     except FileNotFoundError as e:
         logger.error(str(e))
         raise typer.Exit(1)
@@ -771,17 +771,17 @@ def project_list(
         if crop_window is not None:
             rows = [r for r in rows if r.get("crop_window") == crop_window]
         if not rows:
-            print("No runs found.")
+            typer.echo("No runs found.")
             return
         header = (f"{'run_id':<18} {'scene_id':<50} {'crop_window':<16} "
                   f"{'status':<10} {'staged_at':<22} {'completed_at'}")
-        print(header)
-        print("-" * len(header))
+        typer.echo(header)
+        typer.echo("-" * len(header))
         for r in rows:
             completed = r.get("completed_at") or "-"
             cw = r.get("crop_window") or "(full)"
-            print(f"{r['run_id']:<18} {r['scene_id']:<50} {cw:<16} "
-                  f"{r['status']:<10} {r['staged_at']:<22} {completed}")
+            typer.echo(f"{r['run_id']:<18} {r['scene_id']:<50} {cw:<16} "
+                       f"{r['status']:<10} {r['staged_at']:<22} {completed}")
     except FileNotFoundError as e:
         logger.error(str(e))
         raise typer.Exit(1)

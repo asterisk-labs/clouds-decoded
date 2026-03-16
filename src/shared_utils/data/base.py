@@ -118,9 +118,8 @@ class GeoRasterData(Data):
                         if isinstance(loaded_meta, dict):
                              json_dict.update(loaded_meta)
                     except json.JSONDecodeError:
-                        pass # Should handle gracefully
+                        logger.warning("Failed to parse metadata JSON from tag %r in %s", METADATA_TAG, filepath)
                 else:
-                    # Preserve other tags if needed, or maybe just standard ones?
                     if k not in json_dict:
                         json_dict[k] = v
 

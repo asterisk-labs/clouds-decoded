@@ -95,9 +95,11 @@ class AlbedoModelConfig(BaseModel):
 
     @model_validator(mode="after")
     def _resolve_model_path(self) -> "AlbedoModelConfig":
+        """Resolve model_path from managed assets when not explicitly set."""
         if self.model_path is None:
             from clouds_decoded.assets import get_asset
-            self.model_path = str(
-                get_asset("models/albedo_datadriven/default.pth")
+            object.__setattr__(
+                self, "model_path",
+                str(get_asset("models/albedo_datadriven/default.pth")),
             )
         return self

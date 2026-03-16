@@ -67,8 +67,6 @@ class CloudPropertyInverter(BaseProcessor):
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
         # Init Model
-        # TODO: Move input/output sizes to config or infer from checkpoint meta if available
-        # Note: noise_output_size=6 matches the training configuration for model_ood.pth
         core_model = InversionNet(
              input_size=self.config.input_size,
              output_size=self.config.output_size,

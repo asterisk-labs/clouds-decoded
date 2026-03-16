@@ -66,6 +66,7 @@ class RefocusConfig(BaseProcessorConfig):
     @field_validator('reference_band')
     @classmethod
     def validate_reference_band(cls, v):
+        """Validate reference_band is a known Sentinel-2 band."""
         valid_bands = set(BAND_RESOLUTIONS.keys())
         if v not in valid_bands:
             raise ValueError(f"Invalid reference band: {v}. Must be one of {valid_bands}")
