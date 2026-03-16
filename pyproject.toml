@@ -56,6 +56,11 @@ dependencies = [
 
 [project.optional-dependencies]
 sampling = ["cfgrib>=0.9.10"]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+]
 
 [project.scripts]
 clouds-decoded = "clouds_decoded.cli.entry:app"
