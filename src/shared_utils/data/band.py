@@ -13,7 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 class BandUnit(enum.Enum):
-    """Unit of a Sentinel-2 band's pixel values."""
+    """Unit types for Sentinel-2 band pixel values.
+
+    Used by ``Sentinel2Band`` to track whether the data contains raw
+    digital numbers (``DN``) or calibrated top-of-atmosphere reflectance
+    (``REFLECTANCE``).
+    """
     DN = "dn"
     REFLECTANCE = "reflectance"
 

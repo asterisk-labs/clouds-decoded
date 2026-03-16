@@ -79,7 +79,7 @@ def test_cloud_mask_threshold(dummy_scene):
     config = CloudMaskConfig(
         method="threshold",
         threshold_band="B08",
-        threshold_value=4000  # Clouds above this
+        threshold_value=0.4  # Clouds above this reflectance
     )
 
     processor = ThresholdCloudMaskProcessor(config)

@@ -16,10 +16,16 @@ logger = logging.getLogger(__name__)
 from ..constants import BANDS, BAND_RESOLUTIONS
 
 class Sentinel2Scene(Data):
-    # Data model for a Sentinel-2 scene. Slightly confusingly, we don't use a metadata class to hold
-    # the metadata here, instead storing it directly in the scene object. This is because we don't have
-    # a write method for Sentinel-2 scenes, so the metadata is only ever read, not written, unlike other
-    # data types.
+    """Read-only representation of a Sentinel-2 Level-1C ``.SAFE`` directory.
+
+    Provides lazy band access (raw DN or TOA reflectance), sun/view angle
+    interpolation from 5 km grids, detector footprints, wind data from the
+    AUX_ECMWFT GRIB file, and radiometric calibration parameters.
+
+    Unlike other ``Data`` subclasses, scene metadata is stored directly on
+    the object (not in a separate ``Metadata`` instance) because scenes are
+    never written back to disk.
+    """
 
     scene_directory: Optional[Path] = None
     bands: Dict[str, Any] = Field(default_factory=BandDict)

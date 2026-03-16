@@ -85,15 +85,17 @@ class NormalizationWrapper(nn.Module):
 
 
 class CloudHeightNormalizationWrapper(NormalizationWrapper):
-    """
-    Wraps the InversionNet to handle normalization internally.
-    Stats are registered as buffers, so they save/load automatically with torch.save().
+    """NormalizationWrapper subclass for cloud height inversion models.
+
+    Overrides ``forward`` to return both physical (denormalized) and
+    normalized regression outputs.  When the wrapped model returns a dict
+    containing a ``'regression'`` key, the normalized prediction is kept
+    under ``'regression_norm'`` so that the training loss can operate in
+    normalized space while downstream consumers receive metres AGL.
     """
 
     def forward(self, x):
-        """
-        Takes raw inputs -> Returns physical outputs and normalized ones for loss.
-        """
+        """Normalize input, run model, and return physical + normalized outputs."""
         x_norm = self.normalize_input(x)
         output = self.model(x_norm)
         

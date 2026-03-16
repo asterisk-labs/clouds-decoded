@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
     from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
     from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
-    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
+    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
     from clouds_decoded.modules.refocus.config import RefocusConfig
     from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
 
@@ -75,7 +75,6 @@ def run_cloud_mask(
     scene: Sentinel2Scene,
     config: CloudMaskConfig,
     output_path: Optional[str] = None,
-    pp_params: Optional[PostProcessParams] = None,
 ) -> CloudMaskData:
     """Run cloud masking with explicit config."""
     from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor, ThresholdCloudMaskProcessor
@@ -88,12 +87,6 @@ def run_cloud_mask(
     else:
         processor = CloudMaskProcessor(config)
         result = processor.process(scene)
-
-    if pp_params:
-        # postprocess() lives on CloudMaskProcessor; reuse if already that type,
-        # otherwise create one with the user's config.
-        postprocessor = processor if isinstance(processor, CloudMaskProcessor) else CloudMaskProcessor(config)
-        result = postprocessor.postprocess(result, pp_params)
 
     if output_path:
         result.write(output_path)
@@ -303,7 +296,7 @@ def cloud_mask(
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
     method: str = typer.Option("senseiv2", help="Method: 'senseiv2' or 'threshold'"),
     threshold_band: str = typer.Option("B08", help="Band for thresholding"),
-    threshold_value: float = typer.Option(1600, help="Reflectance threshold (DN)"),
+    threshold_value: float = typer.Option(0.06, help="Reflectance threshold (0-1)"),
     resolution: int = typer.Option(20, help="Model resolution in meters (default 20 for deep learning)"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
 ):
@@ -467,7 +460,7 @@ def full_workflow(
     from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
     from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
     from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
-    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig, PostProcessParams
+    from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
     from clouds_decoded.modules.refocus.config import RefocusConfig
     from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
     cloud_mask_config = CloudMaskConfig(method=mask_method, **mask_cfg_dict)
@@ -489,9 +482,7 @@ def full_workflow(
         output_path=str(out / "cloud_mask.tif"),
     )
     # Postprocess to binary for downstream consumers (height, albedo, etc.)
-    from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor
-    postprocessor = CloudMaskProcessor()
-    mask_result = postprocessor.postprocess(raw_mask, PostProcessParams())
+    mask_result = raw_mask.to_binary(positive_classes=[1, 2, 3], threshold=0.5)
 
     # Step 2: Cloud Height
     logger.info("Step 2: Cloud Height")
@@ -981,17 +972,18 @@ def setup():
 def download(
     asset: str = typer.Argument(
         ...,
-        help="Asset key: emulator | refl2prop | gebco | all",
+        help="Asset key: cloud_mask | emulator | refl2prop | albedo_datadriven | gebco | sample_scene | all",
     ),
     force: bool = typer.Option(False, "--force", help="Re-download even if file exists"),
 ):
-    """Download managed binary assets (model weights, GEBCO).
+    """Download managed binary assets (model weights, data).
 
     \b
-    clouds-decoded download emulator   # height emulator weights (~500 MB)
-    clouds-decoded download refl2prop  # refl2prop weights (~50 MB)
-    clouds-decoded download gebco      # GEBCO bathymetry (~2.7 GB)
-    clouds-decoded download all        # everything
+    clouds-decoded download emulator      # height emulator weights (~500 MB)
+    clouds-decoded download refl2prop     # refl2prop weights (~50 MB)
+    clouds-decoded download gebco         # GEBCO bathymetry (~2.7 GB)
+    clouds-decoded download sample_scene  # sample Sentinel-2 scene (~705 MB)
+    clouds-decoded download all           # everything
     """
     from clouds_decoded.assets import KNOWN_ASSETS, download_asset, get_asset
 

@@ -22,10 +22,15 @@ from clouds_decoded.constants import BAND_RESOLUTIONS
 logger = logging.getLogger(__name__)
 
 class CloudHeightProcessor(BaseProcessor):
+    """Stereo parallax-based cloud height retrieval from Sentinel-2 multi-band time delays.
+
+    Exploits the push-broom sensor's inter-band acquisition delays to detect
+    along-track pixel shifts caused by elevated targets. Cross-correlation of
+    shifted band patches at candidate heights produces a correlation cube that
+    is smoothed and gridded into a cloud-top height map.
+    """
+
     def __init__(self, config: CloudHeightConfig):
-        """
-        Initializes the CloudHeightProcessor with a configuration object.
-        """
         self.config = config
         self.gaussian_kernel = self._constructGaussianKernel()
 

@@ -13,7 +13,6 @@ class BaseProcessorConfig(BaseModel):
     """
     model_config = ConfigDict(extra='forbid')
     output_dir: Optional[str] = Field(None, description="Directory to save outputs")
-    n_workers: int = Field(1, description="Number of parallel workers where applicable")
     working_resolution: Optional[int] = Field(
         default=None,
         ge=10,
@@ -47,8 +46,20 @@ class BaseProcessorConfig(BaseModel):
         return self
 
     @classmethod
-    def from_yaml(cls, config_path: Optional[str] = None):
-        """Loads configuration from a YAML file. If path is None, returns default config."""
+    def from_yaml(cls, config_path: Optional[str] = None) -> 'BaseProcessorConfig':
+        """Load configuration from a YAML file.
+
+        Args:
+            config_path: Path to a YAML file. If ``None``, returns a
+                default-constructed config instance.
+
+        Returns:
+            An instance of the config subclass populated from the file,
+            or defaults if *config_path* is ``None``.
+
+        Raises:
+            FileNotFoundError: If *config_path* does not exist.
+        """
         if config_path is None:
             return cls()
 
@@ -65,7 +76,7 @@ class BaseProcessorConfig(BaseModel):
             
         return cls(**data)
 
-    def to_yaml(self, config_path: str):
+    def to_yaml(self, config_path: str) -> None:
         """Write configuration to a YAML file.
 
         Computed fields (@computed_field) are excluded since they are derived

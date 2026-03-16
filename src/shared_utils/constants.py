@@ -1,3 +1,9 @@
+"""Sentinel-2 band metadata, orbital parameters, and physical constants.
+
+Defines band names, per-band time delays, nominal pixel resolutions,
+default surface albedo values, and orbital/gravitational constants used
+throughout the clouds-decoded pipeline.
+"""
 import numpy as np
 
 

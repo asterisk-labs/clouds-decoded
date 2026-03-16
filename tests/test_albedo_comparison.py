@@ -190,7 +190,7 @@ class TestAlbedoComparison:
         )
 
         config = CloudMaskConfig(
-            method="threshold", threshold_band="B08", threshold_value=4000,
+            method="threshold", threshold_band="B08", threshold_value=0.4,
         )
         processor = ThresholdCloudMaskProcessor(config)
         return processor.process(scene)

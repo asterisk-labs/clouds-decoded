@@ -23,6 +23,12 @@ from .config import Refl2PropConfig, ShadingRefl2PropConfig, OutputFeature
 logger = logging.getLogger(__name__)
 
 class CloudPropertyInverter(BaseProcessor):
+    """Neural inversion of Sentinel-2 reflectance to cloud optical and microphysical properties.
+
+    Takes calibrated reflectance bands, surface albedo estimates, viewing geometry,
+    and cloud-top height as inputs and predicts per-pixel cloud optical thickness (tau),
+    effective radii (liquid and ice), and ice-liquid ratio via a fully connected network.
+    """
 
     @staticmethod
     def _load_and_init_model(model, model_path: str, device: torch.device):

@@ -1,5 +1,5 @@
 """Configuration for albedo estimation."""
-from typing import Dict, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import Field, model_validator
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import DEFAULT_SURFACE_ALBEDO
@@ -32,11 +32,18 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
         le=1.0,
         description="Minimum fraction of clear-sky pixels required. Below this, fallback is used."
     )
-    confidence_threshold: float = Field(
+    # Cloud mask postprocessing — how to derive the clear-sky mask
+    cloud_mask_classes: List[int] = Field(
+        default=[1, 2, 3],
+        description="Cloud mask class indices to treat as cloud (1=thick, 2=thin, 3=shadow). "
+                    "Pixels where these classes exceed the threshold are excluded from sampling.",
+    )
+    cloud_mask_threshold: float = Field(
         default=0.5,
         ge=0.0,
         le=1.0,
-        description="Probability threshold for clear class when mask is non-categorical"
+        description="Probability threshold for cloud detection when using probability masks. "
+                    "Higher = more permissive (more pixels treated as clear).",
     )
     output_resolution: int = Field(
         default=300,

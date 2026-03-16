@@ -21,10 +21,10 @@ class CloudHeightConfig(BaseProcessorConfig):
 
     # Thresholding
     cloudy_thresh: float = Field(
-        default=1600.0,
-        ge=0,
-        le=10000,
-        description="Reflectance threshold for cloud detection (DN, 0-10000)"
+        default=0.06,
+        ge=0.0,
+        le=1.0,
+        description="Reflectance threshold for cloud detection (0-1)"
     )
     threshold_band: str = Field(
         default='B08',
@@ -105,9 +105,8 @@ class CloudHeightConfig(BaseProcessorConfig):
         description="Use deep learning emulator for cloud height retrieval"
     )
     n_workers: int = Field(
-        default=16,
+        default=96,
         ge=1,
-        le=64,
         description="Number of parallel workers for processing"
     )
     temp_dir: Optional[str] = Field(

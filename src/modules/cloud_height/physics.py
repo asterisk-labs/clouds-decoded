@@ -3,29 +3,24 @@ from clouds_decoded.constants import BAND_TIME_DELAYS, ORBITAL_VELOCITY, SPACECR
 
 class RotationTransform:
     def __init__(self, angle, centre=(0,0)):
-        """
-        Create a rotation transform that rotates points around a given centre by a given angle
+        """Create a rotation transform around a given centre.
 
-        Parameters:
-            angle: float, angle in radians
-            centre: tuple, centre of rotation
-
-        Returns:
-            None
+        Args:
+            angle: Rotation angle in radians.
+            centre: Centre of rotation as (x, y) tuple.
         """
         self.angle = angle
         self.centre = centre
 
     def __call__(self,points,inverse=False):
-        """
-        Rotate a set of points around a given centre
+        """Rotate a set of points around the configured centre.
 
-        Parameters:
-            points: np.array, points to rotate
-            inverse: bool, if True, rotate in the opposite direction
+        Args:
+            points: Array of shape (2, N) with x and y coordinates.
+            inverse: If True, rotate in the opposite direction.
 
         Returns:
-            rotated_points: np.array, rotated points
+            Rotated points as an array of shape (2, N).
         """
         if inverse:
             angle = -self.angle
@@ -39,8 +34,19 @@ class RotationTransform:
         return rotated_points
 
 def offsetsToHeights(offsets,bands,pixel_size):
-    """
-    Convert the offset to a height in meters
+    """Convert along-track pixel offsets to cloud heights in metres.
+
+    Uses the spacecraft orbital velocity and altitude to relate the observed
+    parallax shift (in pixels) to the physical height of the target.
+
+    Args:
+        offsets: Per-band pixel offsets (list or array).
+        bands: Band names corresponding to each offset. If a single-element
+            list, it is broadcast to match the length of offsets.
+        pixel_size: Pixel size in metres along-track.
+
+    Returns:
+        Array of heights in metres, one per offset.
     """
     if not (len(offsets) == len(bands) or len(bands) == 1):
         raise ValueError(
@@ -66,8 +72,18 @@ def offsetsToHeights(offsets,bands,pixel_size):
     return heights
 
 def heightsToOffsets(heights,bands,pixel_size):
-    """
-    Convert the height to an offset in meters
+    """Convert cloud heights in metres to expected along-track pixel offsets.
+
+    Inverse of ``offsetsToHeights``. Computes the parallax shift each band
+    would exhibit for a target at the given height.
+
+    Args:
+        heights: Per-band heights in metres (list or array).
+        bands: Band names corresponding to each height.
+        pixel_size: Pixel size in metres along-track.
+
+    Returns:
+        Array of pixel offsets, one per band.
     """
 
     if isinstance(heights,list):

@@ -4,12 +4,18 @@ from pydantic import Field
 from .base import GeoRasterData, PointCloudData, Metadata
 
 class CloudHeightMetadata(Metadata):
+    """Metadata for cloud height outputs.
+
+    Stores the processing configuration used to produce the height map
+    (e.g. method, bands, parallax settings).
+    """
     processing_config: Dict[str, Any] = Field(default_factory=lambda: dict(status='unknown'))
 
 class CloudHeightGridData(GeoRasterData):
-    """
-    Data model for Cloud Height on a raster grid.
-    Values represent cloud top height in meters.
+    """Cloud top height on a raster grid, in metres above ground level.
+
+    Values are non-negative floats (NaN for missing/clear pixels).
+    Validation rejects any negative height values.
     """
     metadata: CloudHeightMetadata = Field(default_factory=CloudHeightMetadata)
     

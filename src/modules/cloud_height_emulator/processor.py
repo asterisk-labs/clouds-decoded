@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 class CloudHeightEmulatorProcessor(BaseProcessor):
+    """ResUNet-based cloud height emulator that approximates the stereo parallax method.
+
+    Uses a ResNet-34 U-Net trained to predict cloud-top height directly from
+    Sentinel-2 reflectance bands, providing a faster alternative to the full
+    cross-correlation parallax retrieval in ``CloudHeightProcessor``.
+    """
+
     def __init__(self, config: Optional[CloudHeightEmulatorConfig] = None):
         if config is None:
             config = CloudHeightEmulatorConfig()
@@ -195,32 +202,43 @@ class CloudHeightEmulatorProcessor(BaseProcessor):
             metadata=meta,
         )
 
-    @staticmethod
     def _resolve_cloud_mask(
+        self,
         cloud_mask: Optional[Union[CloudMaskData, np.ndarray, str, Path]],
     ) -> Optional[np.ndarray]:
-        """Convert various cloud mask inputs to a 2-D numpy array (or None)."""
+        """Convert various cloud mask inputs to a 2-D binary array (or None).
+
+        For probability maps (4, H, W), uses ``cloud_mask_classes`` and
+        ``cloud_mask_threshold`` from config to produce a binary mask.
+
+        Returns:
+            2-D uint8 array where 0=clear, 1=cloud, or None.
+        """
         if cloud_mask is None:
             return None
 
+        cm_obj: Optional[CloudMaskData] = None
         if isinstance(cloud_mask, (str, Path)):
             try:
                 cm_obj = CloudMaskData.from_file(str(cloud_mask))
-                mask_array = cm_obj.data
             except Exception:
                 logger.warning(
                     f"Could not load {cloud_mask} as CloudMaskData. Ignoring mask.")
                 return None
         elif isinstance(cloud_mask, CloudMaskData):
-            mask_array = cloud_mask.data
+            cm_obj = cloud_mask
         elif isinstance(cloud_mask, np.ndarray):
             mask_array = cloud_mask
+            if mask_array.ndim == 3:
+                mask_array = mask_array[0]
+            return mask_array
         else:
             logger.warning(
                 f"Unsupported cloud_mask type: {type(cloud_mask)}. Ignoring mask.")
             return None
 
-        if mask_array.ndim == 3:
-            mask_array = mask_array[0]
-
-        return mask_array
+        binary = cm_obj.to_binary(
+            positive_classes=self.config.cloud_mask_classes,
+            threshold=self.config.cloud_mask_threshold,
+        )
+        return binary.data

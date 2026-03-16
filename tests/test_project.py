@@ -33,14 +33,14 @@ class TestToYaml:
         """CloudMaskConfig survives YAML roundtrip."""
         from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
 
-        original = CloudMaskConfig(method="threshold", threshold_band="B04", threshold_value=5000)
+        original = CloudMaskConfig(method="threshold", threshold_band="B04", threshold_value=0.5)
         yaml_path = tmp_path / "cloud_mask.yaml"
         original.to_yaml(str(yaml_path))
 
         loaded = CloudMaskConfig.from_yaml(str(yaml_path))
         assert loaded.method == "threshold"
         assert loaded.threshold_band == "B04"
-        assert loaded.threshold_value == 5000
+        assert loaded.threshold_value == 0.5
 
     def test_roundtrip_albedo(self, tmp_path):
         """AlbedoEstimatorConfig survives YAML roundtrip."""

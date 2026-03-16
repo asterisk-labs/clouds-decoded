@@ -77,7 +77,7 @@ class CloudMaskConfig(BaseProcessorConfig):
         description="Batch size for model inference"
     )
     working_resolution: int = Field(
-        default=20,
+        default=10,
         ge=10,
         le=60,
         description="Resolution in metres at which inference is performed."
@@ -96,10 +96,10 @@ class CloudMaskConfig(BaseProcessorConfig):
         description="Band for threshold method"
     )
     threshold_value: float = Field(
-        default=1600.0,
-        ge=0,
-        le=10000,
-        description="Reflectance threshold (DN, 0-10000)"
+        default=0.06,
+        ge=0.0,
+        le=1.0,
+        description="Reflectance threshold for cloud detection (0-1)"
     )
 
     @model_validator(mode='after')

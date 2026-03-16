@@ -67,11 +67,12 @@ class Out(nn.Module):
         return torch.cat(out, dim=1)
 
 class Res34_Unet(nn.Module):
-    """Unet model with a resnet34 encoder used for single image. 
+    """ResNet-34 encoder with U-Net decoder for dense per-pixel regression.
 
-        Args:
-            pretrained : if True, use pretrained resnet34 weights.
-
+    The encoder is a standard ResNet-34 (optionally ImageNet-pretrained) whose
+    first convolution is replaced to accept an arbitrary number of input channels.
+    The decoder uses bilinear upsampling with skip connections from each encoder
+    stage. Multiple output heads (e.g. regression + segmentation) are supported.
     """
 
     def __init__(self, pretrained: bool = True, in_channels: int = 3, out_channels: int = 1, heads= ["regression"], heads_hidden_channels=None, **kwargs) -> None:

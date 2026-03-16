@@ -7,7 +7,12 @@ from .base import GeoRasterData, Metadata
 logger = logging.getLogger(__name__)
 
 class CloudMaskMetadata(Metadata):
-    """Metadata for cloud mask outputs."""
+    """Metadata for cloud mask outputs.
+
+    Tracks the detection method, model name, processing resolution, and
+    whether the output is categorical (discrete class labels) or
+    probabilistic (per-class confidence maps).
+    """
     categorical: bool = True
     classes: Dict[int, str] = {
         0: 'Clear',
@@ -44,9 +49,15 @@ class CloudMaskMetadata(Metadata):
     )
 
 class CloudMaskData(GeoRasterData):
-    """
-    Data model for cloud masks using the SEnSeI-v2 variants.
-    Supports either discrete 4-class classification or 4-channel probability maps.
+    """Cloud mask raster supporting categorical and probabilistic modes.
+
+    In categorical mode (``metadata.categorical=True``), data is a 2-D
+    ``uint8`` array with class labels 0-3 (clear, thick cloud, thin cloud,
+    cloud shadow) and nodata=255.
+
+    In probability mode (``metadata.categorical=False``), data is a
+    ``float32`` array of shape ``(4, H, W)`` where each band holds the
+    per-pixel confidence for one class, with values in [0, 1].
     """
     nodata: Optional[float] = Field(default=255, description="Nodata sentinel for uint8 cloud masks")
     metadata: CloudMaskMetadata = Field(default_factory=CloudMaskMetadata)
@@ -90,13 +101,18 @@ class CloudMaskData(GeoRasterData):
     def to_binary(
         self,
         positive_classes: Optional[List[int]] = None,
-        dilation_pixels: int = 0
+        threshold: float = 0.5,
+        dilation_pixels: int = 0,
     ) -> 'CloudMaskData':
         """Convert mask to binary (cloud/no-cloud) for downstream use.
 
         Args:
-            positive_classes: Class indices to treat as "cloud". Default [1, 2] (thick + thin cloud).
-            dilation_pixels: Dilate mask by this many pixels (useful for buffer zones).
+            positive_classes: Class indices to treat as "cloud".
+                Default [1, 2] (thick + thin cloud).
+            threshold: Probability threshold for the summed positive-class
+                confidence.  Only used when the mask stores probabilities
+                (``categorical=False``).  Lower values are more permissive.
+            dilation_pixels: Dilate mask by this many pixels (buffer zone).
 
         Returns:
             New CloudMaskData with binary mask (0=clear, 1=cloud).
@@ -115,9 +131,9 @@ class CloudMaskData(GeoRasterData):
             # Probability map: sum probabilities of positive classes
             if self.data.ndim == 3:
                 prob_sum = sum(self.data[c] for c in positive_classes if c < self.data.shape[0])
-                binary = (prob_sum > 0.5).astype(np.uint8)
+                binary = (prob_sum > threshold).astype(np.uint8)
             else:
-                binary = (self.data > 0.5).astype(np.uint8)
+                binary = (self.data > threshold).astype(np.uint8)
 
         # Ensure 2D output
         if binary.ndim == 3 and binary.shape[0] == 1:

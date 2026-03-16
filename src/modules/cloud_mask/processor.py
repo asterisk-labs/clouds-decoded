@@ -43,6 +43,12 @@ _PATCH_SIZE = 512   # fixed SegFormerB2 patch size
 
 
 class ThresholdCloudMaskProcessor(BaseProcessor):
+    """Simple threshold-based cloud mask using a single band's reflectance.
+
+    Pixels with reflectance greater than the configured threshold are classified as cloud.
+    Produces a binary 2-class mask (0=clear, 1=cloud).
+    """
+
     def __init__(self, config: Optional[CloudMaskConfig] = None):
         if config is None:
             config = CloudMaskConfig(method="threshold")
@@ -56,8 +62,8 @@ class ThresholdCloudMaskProcessor(BaseProcessor):
         threshold_band = self.config.threshold_band
         threshold_value = self.config.threshold_value
 
-        # Get raw DN data (threshold is in DN units)
-        band_data = scene.get_band(threshold_band, reflectance=False)
+        # Get calibrated reflectance
+        band_data = scene.get_band(threshold_band, reflectance=True)
 
         # Ensure 2D
         if isinstance(band_data, np.ndarray) and band_data.ndim == 3:
@@ -82,6 +88,12 @@ class ThresholdCloudMaskProcessor(BaseProcessor):
         )
 
 class CloudMaskProcessor(BaseProcessor):
+    """Deep learning cloud mask using a SegFormer-B2 (SEnSeIv2) model.
+
+    Produces a 4-class probability map (clear, thick cloud, thin cloud, shadow)
+    via sliding-window inference over all 13 Sentinel-2 bands.
+    """
+
     def __init__(self, config: Optional[CloudMaskConfig] = None):
         if config is None:
             config = CloudMaskConfig(method="senseiv2")
@@ -173,7 +185,6 @@ class CloudMaskProcessor(BaseProcessor):
         )
         logger.info("Running cloud mask inference...")
         probs = swi(input_data, model_fn, n_output_channels=4)  # (4, H, W)
-        mask_out = np.argmax(probs, axis=0).astype(np.uint8)    # (H, W)
 
         # 3. Build output transform for the (possibly resampled) resolution
         from rasterio.transform import Affine
@@ -183,11 +194,15 @@ class CloudMaskProcessor(BaseProcessor):
         else:
             new_affine = scene.transform
 
+        # Save the full per-class probability map so downstream consumers
+        # can threshold at their preferred confidence level.
         return CloudMaskData(
-            data=mask_out,
+            data=probs.astype(np.float32),
             transform=new_affine,
             crs=scene.crs,
+            nodata=None,
             metadata=CloudMaskMetadata(
+                categorical=False,
                 method="senseiv2",
                 model=_MODEL_NAME,
                 resolution=target_res,

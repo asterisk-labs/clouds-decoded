@@ -348,10 +348,12 @@ def _load_albedo_result(path: str):
 # -- Postprocess function ----------------------------------------------------
 
 def _postprocess_cloud_mask(result):
-    """Convert raw 4-class mask to binary for downstream consumers."""
-    from clouds_decoded.modules.cloud_mask.config import PostProcessParams
-    from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor
-    return CloudMaskProcessor().postprocess(result, PostProcessParams())
+    """Convert raw cloud mask to binary for downstream consumers.
+
+    Handles both categorical (uint8 argmax) and probability (float32 4×H×W)
+    masks.  Uses default classes [1, 2, 3] and threshold 0.5.
+    """
+    return result.to_binary(positive_classes=[1, 2, 3], threshold=0.5)
 
 
 # -- Side-effect hooks -------------------------------------------------------

@@ -9,7 +9,7 @@ from rasterio.transform import Affine
 from clouds_decoded.modules.cloud_height_emulator.processor import CloudHeightEmulatorProcessor
 from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
 from clouds_decoded.normalization import CloudHeightNormalizationWrapper
-from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData, AlbedoData
+from clouds_decoded.data import Sentinel2Scene, CloudHeightGridData, CloudMaskData, CloudMaskMetadata, AlbedoData
 from clouds_decoded.project import Project, _PipelineCtx
 
 
@@ -246,8 +246,12 @@ def test_emulator_within_project(tmp_path, mock_unet, mock_scene, mock_weights_f
          patch("clouds_decoded.modules.cloud_mask.processor.CloudMaskProcessor.postprocess"), \
          patch("clouds_decoded.data.CloudHeightGridData.write"):
 
-        mock_mask = MagicMock(spec=CloudMaskData)
-        mock_mask.data = np.zeros((100, 100), dtype=np.uint8)
+        mock_mask = CloudMaskData(
+            data=np.zeros((100, 100), dtype=np.uint8),
+            transform=Affine.translation(0, 0) * Affine.scale(10, -10),
+            crs=None,
+            metadata=CloudMaskMetadata(categorical=True),
+        )
 
         scene_out = project_dir / "scenes" / "mock_scene"
         scene_out.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,12 @@ from clouds_decoded.constants import METADATA_TAG
 logger = logging.getLogger(__name__)
 
 class NumpyEncoder(json.JSONEncoder):
-    """ Custom encoder for numpy data types """
+    """JSON encoder that handles numpy scalar and array types.
+
+    Converts ``np.ndarray`` to nested Python lists and ``np.generic``
+    scalars (e.g. ``np.float32``, ``np.int64``) to their native Python
+    equivalents so they can be serialized by the standard ``json`` module.
+    """
     def default(self, obj):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
@@ -350,9 +355,12 @@ class GeoRasterData(Data):
         return instance
 
 class PointCloudData(Data):
-    """
-    Uses a list of n-D points with attributes, with r-tree indexing available for spatial queries.
-    Stores data in Parquet format with custom metadata support.
+    """3-D point cloud stored as a Parquet file with geospatial metadata.
+
+    Points and their attributes are held in a ``pandas.DataFrame``.
+    Custom metadata (provenance, processing config, etc.) is embedded in
+    the Parquet schema metadata under the ``clouds_decoded`` key and
+    round-trips through read/write.
     """
     data: pd.DataFrame = Field(default_factory=pd.DataFrame)
     metadata: Metadata = Field(default_factory=Metadata)
@@ -411,7 +419,12 @@ class PointCloudData(Data):
         pq.write_table(table, filepath)
 
 class AlbedoMetadata(Metadata):
-    """Metadata for albedo estimation outputs."""
+    """Metadata for surface albedo estimates.
+
+    Tracks the estimation method (IDW, data-driven, or constant fallback),
+    the number of clear-sky training samples, scene clear fraction, and
+    per-band fallback values when insufficient clear pixels are available.
+    """
     band_names: List[str] = Field(default_factory=list)
     method: str = Field(default="idw", description="Estimation method used (idw, datadriven, constant)")
     n_training_samples: int = Field(default=0, description="Number of clear-sky samples used for fitting")
@@ -424,5 +437,10 @@ class AlbedoMetadata(Metadata):
 
 
 class AlbedoData(GeoRasterData):
-    """Surface albedo raster data, typically at coarse resolution."""
+    """Per-band surface albedo stored as a coarse-resolution GeoTIFF.
+
+    Each band in the raster corresponds to the estimated clear-sky surface
+    reflectance for one Sentinel-2 spectral band.  Band ordering is
+    recorded in ``metadata.band_names``.
+    """
     metadata: AlbedoMetadata = Field(default_factory=AlbedoMetadata)

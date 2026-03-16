@@ -102,6 +102,7 @@ class Asset:
     size_hint: str
     description: str
     is_zip: bool = False  # True if the download is a zip that needs extracting
+    extract_all: bool = False  # True to extract the full zip (directory assets)
 
 
 KNOWN_ASSETS: dict[str, Asset] = {
@@ -140,6 +141,15 @@ KNOWN_ASSETS: dict[str, Asset] = {
         size_hint="~2.7 GB",
         description="GEBCO 2024 bathymetry",
         is_zip=True,
+    ),
+    "sample_scene": Asset(
+        key="sample_scene",
+        relative_path="sample_scenes/S2B_MSIL1C_20250104T185019_N0511_R127_T09KWQ_20250104T220125.SAFE",
+        url="https://huggingface.co/asterisk-labs/clouds-decoded/resolve/main/sample_scenes/S2B_MSIL1C_20250104T185019_N0511_R127_T09KWQ_20250104T220125.SAFE.zip",
+        size_hint="~705 MB",
+        description="Sample Sentinel-2 scene for demos and testing",
+        is_zip=True,
+        extract_all=True,
     ),
 }
 
@@ -195,15 +205,19 @@ def download_asset(key: str, force: bool = False) -> Path:
 
         print(f"Extracting {zip_path} …")
         with zipfile.ZipFile(zip_path, "r") as zf:
-            # Extract only the target .nc file (GEBCO zips contain one file)
-            members = [m for m in zf.namelist() if m.endswith(".nc")]
-            if not members:
-                members = zf.namelist()
-            for member in members:
-                zf.extract(member, dest.parent)
-                extracted = dest.parent / member
-                if extracted != dest:
-                    extracted.rename(dest)
+            if asset.extract_all:
+                # Extract entire archive (e.g. .SAFE directory trees)
+                zf.extractall(dest.parent)
+            else:
+                # Extract only the target .nc file (GEBCO zips contain one file)
+                members = [m for m in zf.namelist() if m.endswith(".nc")]
+                if not members:
+                    members = zf.namelist()
+                for member in members:
+                    zf.extract(member, dest.parent)
+                    extracted = dest.parent / member
+                    if extracted != dest:
+                        extracted.rename(dest)
         zip_path.unlink(missing_ok=True)
     else:
         print(f"Downloading {asset.description} ({asset.size_hint}) → {dest}")
