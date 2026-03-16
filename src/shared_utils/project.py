@@ -168,7 +168,6 @@ class WorkflowStepDef(BaseModel):
     keyword_inputs: Dict[str, str] = {} # {param_name: token_name}
     output: Optional[str] = None        # output token name; None = terminal step
     output_file: Optional[str] = None   # disk filename; None = ephemeral
-    postprocess: bool = False           # apply processor's postprocess_fn to result
     model_config = ConfigDict(extra="forbid")
 
 
@@ -196,7 +195,6 @@ class ProcessorDef:
     processor_factory: Callable[[Any], Dict[str, Any]]  # (config) -> {key: proc}
     config_factory: Callable[[], Any]               # () -> default config instance
     output_loader: Optional[Callable[[str], Any]] = None  # (path) -> result; for resume
-    postprocess_fn: Optional[Callable] = None       # (result) -> result
     prefetch_fn: Optional[Callable] = None          # (scene, config) -> None
     on_complete: Optional[Callable] = None          # (result, config, scene_out)
     get_output_file: Optional[Callable] = None      # (config) -> str; dynamic filename
@@ -262,10 +260,8 @@ def _prefetch_cloud_height(scene, config) -> None:
 def _make_cloud_mask_processors(config) -> Dict[str, Any]:
     from clouds_decoded.modules.cloud_mask.processor import CloudMaskProcessor, ThresholdCloudMaskProcessor
     if config.method == "threshold":
-        return {"cloud_mask": ThresholdCloudMaskProcessor(config),
-                "_cloud_mask_postprocessor": CloudMaskProcessor(config)}
-    cm = CloudMaskProcessor(config)
-    return {"cloud_mask": cm, "_cloud_mask_postprocessor": cm}
+        return {"cloud_mask": ThresholdCloudMaskProcessor(config)}
+    return {"cloud_mask": CloudMaskProcessor(config)}
 
 
 def _make_cloud_height_emulator_processors(config) -> Dict[str, Any]:
@@ -343,23 +339,6 @@ def _load_cloud_height_result(path: str):
 def _load_albedo_result(path: str):
     from clouds_decoded.data import AlbedoData
     return AlbedoData.from_file(path)
-
-
-# -- Postprocess function ----------------------------------------------------
-
-def _postprocess_cloud_mask(result):
-    """Convert raw cloud mask to binary for downstream consumers.
-
-    Only needed when the processor returns a non-binary mask (e.g. standalone
-    use with an older checkpoint).  In the default pipeline the processor
-    already returns binary, so this is a no-op.
-
-    Handles both categorical (uint8 argmax) and probability (float32 4×H×W)
-    masks.  Uses default classes [1, 2] (thick + thin cloud) and threshold 0.5.
-    Shadow (class 3) is excluded — it is a ground-level phenomenon, not an
-    elevated target, so it should not receive cloud height or property retrievals.
-    """
-    return result.to_binary(positive_classes=[1, 2], threshold=0.5)
 
 
 # -- Side-effect hooks -------------------------------------------------------
@@ -1308,7 +1287,6 @@ class Project:
 
         The returned dict is keyed by ``step_name`` (not the processor registry
         key) so that ``_run_step`` can look it up with ``processors.get(step.name)``.
-        Auxiliary keys (e.g. ``_cloud_mask_postprocessor``) are preserved as-is.
 
         Args:
             step_name: Step name in the active workflow.
@@ -1391,10 +1369,6 @@ class Project:
             result.write(output_path)
         else:
             output_path = None
-
-        # Postprocess pass (e.g. cloud_mask: binary mask for downstream consumers)
-        if step.postprocess and proc_def.postprocess_fn:
-            result = proc_def.postprocess_fn(result)
 
         # Optional side-effect (e.g. refocus: save individual band GeoTIFFs)
         if proc_def.on_complete:
@@ -1528,8 +1502,6 @@ class Project:
             if proc_def.output_loader is None:
                 continue
             data = proc_def.output_loader(str(path))
-            if step.postprocess and proc_def.postprocess_fn:
-                data = proc_def.postprocess_fn(data)
             results[step.output] = data
         return results
 
@@ -2332,8 +2304,7 @@ class Project:
             raise ctx.error  # type: ignore[misc]
         for step_idx, step_name in enumerate(ctx.steps_to_run):
             step_proc = (
-                {k: v for k, v in processors.items()
-                 if k == step_name or k == "_cloud_mask_postprocessor"}
+                {k: v for k, v in processors.items() if k == step_name}
                 if processors else self._create_processor_for_step(step_name)
             )
             self._execute_step_in_ctx(ctx, step_name, step_idx, step_proc)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 from pydantic import Field, ConfigDict, model_validator
 
@@ -62,19 +62,6 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         description="Output resolution in metres. Defaults to 60m for cloud height.",
     )
 
-    # Cloud mask postprocessing — how to interpret the raw probability mask
-    cloud_mask_classes: List[int] = Field(
-        default=[1, 2],
-        description="Cloud mask class indices to treat as cloud (1=thick, 2=thin, 3=shadow). "
-                    "Height is retrieved wherever these classes exceed the threshold.",
-    )
-    cloud_mask_threshold: float = Field(
-        default=0.2,
-        ge=0.0,
-        le=1.0,
-        description="Probability threshold for cloud detection. Lower = more permissive "
-                    "(retrieve height for uncertain pixels). Only used with probability masks.",
-    )
 
     @model_validator(mode='after')
     def _resolve_model_path(self) -> CloudHeightEmulatorConfig:

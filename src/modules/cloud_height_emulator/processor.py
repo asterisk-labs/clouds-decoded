@@ -208,8 +208,8 @@ class CloudHeightEmulatorProcessor(BaseProcessor):
     ) -> Optional[np.ndarray]:
         """Convert various cloud mask inputs to a 2-D binary array (or None).
 
-        For probability maps (4, H, W), uses ``cloud_mask_classes`` and
-        ``cloud_mask_threshold`` from config to produce a binary mask.
+        For probability maps (4, H, W), uses ``to_binary()`` defaults
+        to produce a binary mask.
 
         Returns:
             2-D uint8 array where 0=clear, 1=cloud, or None.
@@ -237,8 +237,5 @@ class CloudHeightEmulatorProcessor(BaseProcessor):
                 f"Unsupported cloud_mask type: {type(cloud_mask)}. Ignoring mask.")
             return None
 
-        binary = cm_obj.to_binary(
-            positive_classes=self.config.cloud_mask_classes,
-            threshold=self.config.cloud_mask_threshold,
-        )
+        binary = cm_obj.to_binary()
         return binary.data

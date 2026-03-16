@@ -16,8 +16,10 @@ if TYPE_CHECKING:
     from clouds_decoded.modules.refocus.config import RefocusConfig
     from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
 
-# Setup Logger
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Setup Logger — root at WARNING to suppress noisy third-party libraries
+# (e.g. numexpr, transformers), project loggers explicitly set to INFO.
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.getLogger("clouds_decoded").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="Clouds Decoded Command Line Interface")

@@ -243,7 +243,6 @@ def test_emulator_within_project(tmp_path, mock_unet, mock_scene, mock_weights_f
 
     with patch("clouds_decoded.data.Sentinel2Scene.read"), \
          patch("clouds_decoded.data.CloudMaskData.from_file"), \
-         patch("clouds_decoded.modules.cloud_mask.processor.CloudMaskProcessor.postprocess"), \
          patch("clouds_decoded.data.CloudHeightGridData.write"):
 
         mock_mask = CloudMaskData(
@@ -299,9 +298,7 @@ def test_emulator_full_workflow(tmp_path, mock_unet, mock_scene):
         mock_proc.process.return_value = MagicMock()
         mock_proc.process.return_value.metadata = MagicMock()
         mock_proc.process.return_value.metadata.provenance = {}
-        postproc = MagicMock()
-        postproc.postprocess.return_value = MagicMock()
-        return {step: mock_proc, "_cloud_mask_postprocessor": postproc}
+        return {step: mock_proc}
 
     with patch.object(Project, "_create_processor_for_step", mock_create_for_step), \
          patch("clouds_decoded.data.Sentinel2Scene.read"):

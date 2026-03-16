@@ -6,13 +6,12 @@ import torch.nn.functional as F
 from pathlib import Path
 from typing import Dict, Union, Optional
 from skimage.transform import resize
-from skimage.morphology import disk, dilation
 import rasterio
 
 from clouds_decoded.data import Sentinel2Scene, CloudMaskData, CloudMaskMetadata
 from clouds_decoded.constants import BANDS as SENTINEL2_BAND_NAMES
 from clouds_decoded.base_processor import BaseProcessor
-from .config import CloudMaskConfig, PostProcessParams
+from .config import CloudMaskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -278,52 +277,3 @@ class CloudMaskProcessor(BaseProcessor):
         )
         return categorical
 
-    def postprocess(self, mask_data: CloudMaskData, params: PostProcessParams) -> CloudMaskData:
-        """
-        Refines the cloud mask based on specific requirements (resolution, buffering, classes).
-        """
-        mask = mask_data.data.copy()
-        current_transform = mask_data.transform
-
-        # 1. Resize if needed
-        if params.output_resolution is not None:
-             current_res = abs(current_transform[0])
-             target_res = float(params.output_resolution)
-
-             if abs(current_res - target_res) > 0.1:
-                  scale = current_res / target_res
-                  new_h = int(mask.shape[0] * scale)
-                  new_w = int(mask.shape[1] * scale)
-
-                  logger.info(f"Post-processing: Resizing mask {mask.shape} -> {(new_h, new_w)}")
-                  mask = resize(mask, (new_h, new_w), order=0, preserve_range=True).astype(np.uint8)
-
-                  s = 1.0 / scale
-                  from rasterio.transform import Affine
-                  if isinstance(current_transform, Affine):
-                      current_transform = current_transform * Affine.scale(s, s)
-
-        # 2. Apply Class Selection & Binarization
-        if params.binary_mask:
-             binary = np.isin(mask, params.classes_to_mask).astype(np.uint8)
-             mask = binary
-
-        # 3. Buffering (Dilation)
-        if params.buffer_size > 0:
-             res = params.output_resolution if params.output_resolution else abs(current_transform[0])
-             pixels = int(params.buffer_size / res)
-             if pixels > 0:
-                  logger.info(f"The mask will be buffered by {pixels} pixels ({params.buffer_size}m)")
-                  selem = disk(pixels)
-                  mask = dilation(mask, selem)
-
-        meta_dict = mask_data.metadata.model_dump()
-        meta_dict['postprocessed'] = True
-        updated_metadata = CloudMaskMetadata(**meta_dict)
-
-        return CloudMaskData(
-             data=mask,
-             transform=current_transform,
-             crs=mask_data.crs,
-             metadata=updated_metadata
-        )

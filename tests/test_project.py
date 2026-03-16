@@ -1594,7 +1594,7 @@ class TestParallelWorkerCount:
             call_count.append(step)
             m = MagicMock()
             m.process.return_value = MagicMock()
-            return {step: m, "_cloud_mask_postprocessor": m}
+            return {step: m}
 
         monkeypatch.setattr(Project, "_create_processor_for_step", mock_create_for_step)
 
@@ -1711,7 +1711,7 @@ class TestGitHashCaching:
         from unittest.mock import MagicMock
         monkeypatch.setattr(
             Project, "_create_processor_for_step",
-            lambda s, step, device=None: {step: MagicMock(), "_cloud_mask_postprocessor": MagicMock()},
+            lambda s, step, device=None: {step: MagicMock()},
         )
 
         for i in range(3):
@@ -1725,7 +1725,7 @@ class TestCreateProcessors:
     """Unit tests for _create_processors()."""
 
     def test_returns_dict_with_expected_keys(self, tmp_path):
-        """_create_processors() returns a key for each step plus postprocessor helper."""
+        """_create_processors() returns a key for each step."""
         from clouds_decoded.project import Project
         from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
 
@@ -1740,16 +1740,12 @@ class TestCreateProcessors:
         # All pipeline steps should be present
         for step in project.steps:
             assert step in procs, f"Missing processor for step '{step}'"
-        # Postprocessor helper
-        assert "_cloud_mask_postprocessor" in procs
 
     def test_threshold_mask_uses_correct_processor_type(self, tmp_path):
         """Threshold cloud-mask config produces ThresholdCloudMaskProcessor."""
         from clouds_decoded.project import Project
         from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
-        from clouds_decoded.modules.cloud_mask.processor import (
-            ThresholdCloudMaskProcessor, CloudMaskProcessor,
-        )
+        from clouds_decoded.modules.cloud_mask.processor import ThresholdCloudMaskProcessor
 
         project = Project.init(str(tmp_path / "proj"), name="T")
         CloudMaskConfig(method="threshold").to_yaml(
@@ -1759,5 +1755,3 @@ class TestCreateProcessors:
         procs = project._create_processors()
 
         assert isinstance(procs["cloud_mask"], ThresholdCloudMaskProcessor)
-        # Postprocessor is always a CloudMaskProcessor
-        assert isinstance(procs["_cloud_mask_postprocessor"], CloudMaskProcessor)

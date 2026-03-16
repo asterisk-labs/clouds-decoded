@@ -437,17 +437,13 @@ class AlbedoEstimator(BaseProcessor):
     ) -> np.ndarray:
         """Extract boolean clear-sky mask, resized to target dimensions.
 
-        Uses ``cloud_mask_classes`` and ``cloud_mask_threshold`` from config
-        to convert the raw mask to binary via ``to_binary()``, then inverts
-        (cloud=1 → clear=False).
+        Converts the mask to binary via ``to_binary()`` defaults, then
+        inverts (cloud=1 → clear=False).
         """
         if cloud_mask.data is None:
             raise ValueError("Cloud mask has no data")
 
-        binary = cloud_mask.to_binary(
-            positive_classes=self.config.cloud_mask_classes,
-            threshold=self.config.cloud_mask_threshold,
-        )
+        binary = cloud_mask.to_binary()
         # binary.data: 0=clear, 1=cloud → invert to get clear mask
         clear = (binary.data == 0)
 

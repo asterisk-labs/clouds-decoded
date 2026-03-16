@@ -1,4 +1,4 @@
-from .config import CloudMaskConfig, PostProcessParams
+from .config import CloudMaskConfig
 
 def __getattr__(name):
     if name in ('CloudMaskProcessor', 'ThresholdCloudMaskProcessor'):
@@ -8,4 +8,4 @@ def __getattr__(name):
         return globals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-__all__ = ['CloudMaskProcessor', 'ThresholdCloudMaskProcessor', 'CloudMaskConfig', 'PostProcessParams']
+__all__ = ['CloudMaskProcessor', 'ThresholdCloudMaskProcessor', 'CloudMaskConfig']

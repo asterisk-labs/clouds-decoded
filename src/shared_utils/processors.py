@@ -15,7 +15,6 @@ from clouds_decoded.modules.cloud_mask import (
     CloudMaskProcessor,
     ThresholdCloudMaskProcessor,
     CloudMaskConfig,
-    PostProcessParams
 )
 
 # Albedo Estimator Module
@@ -34,7 +33,6 @@ __all__ = [
     'CloudMaskProcessor',
     'ThresholdCloudMaskProcessor',
     'CloudMaskConfig',
-    'PostProcessParams',
     'AlbedoEstimator',
     'AlbedoEstimatorConfig',
     'CloudPropertyInverter',

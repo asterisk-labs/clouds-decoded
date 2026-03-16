@@ -1,48 +1,7 @@
 from typing import Optional, Literal, List
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import BANDS
-
-
-class PostProcessParams(BaseModel):
-    """Post-processing parameters passed per-call to ``CloudMaskProcessor.postprocess()``.
-
-    These are per-invocation parameters (resolution, masking thresholds) that
-    may differ between callers (e.g. Albedo vs Cloud Height).  Not a processor
-    config — intentionally separate from ``CloudMaskConfig`` and does not carry
-    ``output_dir`` / ``n_workers`` fields.
-    """
-    model_config = ConfigDict(extra='forbid')
-    output_resolution: Optional[int] = Field(
-        default=None,
-        ge=10,
-        le=60,
-        description="Output resolution (meters). None=native resolution"
-    )
-
-    classes_to_mask: List[int] = Field(
-        default=[1, 2, 3],
-        description="Class indices to mask (1=thick, 2=thin, 3=shadow)"
-    )
-
-    threshold_confidence: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Probability threshold for classification [0-1]"
-    )
-
-    buffer_size: int = Field(
-        default=0,
-        ge=0,
-        le=1000,
-        description="Dilation buffer around clouds (meters)"
-    )
-
-    binary_mask: bool = Field(
-        default=True,
-        description="True=binary output, False=categorical classes"
-    )
 
 
 class CloudMaskConfig(BaseProcessorConfig):
@@ -73,18 +32,17 @@ class CloudMaskConfig(BaseProcessorConfig):
     batch_size: int = Field(
         default=8,
         ge=1,
-        le=64,
         description="Batch size for model inference"
     )
     working_resolution: int = Field(
-        default=10,
+        default=15,
         ge=10,
         le=60,
         description="Resolution in metres at which inference is performed."
     )
 
     stride: int = Field(
-        default=128,
+        default=170,
         ge=1,
         le=256,
         description="Stride for tiling inputs to model (pixels at model resolution)"
