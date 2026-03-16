@@ -364,13 +364,6 @@ def _postprocess_cloud_mask(result):
 
 # -- Side-effect hooks -------------------------------------------------------
 
-def _cloud_mask_on_complete(result, config, scene_out: Path) -> None:
-    """Write the 4-class categorical mask alongside the binary output."""
-    categorical = getattr(result, '_categorical', None)
-    if categorical is not None:
-        categorical.metadata.provenance = getattr(result.metadata, 'provenance', None)
-        categorical.write(str(scene_out / 'cloud_mask_classes.tif'))
-
 
 def _refocus_on_complete(result_scene, config, scene_out: Path) -> None:
     if config.save_refocused:
@@ -391,7 +384,6 @@ PROCESSORS: Dict[str, ProcessorDef] = {
         config_factory=_config_factory_cloud_mask,
         output_loader=_load_cloud_mask_result,
         prefetch_fn=_prefetch_cloud_mask,
-        on_complete=_cloud_mask_on_complete,
     ),
     "cloud_height_emulator": ProcessorDef(
         config_loader=_load_cloud_height_emulator_config,

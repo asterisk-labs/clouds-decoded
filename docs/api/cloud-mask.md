@@ -1,6 +1,6 @@
 # Cloud Mask
 
-4-class cloud segmentation using SegFormer-B2 deep learning or simple reflectance thresholding.
+Binary cloud mask using SegFormer-B2 deep learning (4-class inference, then binarized) or simple reflectance thresholding.
 
 ## Processors
 

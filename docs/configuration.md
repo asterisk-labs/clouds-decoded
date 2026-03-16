@@ -42,7 +42,7 @@ Base class for all processor configs. Source: `src/shared_utils/config.py`.
 
 ## [`CloudMaskConfig`][clouds_decoded.modules.cloud_mask.config.CloudMaskConfig]
 
-4-class cloud segmentation. Source: `src/modules/cloud_mask/config.py`.
+Binary cloud mask via deep learning or thresholding. Source: `src/modules/cloud_mask/config.py`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -52,6 +52,10 @@ Base class for all processor configs. Source: `src/shared_utils/config.py`.
 | `batch_size` | `int` | `8` | Batch size for inference (1--64) |
 | `working_resolution` | `int` | `10` | Inference resolution in metres (10--60) |
 | `stride` | `int` | `128` | Tiling stride in pixels (1--256) |
+| `reclassify_embedded_shadow` | `bool` | `True` | Reclassify shadow pixels surrounded by cloud as thick cloud |
+| `shadow_reclassify_radius` | `int` | `50` | Neighbourhood radius (pixels) for shadow reclassification (1--200) |
+| `cloud_mask_classes` | `List[int]` | `[1, 2]` | Class indices to treat as cloud for binarization |
+| `cloud_mask_threshold` | `float` | `0.2` | Probability threshold for binarization (0--1) |
 | `threshold_band` | `str` | `"B08"` | Band for threshold method |
 | `threshold_value` | `float` | `0.06` | Reflectance threshold (0--1) |
 

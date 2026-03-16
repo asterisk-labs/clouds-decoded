@@ -13,7 +13,7 @@ clouds-decoded <command> --help
 
 ### `cloud-mask`
 
-4-class cloud segmentation (clear, thick cloud, thin cloud, cloud shadow) using deep learning (SegFormer-B2) or simple reflectance thresholding.
+Binary cloud mask using deep learning (SegFormer-B2) or simple reflectance thresholding. The SegFormer method runs 4-class inference internally (clear, thick cloud, thin cloud, cloud shadow), then binarizes the result.
 
 ```bash
 clouds-decoded cloud-mask scene.SAFE
@@ -230,6 +230,15 @@ clouds-decoded project stats ./analysis --method cloud_mask::class_fractions
 clouds-decoded project stats ./analysis --run-id abc123def456abcd
 ```
 
+### `project delete`
+
+Delete a project and all its outputs, logs, and database. Shows a summary before prompting for confirmation.
+
+```bash
+clouds-decoded project delete ./my_analysis
+clouds-decoded project delete ./my_analysis --yes   # skip confirmation
+```
+
 ---
 
 ## Utility Commands
@@ -244,31 +253,42 @@ clouds-decoded setup
 
 ### `download`
 
-Download managed binary assets (model weights, GEBCO bathymetry).
+Download managed binary assets (model weights, data).
 
 ```bash
-clouds-decoded download emulator
-clouds-decoded download all --force
+clouds-decoded download emulator        # height emulator weights
+clouds-decoded download refl2prop       # refl2prop weights
+clouds-decoded download cloud_mask      # cloud mask weights
+clouds-decoded download sample_scene    # sample Sentinel-2 scene
+clouds-decoded download gebco           # GEBCO bathymetry
+clouds-decoded download all             # everything
+clouds-decoded download all --force --yes  # re-download all, skip prompts
 ```
 
-### `view`
+### `view` (deprecated)
 
-Launch a 3D point-cloud viewer (viser) for a project's cloud height outputs.
+Launch a 3D point-cloud viewer (viser). **Deprecated** -- use `serve` instead.
 
 ```bash
 clouds-decoded view ./analysis
-clouds-decoded view ./analysis --port 8080 --max-grid-dim 800
 ```
-
-For remote servers, port-forward with: `ssh -L 8080:localhost:8080 user@server`
 
 ### `serve`
 
-Launch a web-based viewer (Panel + Bokeh) for a processed scene.
+Launch an interactive 2D viewer (Panel + Bokeh) for a project. Provides scene navigation, layer selection, overlay compositing, and RGB contrast controls.
 
 ```bash
 clouds-decoded serve ./analysis
-clouds-decoded serve ./analysis --scene-id S2A_MSIL1C_... --port 5006
+clouds-decoded serve ./analysis --port 5006
 ```
 
 For remote servers, port-forward with: `ssh -L 5006:localhost:5006 user@server`
+
+### `overview`
+
+Save a static overview figure for a scene's outputs.
+
+```bash
+clouds-decoded overview ./analysis
+clouds-decoded overview ./analysis --scene-id S2A_MSIL1C_... --output overview.png --dpi 150
+```

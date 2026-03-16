@@ -51,11 +51,12 @@ The command lists the assets and their approximate sizes:
 Use the `download` command to fetch individual assets or all of them:
 
 ```bash
-clouds-decoded download emulator    # height emulator weights
-clouds-decoded download refl2prop   # cloud property inversion weights
-clouds-decoded download cloud_mask  # cloud mask segmentation weights
-clouds-decoded download gebco       # GEBCO bathymetry (optional)
-clouds-decoded download all         # everything
+clouds-decoded download emulator      # height emulator weights
+clouds-decoded download refl2prop     # cloud property inversion weights
+clouds-decoded download cloud_mask    # cloud mask segmentation weights
+clouds-decoded download sample_scene  # sample Sentinel-2 scene (~705 MB)
+clouds-decoded download gebco         # GEBCO bathymetry (optional)
+clouds-decoded download all           # everything
 ```
 
-Use `--force` to re-download an asset that already exists locally.
+Use `--force` to re-download an asset that already exists locally. Use `--yes` to skip confirmation prompts.

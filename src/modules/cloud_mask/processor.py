@@ -134,10 +134,7 @@ class CloudMaskProcessor(BaseProcessor):
 
         Runs SegFormer-B2 sliding-window inference to produce per-class
         probabilities, then binarizes using ``cloud_mask_classes`` and
-        ``cloud_mask_threshold`` from config.  The 4-class categorical
-        argmax map is stashed on the result as ``_categorical`` for the
-        pipeline's ``on_complete`` hook to save as a side file
-        (``cloud_mask_classes.tif``).
+        ``cloud_mask_threshold`` from config.
 
         Args:
             scene: Sentinel2Scene object with loaded bands.
@@ -198,9 +195,9 @@ class CloudMaskProcessor(BaseProcessor):
         else:
             new_affine = scene.transform
 
-        # 4. Derive categorical (argmax) and binary masks from probabilities.
-        #    The binary mask is the main output (tiny uint8, fast to write).
-        #    The categorical mask is stashed for on_complete to save separately.
+        # 4. Derive binary mask from probabilities.
+        #    Shadow reclassification operates on the categorical argmax
+        #    internally but only the binary mask is returned.
         categorical = np.argmax(probs, axis=0).astype(np.uint8)
 
         # 4a. Reclassify shadow pixels that are embedded within cloud.
@@ -226,21 +223,7 @@ class CloudMaskProcessor(BaseProcessor):
         if reclassified_mask is not None:
             binary[reclassified_mask] = 1
 
-        categorical_result = CloudMaskData(
-            data=categorical,
-            transform=new_affine,
-            crs=scene.crs,
-            nodata=255,
-            metadata=CloudMaskMetadata(
-                categorical=True,
-                classes={0: 'Clear', 1: 'Thick Cloud', 2: 'Thin Cloud', 3: 'Cloud Shadow'},
-                method="senseiv2",
-                model=_MODEL_NAME,
-                resolution=target_res,
-            )
-        )
-
-        binary_result = CloudMaskData(
+        return CloudMaskData(
             data=binary,
             transform=new_affine,
             crs=scene.crs,
@@ -253,11 +236,6 @@ class CloudMaskProcessor(BaseProcessor):
                 resolution=target_res,
             )
         )
-
-        # Stash categorical for the on_complete hook to write as a side file.
-        object.__setattr__(binary_result, '_categorical', categorical_result)
-
-        return binary_result
 
     def _reclassify_embedded_shadow(self, categorical: np.ndarray) -> np.ndarray:
         """Reclassify shadow pixels surrounded by cloud as thick cloud.

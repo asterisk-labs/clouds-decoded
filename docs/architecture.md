@@ -10,7 +10,7 @@ The processing pipeline runs in a fixed order, where each step depends on output
 cloud_mask --> cloud_height --> albedo --> refocus --> cloud_properties
 ```
 
-1. **Cloud Mask** -- 4-class segmentation (clear, thin cloud, thick cloud, shadow).
+1. **Cloud Mask** -- binary cloud mask via SegFormer-B2 (4-class inference internally, then binarized) or simple thresholding.
 2. **Cloud Height** -- Stereo parallax or DL emulator. Uses cloud mask to focus on cloud pixels.
 3. **Albedo** -- Surface reflectance from clear-sky pixels (identified by cloud mask).
 4. **Refocus** -- Parallax correction using cloud height. Returns a new [`Sentinel2Scene`][clouds_decoded.data.sentinel.Sentinel2Scene] with `is_refocused=True`. No output file -- pure in-memory transformation.

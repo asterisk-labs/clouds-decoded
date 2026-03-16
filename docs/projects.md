@@ -5,7 +5,7 @@ The project system organises batch processing of multiple Sentinel-2 scenes with
 ## Workflow
 
 ```
-init  -->  edit configs  -->  stage scenes  -->  run  -->  status / stats
+init  -->  edit configs  -->  stage scenes  -->  run  -->  status / stats  -->  delete
 ```
 
 1. **Init**: Create a project directory with default config YAMLs.

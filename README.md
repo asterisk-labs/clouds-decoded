@@ -2,9 +2,9 @@
 
 Retrieve physical cloud properties from Sentinel-2 satellite imagery. Given a Level-1C scene (`.SAFE` directory), the toolkit produces:
 
-- **Cloud mask** (4-class: clear, thin cloud, thick cloud, shadow)
+- **Cloud mask** (binary cloud/clear)
 - **Cloud top height** (meters, via stereo parallax)
-- **Surface albedo** (spatially-varying polynomial fit)
+- **Surface albedo** (inverse-distance weighted interpolation of clear-sky pixels, with MLP fallback)
 - **Cloud optical/microphysical properties** (optical thickness, effective radii, ice-liquid ratio)
 
 All outputs are georeferenced GeoTIFFs that open directly in QGIS, Python, or any GDAL-compatible tool.

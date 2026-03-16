@@ -68,11 +68,11 @@ print(height.metadata)         # Processing provenance
 
 ## [`CloudMaskData`][clouds_decoded.data.cloud_mask.CloudMaskData]
 
-4-class cloud mask output. Source: `src/shared_utils/data/cloud_mask.py`.
+Cloud mask output. Source: `src/shared_utils/data/cloud_mask.py`.
 
-Supports two modes:
+The processor outputs a **binary** mask (0=clear, 1=cloud). The data class supports two modes:
 
-- **Categorical** (default): `uint8` 2D array with values 0 (clear), 1 (thick cloud), 2 (thin cloud), 3 (cloud shadow). Nodata = 255.
+- **Categorical** (default): `uint8` 2D array with class labels (0=clear, 1=cloud). Nodata = 255.
 - **Probability**: `float32` 4-band array `(4, H, W)` with per-class probabilities.
 
 | Attribute | Type | Default | Description |
