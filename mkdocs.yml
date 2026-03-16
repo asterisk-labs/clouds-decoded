@@ -1,0 +1,100 @@
+site_name: clouds-decoded
+site_description: End-to-end cloud properties from Sentinel-2
+repo_url: https://github.com/asterisk-labs/clouds-decoded
+
+theme:
+  name: material
+  palette:
+    scheme: default
+    primary: blue grey
+    accent: teal
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - content.code.copy
+    - toc.follow
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      custom_templates: docs/templates
+      handlers:
+        python:
+          load_external_modules: true
+          import:
+            - https://docs.python.org/3/objects.inv
+            - https://numpy.org/doc/stable/objects.inv
+          options:
+            extensions:
+              - griffe_pydantic
+            allow_inspection: true
+            force_inspection: false
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            heading_level: 3
+            members_order: source
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            docstring_style: google
+            merge_init_into_class: true
+            show_if_no_docstring: false
+            signature_crossrefs: true
+            separate_signature: true
+            inherited_members: true
+            filters:
+              - "!^_"
+              - "^__init__$"
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+  - attr_list
+  - def_list
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - CLI Reference: cli-reference.md
+  - Configuration: configuration.md
+  - Data Classes: data-classes.md
+  - Projects: projects.md
+  - Architecture: architecture.md
+  - API Reference:
+    - api/index.md
+    - Data:
+      - api/data-base.md
+      - api/data-sentinel.md
+      - api/data-band.md
+      - api/data-cloud-mask.md
+      - api/data-cloud-height.md
+      - api/data-refl2prop.md
+    - Config:
+      - api/config.md
+      - api/config-cloud-mask.md
+      - api/config-cloud-height.md
+      - api/config-cloud-height-emulator.md
+      - api/config-albedo.md
+      - api/config-refocus.md
+      - api/config-refl2prop.md
+    - Processors:
+      - api/cloud-mask.md
+      - api/cloud-height.md
+      - api/cloud-height-emulator.md
+      - api/albedo.md
+      - api/refocus.md
+      - api/refl2prop.md
+    - Utilities:
+      - api/normalization.md
+      - api/sliding-window.md
+      - api/constants.md
+    - Project: api/project.md
+    - Stats: api/stats.md
