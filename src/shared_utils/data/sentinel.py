@@ -522,9 +522,16 @@ class Sentinel2Scene(Data):
             with rio.open(path) as src:
                 if crop_window:
                     window = self._scale_crop_window(crop_window, b02_w, b02_h, src.width, src.height)
-                    bands_data[band] = src.read(1, window=window)
+                    data = src.read(1, window=window)
                 else:
-                    bands_data[band] = src.read(1)
+                    data = src.read(1)
+                # Use the actual pixel size from the jp2 transform:
+                actual_res = round(abs(src.transform.a))
+                bands_data[band] = Sentinel2Band(
+                    name=band,
+                    data=data,
+                    native_resolution=actual_res,
+                )
         return bands_data
 
     def _get_footprints(self, scene_directory: Path, bands: List[str], crop_window=None):
