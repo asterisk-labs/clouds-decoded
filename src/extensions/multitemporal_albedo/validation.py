@@ -42,12 +42,20 @@ def validate_time_series(
             "No scenes are staged. Stage the tile's scenes before running "
             "the multitemporal albedo stage.")
 
-    cropped = [p for p, cw in scene_rows if cw is not None]
-    if cropped:
+    crops = {cw for _, cw in scene_rows}
+    if len(crops) > 1:
         raise TimeSeriesValidationError(
-            f"{len(cropped)} scene(s) are staged with a crop window. The "
-            "multitemporal albedo extension fits on full tiles only — "
-            "stage full scenes (or use method 'idw'/'datadriven' for crops).")
+            "Scenes are staged with mixed crop windows "
+            f"({sorted(str(c) for c in crops)}). The multitemporal fit "
+            "needs one shared grid — stage every scene full-tile or with "
+            "the same crop window.")
+    crop_window = next(iter(crops))
+    if crop_window is not None:
+        from .stack import crop_grid
+        try:
+            crop_grid(crop_window, params.grid_res)
+        except ValueError as exc:
+            raise TimeSeriesValidationError(str(exc)) from exc
 
     sids = [Path(p).stem for p, _ in scene_rows]
     bad = [s for s in sids if len(s.split("_")) < 6]
@@ -82,7 +90,9 @@ def validate_time_series(
             f"{params.min_date_span_days}.")
 
     summary = {"tile": next(iter(tiles)), "n_scenes": len(sids),
-               "years": years, "span_days": span}
-    logger.info("time series OK: tile %s, %d scenes, %d years, %d days",
-                summary["tile"], summary["n_scenes"], len(years), span)
+               "years": years, "span_days": span,
+               "crop_window": crop_window}
+    logger.info("time series OK: tile %s, %d scenes, %d years, %d days%s",
+                summary["tile"], summary["n_scenes"], len(years), span,
+                f", crop {crop_window}" if crop_window else "")
     return summary

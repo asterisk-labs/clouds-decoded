@@ -7,7 +7,8 @@ selects ``method: multitemporal``:
 2. Run the ``cloud_mask`` step for all pending scenes through the ordinary
    orchestrator (``Project.run(only_steps=["cloud_mask"])``) — scenes stay
    ``staged`` in the DB with a completed cloud_mask manifest entry.
-3. Build / refresh the 180 m full-tile stack from the masks.
+3. Build / refresh the 180 m stack from the masks (full tile, or the shared
+   crop window when the stage is run with one).
 4. Fit (or load the cached) cluster + temporal model.
 5. Pre-populate ``albedo.tif`` + manifest for every scene with a mask.
 
@@ -50,8 +51,16 @@ class MultitemporalAlbedoStage:
 
     def run(self, parallel: bool = False, verbose: bool = False,
             progress: bool = True, force: bool = False,
-            parallelism: Optional[dict] = None) -> None:
-        """Execute the full pre-run stage (phases 1-5)."""
+            parallelism: Optional[dict] = None,
+            crop_window: Optional[str] = None) -> None:
+        """Execute the full pre-run stage (phases 1-5).
+
+        Args:
+            crop_window: Restrict the whole stage to scenes staged with this
+                crop window (``'col,row,w,h'`` in B02 pixels). None = full
+                scenes. A cropped stage fits on the crop's analysis grid —
+                much faster, useful for validation runs.
+        """
         from .fit import fit_and_save
         from .prepopulate import prepopulate_scene
         from .stack import build_stack, stack_signature
@@ -69,23 +78,26 @@ class MultitemporalAlbedoStage:
                 "albedo would be recomputed on resume. Use the "
                 "'full-workflow-multitemporal' recipe.")
 
-        rows = project.db.get_all()
+        rows = [r for r in project.db.get_all()
+                if r["crop_window"] == crop_window]
         scene_rows = [(r["path"], r["crop_window"]) for r in rows]
         summary = validate_time_series(scene_rows, params)
         logger.warning(
-            "Multitemporal albedo stage: tile %s, %d scenes, %d-%d",
+            "Multitemporal albedo stage: tile %s, %d scenes, %d-%d%s",
             summary["tile"], summary["n_scenes"],
-            summary["years"][0], summary["years"][-1])
+            summary["years"][0], summary["years"][-1],
+            f", crop {crop_window}" if crop_window else "")
 
         logger.warning("Stage 1/4: cloud masks (restricted project run)...")
         project.run(parallel=parallel, verbose=verbose, progress=progress,
                     parallelism=parallelism, force=force,
+                    crop_window=crop_window,
                     only_steps=["cloud_mask"], run_stats=False)
 
         logger.warning("Stage 2/4: building %d m stack...", params.grid_res)
         mask_rows = []
         for r in rows:
-            mask_path = (project._scene_output_dir(r["scene_id"])
+            mask_path = (project._scene_output_dir(r["scene_id"], crop_window)
                          / "cloud_mask.tif")
             if mask_path.exists():
                 mask_rows.append((r["path"], mask_path))
@@ -97,8 +109,11 @@ class MultitemporalAlbedoStage:
         # model signature) on the cloud_mask config hash — a mask config
         # change invalidates both automatically.
         cm_hash = project._config_hash("cloud_mask")
-        stack = build_stack(mask_rows, self.dir / f"scene_cache_{cm_hash}",
-                            params.grid_res)
+        crop_tag = (f"_crop{crop_window.replace(',', '_')}"
+                    if crop_window else "")
+        stack = build_stack(
+            mask_rows, self.dir / f"scene_cache_{cm_hash}{crop_tag}",
+            params.grid_res, crop_window)
         sig = f"{stack_signature(stack)}_{cm_hash}"
 
         # Post-stack coverage check (needs the masks, so runs here).
@@ -111,7 +126,8 @@ class MultitemporalAlbedoStage:
                 100 * covered, params.min_clear_obs)
 
         logger.warning("Stage 3/4: fitting cluster model...")
-        model = fit_and_save(stack, sig, params, self.dir / "model.npz")
+        model = fit_and_save(stack, sig, params,
+                             self.dir / f"model{crop_tag}.npz")
 
         logger.warning("Stage 4/4: pre-populating albedo.tif per scene...")
         git_hash = project._get_git_hash()
@@ -126,7 +142,8 @@ class MultitemporalAlbedoStage:
             try:
                 written = prepopulate_scene(
                     project, model, scene_path, albedo_cfg,
-                    git_hash=git_hash, footprint=footprint)
+                    git_hash=git_hash, footprint=footprint,
+                    crop_window=crop_window)
             except Exception as exc:
                 logger.error("pre-populate failed for %s: %s", sid, exc)
                 continue

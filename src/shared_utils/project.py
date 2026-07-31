@@ -1922,9 +1922,11 @@ class Project:
                     # The stage reads staged scenes from the DB.
                     self.stage(*[str(Path(s).resolve()) for s in scenes],
                                crop_window=crop_window)
+                cw = (",".join(p.strip() for p in crop_window.split(","))
+                      if crop_window else None)
                 MultitemporalAlbedoStage(self).run(
                     parallel=parallel, verbose=verbose, progress=progress,
-                    force=force, parallelism=parallelism,
+                    force=force, parallelism=parallelism, crop_window=cw,
                 )
         try:
             self._only_steps = only_steps

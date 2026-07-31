@@ -212,11 +212,23 @@ class TestTimeSeriesValidation:
         with pytest.raises(TimeSeriesValidationError, match="No scenes"):
             validate_time_series([], default_params())
 
-    def test_crop_window_rejected(self):
-        rows = [(p, "0,0,100,100") for p, _ in
+    def test_uniform_crop_window_accepted(self):
+        rows = [(p, "0,0,1800,1800") for p, _ in
                 self._rows(fake_scene_ids(80))]
-        with pytest.raises(TimeSeriesValidationError, match="crop"):
-            validate_time_series(rows, default_params())
+        summary = validate_time_series(rows, default_params(min_scenes=50))
+        assert summary["crop_window"] == "0,0,1800,1800"
+
+    def test_mixed_crop_windows_rejected(self):
+        rows = self._rows(fake_scene_ids(80))
+        rows = ([(p, "0,0,1800,1800") for p, _ in rows[:40]]
+                + [(p, None) for p, _ in rows[40:]])
+        with pytest.raises(TimeSeriesValidationError, match="mixed crop"):
+            validate_time_series(rows, default_params(min_scenes=10))
+
+    def test_tiny_crop_window_rejected(self):
+        rows = [(p, "0,0,20,20") for p, _ in self._rows(fake_scene_ids(80))]
+        with pytest.raises(TimeSeriesValidationError, match="2x2"):
+            validate_time_series(rows, default_params(min_scenes=50))
 
     def test_mixed_tiles_rejected(self):
         rows = self._rows(fake_scene_ids(40)
@@ -425,6 +437,96 @@ class TestPrepopulate:
             footprint=footprint)
         assert np.isnan(data[:, :, : W // 2]).all()
         assert np.isfinite(data[:, :, W // 2:]).all()
+
+
+# ---------------------------------------------------------------------------
+# Crop-window support
+# ---------------------------------------------------------------------------
+
+class TestCropWindow:
+    def test_crop_grid_floors_to_cells(self):
+        from clouds_decoded.extensions.multitemporal_albedo.stack import (
+            crop_grid,
+        )
+        # 18 B02 px per 180 m cell; 1000 px -> 55 cells (10 px dropped).
+        col, row, w, h, gw, gh = crop_grid("100,200,1000,1000", 180)
+        assert (col, row) == (100, 200)
+        assert (gw, gh) == (55, 55)
+        assert (w, h) == (55 * 18, 55 * 18)
+
+    def test_crop_grid_too_small(self):
+        from clouds_decoded.extensions.multitemporal_albedo.stack import (
+            crop_grid,
+        )
+        with pytest.raises(ValueError, match="2x2"):
+            crop_grid("0,0,20,20", 180)
+
+    def test_crop_grid_malformed(self):
+        from clouds_decoded.extensions.multitemporal_albedo.stack import (
+            crop_grid,
+        )
+        with pytest.raises(ValueError, match="col,row"):
+            crop_grid("1,2,3", 180)
+
+    def test_prepopulate_crop_passes_gates(self, tmp_path):
+        """Cropped pre-population writes into the crops/ output dir and
+        validates against the crop's provenance."""
+        from clouds_decoded.config import BaseProcessorConfig
+        from clouds_decoded.extensions.multitemporal_albedo.prepopulate import (
+            prepopulate_scene,
+        )
+        from clouds_decoded.modules.albedo_estimator.config import (
+            AlbedoEstimatorConfig,
+        )
+        from clouds_decoded.project import Project
+
+        project = Project.init(str(tmp_path / "proj"), name="T",
+                               pipeline="full-workflow-multitemporal")
+        cfg = AlbedoEstimatorConfig(
+            method="multitemporal",
+            multitemporal=MultitemporalAlbedoParams(
+                n_clusters=5, min_clear_obs=10, min_scenes=5),
+            output_resolution=360,
+        )
+        cfg.to_yaml(project.configs_dir / "albedo.yaml")
+
+        stack = make_synthetic_stack()
+        model = fit_cluster_model(stack["refl"], stack["clear"],
+                                  stack["times"], stack["doy"],
+                                  stack["year"], default_params())
+        model["ord0"] = stack["ord0"]
+        model["transform"] = np.array([180.0, 0, 300000.0,
+                                       0, -180.0, 6200000.0])
+        model["crs"] = "EPSG:32637"
+        model["bands"] = ["B02", "B03", "B04"]
+
+        sid = "S2A_MSIL1C_20230715T100031_N0510_R064_T37VCC_20230715T100031"
+        scene_path = str(tmp_path / f"{sid}.SAFE")
+        cw = "0,0,288,288"
+        albedo_cfg = project._load_step_config("albedo")
+
+        assert prepopulate_scene(project, model, scene_path, albedo_cfg,
+                                 crop_window=cw)
+        out_dir = project._scene_output_dir(sid, cw)
+        assert "crops" in str(out_dir)
+        assert (out_dir / "albedo.tif").exists()
+
+        manifest = project._load_manifest(sid, scene_path, cw)
+        assert manifest.is_step_complete(
+            "albedo", project._config_hash("albedo"))
+        err = project._validate_step_file(
+            "albedo", out_dir, scene_path,
+            BaseProcessorConfig._semantic_dump(albedo_cfg), crop_window=cw)
+        assert err is None
+        # Full-scene validation must NOT accept the cropped output.
+        err_full = project._validate_step_file(
+            "albedo", out_dir, scene_path,
+            BaseProcessorConfig._semantic_dump(albedo_cfg))
+        assert err_full is not None
+
+    def test_grid_res_must_be_multiple_of_10(self):
+        with pytest.raises(ValueError):
+            MultitemporalAlbedoParams(grid_res=175)
 
 
 # ---------------------------------------------------------------------------

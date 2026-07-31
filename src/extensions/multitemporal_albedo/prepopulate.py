@@ -62,8 +62,9 @@ def predict_scene_albedo(model: Dict, scene_id: str,
 
 def prepopulate_scene(project, model: Dict, scene_path: str,
                       albedo_config, git_hash: Optional[str] = None,
-                      footprint: Optional[np.ndarray] = None) -> bool:
-    """Write ``albedo.tif`` + manifest entry for one scene.
+                      footprint: Optional[np.ndarray] = None,
+                      crop_window: Optional[str] = None) -> bool:
+    """Write ``albedo.tif`` + manifest entry for one scene (or one crop).
 
     Returns True if written, False if the step was already complete.
     """
@@ -75,7 +76,7 @@ def prepopulate_scene(project, model: Dict, scene_path: str,
 
     scene_id = project._scene_id(scene_path)
     config_hash = project._config_hash("albedo")
-    manifest = project._load_manifest(scene_id, scene_path)
+    manifest = project._load_manifest(scene_id, scene_path, crop_window)
     if manifest.is_step_complete("albedo", config_hash):
         return False
 
@@ -104,11 +105,11 @@ def prepopulate_scene(project, model: Dict, scene_path: str,
     product_id = Path(scene_path).name.removesuffix(".SAFE")
     provenance = project._build_provenance(
         scene_path, product_id, "albedo", config_dict,
-        crop_window=None, git_hash=git_hash,
+        crop_window=crop_window, git_hash=git_hash,
     )
     result.metadata.provenance = provenance.model_dump()
 
-    scene_out = project._scene_output_dir(scene_id)
+    scene_out = project._scene_output_dir(scene_id, crop_window)
     scene_out.mkdir(parents=True, exist_ok=True)
     output_path = scene_out / "albedo.tif"
     result.write(str(output_path))
@@ -122,5 +123,5 @@ def prepopulate_scene(project, model: Dict, scene_path: str,
         completed_at=completed.isoformat(),
         duration_seconds=(completed - started).total_seconds(),
     )
-    project._save_manifest(scene_id, manifest)
+    project._save_manifest(scene_id, manifest, crop_window)
     return True

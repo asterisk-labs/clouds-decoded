@@ -735,6 +735,10 @@ def project_prefit(
         help="Run the cloud-mask pass with the parallel pipeline."),
     force: bool = typer.Option(
         False, help="Recompute cloud masks even if cached."),
+    crop_window: Optional[str] = typer.Option(
+        None, help="Fit on scenes staged with this crop window "
+                   "('col,row,w,h' in B02 pixels) — much faster; useful "
+                   "for validation runs."),
     verbose: bool = typer.Option(False, "--verbose", "-v",
                                  help="Show INFO logs on the terminal."),
 ):
@@ -761,8 +765,11 @@ def project_prefit(
             "The albedo step is not configured for the multitemporal method. "
             "Set 'method: multitemporal' in configs/albedo.yaml.")
         raise typer.Exit(1)
+    if crop_window is not None:
+        crop_window = ",".join(p.strip() for p in crop_window.split(","))
     MultitemporalAlbedoStage(project).run(
-        parallel=parallel, verbose=verbose, force=force)
+        parallel=parallel, verbose=verbose, force=force,
+        crop_window=crop_window)
 
 
 @project_app.command("status")

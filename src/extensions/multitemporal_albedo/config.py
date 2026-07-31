@@ -19,9 +19,10 @@ class MultitemporalAlbedoParams(BaseModel):
 
     # ---- stack -----------------------------------------------------------
     grid_res: int = Field(
-        default=180, ge=60, le=1080,
-        description="Resolution (m) of the full-tile analysis grid the time "
-                    "series is built on. 180 m gives a 610x610 grid.",
+        default=180, ge=60, le=1080, multiple_of=10,
+        description="Resolution (m) of the analysis grid the time series is "
+                    "built on (multiple of 10 — the B02 pixel size). 180 m "
+                    "gives a 610x610 full-tile grid.",
     )
 
     # ---- time-series admissibility --------------------------------------
