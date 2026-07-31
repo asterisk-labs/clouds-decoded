@@ -41,6 +41,24 @@ _SEGFORMER_B2 = dict(
 _PATCH_SIZE = 512   # fixed SegFormerB2 patch size
 
 
+def _normalise_state_dict(state_dict: dict) -> dict:
+    """Normalise checkpoint variants to a bare SegFormer state dict.
+
+    Accepts the original senseiv2 export (bare dict, keys prefixed
+    ``segmenter.`` by the old FullModel wrapper) and training checkpoints
+    (``{"model": state_dict, ...}`` or ``{"state_dict": ...}`` with bare
+    keys).
+    """
+    if isinstance(state_dict.get("model"), dict):
+        state_dict = state_dict["model"]
+    elif isinstance(state_dict.get("state_dict"), dict):
+        state_dict = state_dict["state_dict"]
+    return {
+        (k[len("segmenter."):] if k.startswith("segmenter.") else k): v
+        for k, v in state_dict.items()
+    }
+
+
 class ThresholdCloudMaskProcessor(BaseProcessor):
     """Simple threshold-based cloud mask using a single band's reflectance.
 
@@ -121,11 +139,31 @@ class CloudMaskProcessor(BaseProcessor):
             cfg = SegformerConfig(**_SEGFORMER_B2)
             self.model = SegformerForSemanticSegmentation(cfg).to(self.device)
 
-            state_dict = torch.load(weights_path, map_location=self.device, weights_only=True)
-            # Checkpoint keys carry a "segmenter." prefix from the senseiv2
-            # FullModel wrapper — strip it before loading.
-            stripped = {k[len("segmenter."):]: v for k, v in state_dict.items()}
-            self.model.load_state_dict(stripped, strict=True)
+            try:
+                state_dict = torch.load(weights_path, map_location=self.device,
+                                        weights_only=True)
+            except Exception:
+                # Training checkpoints may embed numpy scalars (e.g. a
+                # validation metric) that the weights-only unpickler rejects.
+                # Allowlist those types where torch supports it (>=2.4);
+                # otherwise fall back to a full load with a warning.
+                import numpy as _np
+                if hasattr(torch.serialization, "add_safe_globals"):
+                    torch.serialization.add_safe_globals(
+                        [_np.core.multiarray.scalar, _np.dtype])
+                    state_dict = torch.load(weights_path,
+                                            map_location=self.device,
+                                            weights_only=True)
+                else:
+                    logger.warning(
+                        "Weights-only load of %s failed (non-tensor metadata "
+                        "in checkpoint); loading with weights_only=False — "
+                        "only use checkpoint files you trust.", weights_path)
+                    state_dict = torch.load(weights_path,
+                                            map_location=self.device,
+                                            weights_only=False)
+            self.model.load_state_dict(
+                _normalise_state_dict(state_dict), strict=True)
             self.model.eval()
 
     def _process(self, scene: Sentinel2Scene) -> CloudMaskData:

@@ -428,6 +428,36 @@ class TestPrepopulate:
 
 
 # ---------------------------------------------------------------------------
+# Cloud-mask checkpoint format tolerance
+# ---------------------------------------------------------------------------
+
+class TestCheckpointNormalisation:
+    def test_senseiv2_prefixed(self):
+        from clouds_decoded.modules.cloud_mask.processor import (
+            _normalise_state_dict,
+        )
+        sd = {"segmenter.segformer.encoder.x": 1, "segmenter.decode_head.y": 2}
+        out = _normalise_state_dict(sd)
+        assert set(out) == {"segformer.encoder.x", "decode_head.y"}
+
+    def test_training_wrapper_bare_keys(self):
+        from clouds_decoded.modules.cloud_mask.processor import (
+            _normalise_state_dict,
+        )
+        sd = {"model": {"segformer.encoder.x": 1, "decode_head.y": 2},
+              "epoch": 3, "cloud_iou": 0.99}
+        out = _normalise_state_dict(sd)
+        assert set(out) == {"segformer.encoder.x", "decode_head.y"}
+
+    def test_plain_bare_keys_passthrough(self):
+        from clouds_decoded.modules.cloud_mask.processor import (
+            _normalise_state_dict,
+        )
+        sd = {"segformer.encoder.x": 1}
+        assert _normalise_state_dict(sd) == sd
+
+
+# ---------------------------------------------------------------------------
 # Stage selection
 # ---------------------------------------------------------------------------
 
