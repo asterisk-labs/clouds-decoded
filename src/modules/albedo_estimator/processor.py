@@ -58,6 +58,14 @@ class AlbedoEstimator(BaseProcessor):
             AlbedoData with shape (n_bands, H_out, W_out) at
             ``config.output_resolution``.
         """
+        if self.config.method == "multitemporal":
+            raise RuntimeError(
+                "Albedo method 'multitemporal' is fitted at tile level by the "
+                "multitemporal albedo extension, which pre-populates "
+                "albedo.tif for every scene before the per-scene run — this "
+                "processor should never execute. Run via the project system "
+                "('clouds-decoded project run', or 'project prefit' for the "
+                "fit stage alone); for single scenes use 'idw'/'datadriven'.")
         if self.config.method == "datadriven":
             result = self._fit_datadriven(scene)
         else:

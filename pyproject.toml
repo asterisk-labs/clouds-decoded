@@ -46,6 +46,8 @@ dependencies = [
 "clouds_decoded.workflows" = "src/shared_utils/workflows"
 "clouds_decoded.cli" = "src/cli"
 "clouds_decoded.stats" = "src/stats"
+"clouds_decoded.extensions" = "src/extensions"
+"clouds_decoded.extensions.multitemporal_albedo" = "src/extensions/multitemporal_albedo"
 
 [tool.setuptools.package-data]
 "clouds_decoded.workflows" = ["recipes/*.yaml"]

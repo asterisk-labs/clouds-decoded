@@ -727,6 +727,44 @@ def project_run(
         raise typer.Exit(1)
 
 
+@project_app.command("prefit")
+def project_prefit(
+    project_dir: str = typer.Argument(..., help="Path to project directory"),
+    parallel: bool = typer.Option(
+        False, "--parallel",
+        help="Run the cloud-mask pass with the parallel pipeline."),
+    force: bool = typer.Option(
+        False, help="Recompute cloud masks even if cached."),
+    verbose: bool = typer.Option(False, "--verbose", "-v",
+                                 help="Show INFO logs on the terminal."),
+):
+    """Run only the multitemporal albedo pre-run stage.
+
+    Validates the staged time series, computes cloud masks for all scenes,
+    fits the tile-level multitemporal model, and pre-populates albedo.tif +
+    manifests. Requires ``method: multitemporal`` in configs/albedo.yaml.
+    A subsequent ``project run`` fills in the remaining per-scene steps
+    (the fitted model is cached, so the stage re-run is a no-op).
+    """
+    from clouds_decoded.extensions.multitemporal_albedo.stage import (
+        MultitemporalAlbedoStage,
+    )
+    from clouds_decoded.project import Project
+
+    try:
+        project = Project.load(project_dir)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        raise typer.Exit(1)
+    if not MultitemporalAlbedoStage.is_selected(project):
+        logger.error(
+            "The albedo step is not configured for the multitemporal method. "
+            "Set 'method: multitemporal' in configs/albedo.yaml.")
+        raise typer.Exit(1)
+    MultitemporalAlbedoStage(project).run(
+        parallel=parallel, verbose=verbose, force=force)
+
+
 @project_app.command("status")
 def project_status(
     project_dir: str = typer.Argument(..., help="Path to project directory"),

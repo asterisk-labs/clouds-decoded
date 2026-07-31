@@ -968,6 +968,9 @@ class Project:
         self.config_path = self.project_dir / "project.yaml"
         self.configs_dir = self.project_dir / "configs"
         self._config: Optional[ProjectConfig] = None
+        # Active run restriction: a prefix of workflow step names, or None.
+        # Set only for the duration of run(only_steps=...); see workflow property.
+        self._only_steps: Optional[List[str]] = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -1051,8 +1054,17 @@ class Project:
 
     @property
     def workflow(self) -> WorkflowDef:
-        """The active workflow definition (embedded or loaded from recipe)."""
-        return self.config.workflow or _get_recipe(self.config.pipeline)
+        """The active workflow definition (embedded or loaded from recipe).
+
+        When a run restriction is active (see ``run(only_steps=...)``), the
+        returned workflow is truncated to that prefix so every helper that
+        derives behaviour from the workflow (resume, intermediates, token
+        lifetimes, pipeline hash) sees a consistent view.
+        """
+        wf = self.config.workflow or _get_recipe(self.config.pipeline)
+        if self._only_steps is not None:
+            wf = WorkflowDef(steps=wf.steps[: len(self._only_steps)])
+        return wf
 
     @property
     def steps(self) -> List[str]:
@@ -1802,8 +1814,13 @@ class Project:
                     failed_scenes.append(scene_id)
                 else:
                     logger.warning(f"[{scene_id}] Complete.")
-                    self.db.set_status(run_id, "done",
-                                       pipeline_config_hash=pipeline_config_hash)
+                    if self._only_steps is not None:
+                        # Restricted run: keep the scene pending so a later
+                        # full run executes the remaining steps.
+                        self.db.set_status(run_id, "staged")
+                    else:
+                        self.db.set_status(run_id, "done",
+                                           pipeline_config_hash=pipeline_config_hash)
         finally:
             for h, level in saved_term_levels.items():
                 h.setLevel(level)
@@ -1838,6 +1855,7 @@ class Project:
         run_stats: bool = True,
         dispatcher: str = "static",
         flex_slots_per_gpu: int = 1,
+        only_steps: Optional[List[str]] = None,
     ):
         """Run the project pipeline for all scenes.
 
@@ -1875,7 +1893,75 @@ class Project:
                 flexible-step leases allowed per GPU. Size downward if
                 pinned steps (cloud_mask, cloud_height_emulator) are
                 already tight on VRAM.
+            only_steps: Run only this *prefix* of the workflow (e.g.
+                ``["cloud_mask"]``). Scenes are NOT marked ``done`` in the
+                database (they stay ``staged`` so a later full run picks
+                them up), and stats are skipped. Non-prefix subsets are
+                rejected — resume semantics rely on step order.
         """
+        if only_steps is not None:
+            all_steps = self.steps
+            if not only_steps or only_steps != all_steps[: len(only_steps)]:
+                raise ValueError(
+                    f"only_steps must be a non-empty prefix of the workflow "
+                    f"steps {all_steps}, got {only_steps}"
+                )
+            if len(only_steps) == len(all_steps):
+                only_steps = None  # no-op restriction
+
+        # Extension pre-run stage: when the albedo config selects the
+        # multitemporal method, fit the tile-level model and pre-populate
+        # cloud_mask.tif / albedo.tif before the per-scene run. The stage
+        # itself calls run(only_steps=["cloud_mask"]), which skips this hook.
+        if only_steps is None:
+            from clouds_decoded.extensions.multitemporal_albedo.stage import (
+                MultitemporalAlbedoStage,
+            )
+            if MultitemporalAlbedoStage.is_selected(self):
+                if scenes:
+                    # The stage reads staged scenes from the DB.
+                    self.stage(*[str(Path(s).resolve()) for s in scenes],
+                               crop_window=crop_window)
+                MultitemporalAlbedoStage(self).run(
+                    parallel=parallel, verbose=verbose, progress=progress,
+                    force=force, parallelism=parallelism,
+                )
+        try:
+            self._only_steps = only_steps
+            # Invalidate workflow-derived cache so the truncated view applies.
+            self.__dict__.pop("_token_lifetimes", None)
+            self._run_impl(
+                scenes=scenes, force=force, unsafe=unsafe,
+                crop_window=crop_window, parallel=parallel,
+                parallelism=parallelism, queue_depth=queue_depth,
+                verbose=verbose, progress=progress, max_workers=max_workers,
+                force_overwrite=force_overwrite,
+                ignore_integrity=ignore_integrity,
+                run_stats=run_stats and only_steps is None,
+                dispatcher=dispatcher, flex_slots_per_gpu=flex_slots_per_gpu,
+            )
+        finally:
+            self._only_steps = None
+            self.__dict__.pop("_token_lifetimes", None)
+
+    def _run_impl(
+        self,
+        scenes: Optional[List[str]],
+        force: bool,
+        unsafe: bool,
+        crop_window: Optional[str],
+        parallel: bool,
+        parallelism: Optional[Dict[str, int]],
+        queue_depth: int,
+        verbose: bool,
+        progress: bool,
+        max_workers: Optional[int],
+        force_overwrite: bool,
+        ignore_integrity: bool,
+        run_stats: bool,
+        dispatcher: str,
+        flex_slots_per_gpu: int,
+    ):
         if crop_window is not None:
             crop_window = ",".join(p.strip() for p in crop_window.split(","))
 
@@ -1895,7 +1981,10 @@ class Project:
                     f"interrupted run — resetting to 'staged' so they are retried."
                 )
 
-            if not force:
+            # Restricted runs never touch 'done' scenes and compute a
+            # truncated pipeline hash, so the stale-done check would
+            # false-positive — skip it.
+            if not force and self._only_steps is None:
                 stale = self.db.get_stale_done_runs(pipeline_config_hash)
                 if stale:
                     scene_ids = [r["scene_id"] for r in stale]
@@ -2195,8 +2284,13 @@ class Project:
                         with results_lock:
                             failed_scenes.append(sid)
                     else:
-                        self.db.set_status(rid, "done",
-                                           pipeline_config_hash=pipeline_config_hash)
+                        if self._only_steps is not None:
+                            # Restricted run: keep the scene pending so a later
+                            # full run executes the remaining steps.
+                            self.db.set_status(rid, "staged")
+                        else:
+                            self.db.set_status(rid, "done",
+                                               pipeline_config_hash=pipeline_config_hash)
                         logger.info(f"[{sid}] Complete.")
 
             all_threads.append(threading.Thread(target=_sink, daemon=True))

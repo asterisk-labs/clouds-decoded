@@ -3,21 +3,35 @@ from typing import Dict, Literal, Optional
 from pydantic import Field, model_validator
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import DEFAULT_SURFACE_ALBEDO
+from clouds_decoded.extensions.multitemporal_albedo.config import (
+    MultitemporalAlbedoParams,
+)
 
 
 class AlbedoEstimatorConfig(BaseProcessorConfig):
     """Configuration for surface albedo estimation.
 
-    Supports two methods:
+    Supports three methods:
     - 'idw': Inverse-distance weighting with farthest-point sampling
       (requires cloud mask). Produces smooth spatial interpolation.
     - 'datadriven': Predicts albedo using a trained MLP from physical conditions.
+    - 'multitemporal': Tile-level cluster + temporal kernel model fitted on
+      the project's whole time series; per-scene outputs are pre-populated
+      by the multitemporal albedo extension before the per-scene run.
     """
 
-    method: Literal["idw", "datadriven"] = Field(
+    method: Literal["idw", "datadriven", "multitemporal"] = Field(
         default="idw",
-        description="Estimation method: 'idw' (inverse-distance weighting) "
-                    "or 'datadriven' (trained MLP)"
+        description="Estimation method: 'idw' (inverse-distance weighting), "
+                    "'datadriven' (trained MLP), or 'multitemporal' "
+                    "(tile-level time-series model; project runs only)"
+    )
+    multitemporal: Optional[MultitemporalAlbedoParams] = Field(
+        default=None,
+        description="Parameters for the multitemporal method. Required when "
+                    "method='multitemporal'; must be omitted otherwise. "
+                    "Included here so the albedo step's config hash covers "
+                    "the fit hyperparameters."
     )
     fallback: Literal["datadriven", "constant"] = Field(
         default="datadriven",
@@ -89,6 +103,19 @@ class AlbedoEstimatorConfig(BaseProcessorConfig):
         description="Default albedo per band when estimation fails [0-1]. "
                     "Bands not listed fall back to 0.05."
     )
+
+    @model_validator(mode="after")
+    def _check_multitemporal(self) -> "AlbedoEstimatorConfig":
+        """Tie the ``multitemporal`` params block to the method selection."""
+        if self.method == "multitemporal" and self.multitemporal is None:
+            object.__setattr__(
+                self, "multitemporal", MultitemporalAlbedoParams())
+        elif self.method != "multitemporal" and self.multitemporal is not None:
+            raise ValueError(
+                "'multitemporal' parameters are set but method is "
+                f"'{self.method}' — set method: multitemporal or remove the "
+                "multitemporal block.")
+        return self
 
     @model_validator(mode="after")
     def _resolve_model_path(self) -> "AlbedoEstimatorConfig":
