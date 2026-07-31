@@ -30,7 +30,7 @@ class CloudMaskConfig(BaseProcessorConfig):
         description="Compute device ('cuda', 'cpu', or None=auto)"
     )
     batch_size: int = Field(
-        default=8,
+        default=1,
         ge=1,
         description="Batch size for model inference"
     )

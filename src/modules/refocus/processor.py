@@ -1,6 +1,7 @@
 # refocus/processor.py
 """Parallax correction (refocusing) for Sentinel-2 multi-band imagery."""
 import logging
+from typing import Optional
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from scipy.ndimage import map_coordinates
@@ -14,6 +15,10 @@ from clouds_decoded.base_processor import BaseProcessor
 from .config import RefocusConfig
 
 logger = logging.getLogger(__name__)
+
+# Map scipy map_coordinates 'order' → torch grid_sample 'mode'.
+# order=2 has no torch equivalent and silently degrades to bicubic.
+_ORDER_TO_TORCH_MODE = {0: "nearest", 1: "bilinear", 3: "bicubic"}
 
 
 class RefocusProcessor(BaseProcessor):
@@ -30,6 +35,26 @@ class RefocusProcessor(BaseProcessor):
 
     def __init__(self, config: RefocusConfig):
         self.config = config
+        self._torch_device: Optional[str] = self._resolve_device(config.device)
+
+    @staticmethod
+    def _resolve_device(device: Optional[str]) -> Optional[str]:
+        """Return a torch device string, or None for the scipy/CPU path.
+
+        device=None (default) keeps the legacy scipy code path. Any explicit
+        string ('cpu', 'cuda', 'cuda:N') opts in to the torch backend.
+        """
+        if device is None:
+            return None
+        if device.startswith("cuda"):
+            import torch
+            if not torch.cuda.is_available():
+                logger.warning(
+                    "RefocusConfig.device=%r requested but CUDA is unavailable; "
+                    "falling back to torch CPU.", device,
+                )
+                return "cpu"
+        return device
 
     def process(
         self,
@@ -240,14 +265,20 @@ class RefocusProcessor(BaseProcessor):
 
         # Create 2D coordinate arrays
         rr, cc = np.meshgrid(row_coords, col_coords, indexing='ij')
-        coords = np.array([rr, cc])
 
-        result = map_coordinates(
-            height_map, coords,
-            order=self.config.height_interpolation_order,
-            mode='nearest',
-        )
-        return result.astype(np.float32)
+        order = self.config.height_interpolation_order
+        if self._torch_device is None:
+            coords = np.array([rr, cc])
+            result = map_coordinates(height_map, coords, order=order, mode='nearest')
+            return result.astype(np.float32)
+
+        # Torch path: reuse the generic sampler with direct-sampling coords.
+        return self._sample_torch(
+            source=height_map.astype(np.float32),
+            sample_rows=rr.astype(np.float32),
+            sample_cols=cc.astype(np.float32),
+            order=order,
+        ).astype(np.float32)
 
     def _warp_band(
         self,
@@ -267,20 +298,84 @@ class RefocusProcessor(BaseProcessor):
         row_offsets = np.where(np.isfinite(row_offsets), row_offsets, 0.0)
         col_offsets = np.where(np.isfinite(col_offsets), col_offsets, 0.0)
 
-        # Build sampling coordinates: output pixel + offset = where to sample input
-        rows, cols = np.meshgrid(np.arange(h, dtype=np.float64),
-                                 np.arange(w, dtype=np.float64),
+        order = self.config.interpolation_order
+
+        if self._torch_device is None:
+            # Legacy scipy path
+            rows, cols = np.meshgrid(np.arange(h, dtype=np.float64),
+                                     np.arange(w, dtype=np.float64),
+                                     indexing='ij')
+            sample_rows = rows + row_offsets
+            sample_cols = cols + col_offsets
+
+            coords = np.array([sample_rows, sample_cols])
+            result = map_coordinates(
+                band_data.astype(np.float64),
+                coords,
+                order=order,
+                mode='nearest',
+            )
+            return result.astype(band_data.dtype)
+
+        # Torch path: build sample coordinates in float32.
+        rows, cols = np.meshgrid(np.arange(h, dtype=np.float32),
+                                 np.arange(w, dtype=np.float32),
                                  indexing='ij')
-        sample_rows = rows + row_offsets
-        sample_cols = cols + col_offsets
+        sample_rows = rows + row_offsets.astype(np.float32)
+        sample_cols = cols + col_offsets.astype(np.float32)
 
-        coords = np.array([sample_rows, sample_cols])
-
-        result = map_coordinates(
-            band_data.astype(np.float64),
-            coords,
-            order=self.config.interpolation_order,
-            mode='nearest',
+        result = self._sample_torch(
+            source=band_data.astype(np.float32),
+            sample_rows=sample_rows,
+            sample_cols=sample_cols,
+            order=order,
         )
         return result.astype(band_data.dtype)
+
+    def _sample_torch(
+        self,
+        source: np.ndarray,
+        sample_rows: np.ndarray,
+        sample_cols: np.ndarray,
+        order: int,
+    ) -> np.ndarray:
+        """
+        GPU (or torch-CPU) implementation of scipy.ndimage.map_coordinates.
+
+        For each output pixel (r, c) samples *source* at
+        (sample_rows[r,c], sample_cols[r,c]) using grid_sample with
+        align_corners=True (pixel-centre convention matching scipy) and
+        padding_mode='border' (matches scipy mode='nearest').
+        """
+        import torch
+        import torch.nn.functional as F
+
+        mode = _ORDER_TO_TORCH_MODE.get(order)
+        if mode is None:
+            # order 2 / 4 / 5 aren't supported on GPU — fall back to bicubic
+            logger.debug(
+                "Refocus torch backend: interpolation order %d not supported; "
+                "using bicubic.", order,
+            )
+            mode = "bicubic"
+
+        device = torch.device(self._torch_device)
+        src_h, src_w = source.shape
+
+        src_t = torch.from_numpy(source).to(device).unsqueeze(0).unsqueeze(0)
+        # Normalise sample coords to [-1, 1] with align_corners=True convention.
+        # Protect against degenerate 1-pixel axes (division by zero).
+        denom_y = max(src_h - 1, 1)
+        denom_x = max(src_w - 1, 1)
+        norm_y = torch.from_numpy(sample_rows).to(device) * (2.0 / denom_y) - 1.0
+        norm_x = torch.from_numpy(sample_cols).to(device) * (2.0 / denom_x) - 1.0
+        grid = torch.stack([norm_x, norm_y], dim=-1).unsqueeze(0)  # (1, H, W, 2)
+
+        out = F.grid_sample(
+            src_t, grid,
+            mode=mode,
+            padding_mode="border",
+            align_corners=True,
+        )
+        return out.squeeze(0).squeeze(0).cpu().numpy()
 

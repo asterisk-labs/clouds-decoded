@@ -61,10 +61,16 @@ class CloudPropertyInverter(BaseProcessor):
 
         Args:
             config: Refl2PropConfig object.
-            device: 'cuda' or 'cpu'.
+            device: 'cuda' or 'cpu'. Overridden by ``config.device`` when
+                that field is set (non-None) — so the project-level
+                dispatcher can steer placement via a ``model_copy``
+                override without touching the constructor.
         """
         self.config = config
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        resolved = config.device if config.device is not None else device
+        if resolved.startswith("cuda") and not torch.cuda.is_available():
+            resolved = "cpu"
+        self.device = torch.device(resolved)
 
         # Init Model
         core_model = InversionNet(
@@ -334,7 +340,10 @@ class ShadingPropertyInverter(CloudPropertyInverter):
         """
         # Don't call super().__init__() as we need different model initialization
         self.config = config
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        resolved = config.device if config.device is not None else device
+        if resolved.startswith("cuda") and not torch.cuda.is_available():
+            resolved = "cpu"
+        self.device = torch.device(resolved)
 
         # Use config values if ShadingRefl2PropConfig, else use defaults/overrides
         if isinstance(config, ShadingRefl2PropConfig):

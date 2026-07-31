@@ -6,6 +6,11 @@ from pydantic import Field, field_validator
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import BANDS, BAND_RESOLUTIONS
 
+# Accepted device strings: None (CPU/scipy), "cpu" (torch on CPU),
+# "cuda", "cuda:0", "cuda:1", ... (torch on GPU).
+import re as _re
+_DEVICE_RE = _re.compile(r"^(cpu|cuda(:\d+)?)$")
+
 
 class RefocusConfig(BaseProcessorConfig):
     """
@@ -63,6 +68,17 @@ class RefocusConfig(BaseProcessorConfig):
         description="Interpolation order for upsampling height map to band resolution"
     )
 
+    # Device selection (optional GPU acceleration of warp + height interp)
+    device: Optional[str] = Field(
+        default=None,
+        description=(
+            "Compute device. None (default) → scipy on CPU, preserving current "
+            "behaviour. 'cpu' → torch on CPU (useful for parity testing). "
+            "'cuda' / 'cuda:N' → torch on GPU. order=3 falls back to bicubic "
+            "in grid_sample with no anti-aliasing — small numerical drift vs scipy."
+        ),
+    )
+
     @field_validator('reference_band')
     @classmethod
     def validate_reference_band(cls, v):
@@ -70,4 +86,15 @@ class RefocusConfig(BaseProcessorConfig):
         valid_bands = set(BAND_RESOLUTIONS.keys())
         if v not in valid_bands:
             raise ValueError(f"Invalid reference band: {v}. Must be one of {valid_bands}")
+        return v
+
+    @field_validator('device')
+    @classmethod
+    def _validate_device(cls, v):
+        if v is None:
+            return v
+        if not _DEVICE_RE.match(v):
+            raise ValueError(
+                f"Invalid device '{v}'. Must be None, 'cpu', 'cuda', or 'cuda:N'."
+            )
         return v

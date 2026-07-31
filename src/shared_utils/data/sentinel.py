@@ -200,6 +200,7 @@ class Sentinel2Scene(Data):
         reflectance: bool = True,
         resolution: Optional[int] = None,
         cache: bool = True,
+        device: Optional[str] = None,
     ) -> np.ndarray:
         """Retrieve a band array, optionally converted to TOA reflectance.
 
@@ -215,6 +216,10 @@ class Sentinel2Scene(Data):
             cache: If True (default), store the derived band in an internal
                 cache for fast repeated access.  If False, skip storing but
                 still return an already-cached result if one exists.
+            device: Resize backend selector forwarded to
+                :meth:`Sentinel2Band.to_resolution`. ``None`` keeps the
+                legacy skimage path; any string opts in to torch. Included
+                in the cache key so CPU and GPU variants coexist.
 
         Returns:
             2-D numpy array of the band data.
@@ -240,7 +245,11 @@ class Sentinel2Scene(Data):
 
         # Build a cache key that includes calibration params for correctness
         offset = self.radio_add_offset.get(band_name, 0.0) if reflectance else 0.0
-        cache_key = (band_name, reflectance, resolution, offset, self.quantification_value)
+        resize_device = device if resolution is not None else None
+        cache_key = (
+            band_name, reflectance, resolution, offset,
+            self.quantification_value, resize_device,
+        )
 
         # Always check the cache — no point recomputing what's already in memory
         if cache_key in self._band_cache:
@@ -250,7 +259,7 @@ class Sentinel2Scene(Data):
         if reflectance:
             current = current.to_reflectance(offset, self.quantification_value)
         if resolution is not None:
-            current = current.to_resolution(resolution)
+            current = current.to_resolution(resolution, device=resize_device)
 
         if cache:
             self._band_cache[cache_key] = current
@@ -264,6 +273,7 @@ class Sentinel2Scene(Data):
         resolution: Optional[int] = None,
         cache: bool = True,
         n_workers: int = 1,
+        device: Optional[str] = None,
     ) -> List[Sentinel2Band]:
         """Retrieve multiple bands as ``Sentinel2Band`` objects.
 
@@ -280,6 +290,10 @@ class Sentinel2Scene(Data):
                 true parallelism for the heavy work).  Use ``-1`` to
                 auto-size the pool to the number of uncached bands.
                 Defaults to 1 (sequential).
+            device: Resize backend selector forwarded to
+                :meth:`Sentinel2Band.to_resolution`. ``None`` keeps the
+                legacy skimage path; any string opts in to torch. Ignored
+                when *resolution* is ``None``.
 
         Returns:
             List of ``Sentinel2Band`` objects (with evaluated data).
@@ -292,6 +306,8 @@ class Sentinel2Scene(Data):
         # in to_compute for (possibly parallel) evaluation.
         result: List[Optional[Sentinel2Band]] = [None] * len(band_names)
         to_compute: List[Tuple[int, Optional[tuple], Sentinel2Band]] = []  # (index, cache_key, band)
+
+        resize_device = device if resolution is not None else None
 
         for i, name in enumerate(band_names):
             if name not in self.bands:
@@ -312,7 +328,10 @@ class Sentinel2Scene(Data):
                 continue
 
             offset = self.radio_add_offset.get(name, 0.0) if reflectance else 0.0
-            cache_key = (name, reflectance, resolution, offset, self.quantification_value)
+            cache_key = (
+                name, reflectance, resolution, offset,
+                self.quantification_value, resize_device,
+            )
 
             if cache_key in self._band_cache:
                 result[i] = self._band_cache[cache_key]
@@ -322,7 +341,7 @@ class Sentinel2Scene(Data):
             if reflectance:
                 current = current.to_reflectance(offset, self.quantification_value)
             if resolution is not None:
-                current = current.to_resolution(resolution)
+                current = current.to_resolution(resolution, device=resize_device)
 
             to_compute.append((i, cache_key, current))
 

@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import re
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from clouds_decoded.constants import METADATA_TAG
 
 logger = logging.getLogger(__name__)
@@ -200,6 +200,14 @@ class ProcessorDef:
     get_output_file: Optional[Callable] = None      # (config) -> str; dynamic filename
     clears_scene_caches: Tuple[str, ...] = ()       # scene dict attrs to clear
     clears_scene_if_refocused: bool = False         # clear original caches post-refocus
+    # Device placement policy used by the parallel scheduler:
+    #   - "cpu_only"    : step is always CPU (no device override applied).
+    #   - "pinned_gpu"  : step must run on GPU; workers get round-robin cuda:N
+    #                     assignment in static mode.
+    #   - "flexible"    : step can run on CPU or GPU. In static mode behaves like
+    #                     cpu_only; in smart-dispatcher mode workers acquire a
+    #                     device lease per scene.
+    device_affinity: str = "cpu_only"
 
 
 # -- Config loaders ----------------------------------------------------------
@@ -363,6 +371,7 @@ PROCESSORS: Dict[str, ProcessorDef] = {
         config_factory=_config_factory_cloud_mask,
         output_loader=_load_cloud_mask_result,
         prefetch_fn=_prefetch_cloud_mask,
+        device_affinity="pinned_gpu",
     ),
     "cloud_height_emulator": ProcessorDef(
         config_loader=_load_cloud_height_emulator_config,
@@ -371,6 +380,7 @@ PROCESSORS: Dict[str, ProcessorDef] = {
         output_loader=_load_cloud_height_result,
         prefetch_fn=_prefetch_cloud_height,
         clears_scene_caches=("_resized_band_cache",),
+        device_affinity="pinned_gpu",
     ),
     "cloud_height": ProcessorDef(
         config_loader=_load_cloud_height_physics_config,
@@ -391,6 +401,7 @@ PROCESSORS: Dict[str, ProcessorDef] = {
         output_loader=None,   # ephemeral — no disk write, cannot resume
         on_complete=_refocus_on_complete,
         clears_scene_if_refocused=True,
+        device_affinity="flexible",
     ),
     "cloud_properties": ProcessorDef(
         config_loader=_load_cloud_properties_config,
@@ -398,6 +409,7 @@ PROCESSORS: Dict[str, ProcessorDef] = {
         config_factory=_config_factory_cloud_properties,
         output_loader=None,   # terminal step — no in-memory resume needed
         get_output_file=_cloud_properties_output_file,
+        device_affinity="flexible",
     ),
 }
 
@@ -801,6 +813,33 @@ class SceneDB:
 # Pydantic Models
 # ---------------------------------------------------------------------------
 
+class DispatcherSettings(BaseModel):
+    """Optional ``dispatcher`` block in ``project.yaml``.
+
+    All fields have defaults, so a minimal project.yaml without this
+    block behaves exactly like today. The CLI flags override any value
+    set here — this block is meant for persistent per-project tuning on
+    machines with a fixed GPU layout (e.g. a 2-GPU deployment node).
+    """
+    model_config = ConfigDict(extra="forbid")
+    mode: str = Field(
+        default="static",
+        description="'static' (legacy round-robin) or 'smart' (DeviceDispatcher).",
+    )
+    flex_slots_per_gpu: int = Field(
+        default=1, ge=1,
+        description="Concurrent flexible-step leases per GPU (smart mode only).",
+    )
+
+    @model_validator(mode='after')
+    def _validate_mode(self) -> 'DispatcherSettings':
+        if self.mode not in ("static", "smart"):
+            raise ValueError(
+                f"dispatcher.mode must be 'static' or 'smart', got {self.mode!r}"
+            )
+        return self
+
+
 class ProjectConfig(BaseModel):
     """Root project configuration, stored as project.yaml."""
     model_config = ConfigDict(extra="ignore")
@@ -837,6 +876,14 @@ class ProjectConfig(BaseModel):
             "Stats methods to compute. Format: 'step_name::function_name'. "
             "Resolved as clouds_decoded.stats.{step_name}.{fn} with fallback "
             "to clouds_decoded.stats._generic.{fn}."
+        ),
+    )
+    dispatcher: Optional[DispatcherSettings] = Field(
+        default=None,
+        description=(
+            "Optional parallel dispatcher configuration. When absent, "
+            "--parallel uses the static round-robin scheduler. CLI flags "
+            "(--dispatcher, --flex-slots-per-gpu) override these values."
         ),
     )
 
@@ -1110,9 +1157,30 @@ class Project:
         return self.configs_dir / self._get_workflow_step(step_name).config
 
     def _config_hash(self, step_name: str) -> str:
+        """Hash the *semantic* content of a step's config file.
+
+        Uses :py:meth:`BaseProcessorConfig._semantic_dump` so performance
+        / placement fields (currently just ``device``; see
+        ``NON_SEMANTIC_FIELDS``) don't invalidate cached scene outputs.
+        Falling back to file-bytes hashing if the config can't be loaded
+        keeps the failure mode conservative — a broken YAML will be
+        flagged as stale rather than silently passing the integrity
+        check.
+        """
         path = self._config_yaml_path(step_name)
         if not path.exists():
             return "no_config"
+        try:
+            from clouds_decoded.config import BaseProcessorConfig
+            cfg = self._load_step_config(step_name)
+            if isinstance(cfg, BaseProcessorConfig):
+                payload = json.dumps(
+                    BaseProcessorConfig._semantic_dump(cfg),
+                    sort_keys=True, separators=(",", ":"),
+                ).encode()
+                return hashlib.sha256(payload).hexdigest()[:16]
+        except Exception:  # pragma: no cover — conservative fallback
+            pass
         return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
     def _pipeline_config_hash(self) -> str:
@@ -1315,6 +1383,72 @@ class Project:
             result.update(self._create_processor_for_step(step_name))
         return result
 
+    def resolve_dispatcher_settings(
+        self,
+        cli_mode: Optional[str],
+        cli_slots: Optional[int],
+    ) -> Tuple[str, int]:
+        """Compute effective dispatcher settings: CLI > project.yaml > defaults.
+
+        Args:
+            cli_mode: ``--dispatcher`` value, or None if unset.
+            cli_slots: ``--flex-slots-per-gpu`` value, or None if unset.
+
+        Returns:
+            ``(mode, flex_slots_per_gpu)`` ready for ``Project.run``.
+        """
+        yaml_cfg = self.config.dispatcher  # may be None
+        mode = (
+            cli_mode
+            or (yaml_cfg.mode if yaml_cfg is not None else None)
+            or "static"
+        )
+        slots = (
+            cli_slots
+            if cli_slots is not None
+            else (yaml_cfg.flex_slots_per_gpu if yaml_cfg is not None else 1)
+        )
+        return mode, slots
+
+    def _make_flex_step_work(
+        self,
+        step_name: str,
+        step_idx: int,
+        dispatcher: "DeviceDispatcher",
+    ) -> Callable[[Any], Any]:
+        """Build a worker ``work(ctx)`` closure for a flexible step.
+
+        Each worker thread owns a private ``device → processor_dict`` cache
+        so that the first lease on a given device pays the construction
+        cost once, and every subsequent lease reuses the cached processor.
+        Flexible processors are stateless w.r.t. scene data, so this is
+        safe — there is no weights-upload cost to amortise.
+        """
+        proc_cache: Dict[str, Dict[str, Any]] = {}
+
+        def work(ctx: "_PipelineCtx") -> "_PipelineCtx":
+            if ctx.failed:
+                return ctx
+            token = _scene_log_path_var.set(ctx.log_path)
+            try:
+                with dispatcher.acquire(step_name) as lease:
+                    pd = proc_cache.get(lease.device)
+                    if pd is None:
+                        pd = self._create_processor_for_step(step_name, device=lease.device)
+                        proc_cache[lease.device] = pd
+                    self._execute_step_in_ctx(ctx, step_name, step_idx, pd)
+            except Exception as exc:
+                ctx.failed = True
+                ctx.error = exc
+                logger.error(
+                    f"[{step_name}][{self._scene_id(ctx.scene_path)}] FAILED: {exc}"
+                )
+            finally:
+                _scene_log_path_var.reset(token)
+            return ctx
+
+        return work
+
     # ------------------------------------------------------------------
     # Core step execution
     # ------------------------------------------------------------------
@@ -1339,8 +1473,8 @@ class Project:
         proc_def = PROCESSORS[step.processor]
         config = self._load_step_config(step.name)
 
-        computed = type(config).model_computed_fields
-        config_dict = config.model_dump(mode="json", exclude=set(computed.keys()) if computed else set())
+        from clouds_decoded.config import BaseProcessorConfig
+        config_dict = BaseProcessorConfig._semantic_dump(config)
 
         scene_obj = ctx.intermediates.get("scene")
         provenance = self._build_provenance(
@@ -1400,8 +1534,8 @@ class Project:
                 if manifest.is_step_complete(step_name, config_hash):
                     if not ctx.unsafe:
                         cfg = self._load_step_config(step_name)
-                        computed = type(cfg).model_computed_fields
-                        cfg_dict = cfg.model_dump(mode="json", exclude=set(computed.keys()) if computed else set())
+                        from clouds_decoded.config import BaseProcessorConfig
+                        cfg_dict = BaseProcessorConfig._semantic_dump(cfg)
                         error = self._validate_step_file(step_name, scene_out, ctx.scene_path,
                                                          cfg_dict, crop_window=ctx.crop_window)
                         if error is not None:
@@ -1702,6 +1836,8 @@ class Project:
         force_overwrite: bool = False,
         ignore_integrity: bool = False,
         run_stats: bool = True,
+        dispatcher: str = "static",
+        flex_slots_per_gpu: int = 1,
     ):
         """Run the project pipeline for all scenes.
 
@@ -1730,6 +1866,15 @@ class Project:
             run_stats: Automatically compute and store statistics for all
                 completed runs after the pipeline finishes.  Pass ``False``
                 to skip (equivalent to the ``--no-stats`` CLI flag).
+            dispatcher: (parallel only) ``"static"`` (default) uses the
+                legacy round-robin GPU assignment. ``"smart"`` enables the
+                :class:`~clouds_decoded.dispatcher.DeviceDispatcher`, which
+                lets flexible steps (refocus, cloud_properties) grab GPU
+                leases per-scene and fall back to CPU when GPUs are busy.
+            flex_slots_per_gpu: (smart dispatcher only) Maximum concurrent
+                flexible-step leases allowed per GPU. Size downward if
+                pinned steps (cloud_mask, cloud_height_emulator) are
+                already tight on VRAM.
         """
         if crop_window is not None:
             crop_window = ",".join(p.strip() for p in crop_window.split(","))
@@ -1833,14 +1978,16 @@ class Project:
             n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
             def _effective_workers(step_name: str, requested: int) -> int:
-                """Cap GPU-bound steps to n_gpus workers; CUDA serialises beyond that."""
+                """Cap pinned-GPU steps to n_gpus workers; CUDA serialises beyond that."""
                 if n_gpus < 1:
                     return requested
-                cfg = self._load_step_config(step_name)
-                if not hasattr(cfg, "device"):
+                proc_def = PROCESSORS[self._get_workflow_step(step_name).processor]
+                if proc_def.device_affinity != "pinned_gpu":
                     return requested
-                base = cfg.device  # type: ignore[attr-defined]
-                if base not in (None, "cuda"):
+                cfg = self._load_step_config(step_name)
+                # Respect explicit 'cpu' / 'cuda:N' overrides — don't re-cap.
+                base = getattr(cfg, "device", None)
+                if base is not None and base != "cuda":
                     return requested
                 if requested > n_gpus:
                     logger.warning(
@@ -1854,14 +2001,20 @@ class Project:
             _next_gpu: List[int] = [0]
 
             def _device_list(step_name: str, n: int) -> List[Optional[str]]:
-                """Return per-instance device overrides for a step, or None to use config."""
+                """Return per-instance device overrides for a step, or None to use config.
+
+                Only *pinned_gpu* steps are round-robined across available
+                CUDA devices. Flexible steps are handled by the smart
+                dispatcher (when enabled) or left at their config default.
+                """
                 if n_gpus <= 1:
                     return [None] * n
-                cfg = self._load_step_config(step_name)
-                if not hasattr(cfg, "device"):
+                proc_def = PROCESSORS[self._get_workflow_step(step_name).processor]
+                if proc_def.device_affinity != "pinned_gpu":
                     return [None] * n
-                base = cfg.device  # type: ignore[attr-defined]
-                if base not in (None, "cuda"):
+                cfg = self._load_step_config(step_name)
+                base = getattr(cfg, "device", None)
+                if base is not None and base != "cuda":
                     return [None] * n
                 devices = [f"cuda:{(_next_gpu[0] + i) % n_gpus}" for i in range(n)]
                 _next_gpu[0] = (_next_gpu[0] + n) % n_gpus
@@ -1874,13 +2027,50 @@ class Project:
             for step in self.steps:
                 par[step] = _effective_workers(step, par.get(step, 1))
 
-            step_processor_lists: Dict[str, List[Dict[str, Any]]] = {
-                step: [
-                    self._create_processor_for_step(step, device=dev)
-                    for dev in _device_list(step, par[step])
-                ]
-                for step in self.steps
+            # --- Dispatcher setup ------------------------------------ #
+            # Smart mode is only meaningful when (a) the user asked for it and
+            # (b) there's at least one GPU and one flexible step in the workflow.
+            # Otherwise fall back to static, which is still a valid config.
+            flex_steps = {
+                s for s in self.steps
+                if PROCESSORS[self._get_workflow_step(s).processor].device_affinity == "flexible"
             }
+            use_smart = (
+                dispatcher == "smart" and n_gpus >= 1 and bool(flex_steps)
+            )
+            if dispatcher not in ("static", "smart"):
+                raise ValueError(
+                    f"dispatcher must be 'static' or 'smart', got {dispatcher!r}"
+                )
+            if dispatcher == "smart" and not use_smart:
+                reason = "no GPUs available" if n_gpus < 1 else "no flexible steps in workflow"
+                logger.warning(
+                    f"Dispatcher='smart' requested but {reason}; using static assignment."
+                )
+
+            from clouds_decoded.dispatcher import DeviceDispatcher
+            device_dispatcher: Optional[DeviceDispatcher] = (
+                DeviceDispatcher(n_gpus=n_gpus, flex_slots_per_gpu=flex_slots_per_gpu)
+                if use_smart else None
+            )
+            if device_dispatcher is not None:
+                logger.warning(
+                    f"Dispatcher: smart | {device_dispatcher.describe()} "
+                    f"| flex_steps={sorted(flex_steps)}"
+                )
+
+            # Pre-build processors. Flexible workers in smart mode get ``None``
+            # placeholders — they lazily build one processor per (step, device)
+            # pair inside the worker thread, cached for the life of the run.
+            step_processor_lists: Dict[str, List[Optional[Dict[str, Any]]]] = {}
+            for step in self.steps:
+                if use_smart and step in flex_steps:
+                    step_processor_lists[step] = [None] * par[step]
+                else:
+                    step_processor_lists[step] = [
+                        self._create_processor_for_step(step, device=dev)
+                        for dev in _device_list(step, par[step])
+                    ]
 
             # Build queue chain
             import queue as Q
@@ -1960,25 +2150,32 @@ class Project:
                 remaining = [n_this]
                 rem_lock = threading.Lock()
 
+                is_flex_worker = device_dispatcher is not None and step_name in flex_steps
+
                 for worker_i, proc_dict in enumerate(step_processor_lists[step_name]):
-                    def _make_step_work(pd, sn, si):
-                        def work(ctx: _PipelineCtx) -> _PipelineCtx:
-                            if not ctx.failed:
-                                token = _scene_log_path_var.set(ctx.log_path)
-                                try:
-                                    self._execute_step_in_ctx(ctx, sn, si, pd)
-                                except Exception as exc:
-                                    ctx.failed = True
-                                    ctx.error = exc
-                                    logger.error(f"[{sn}][{self._scene_id(ctx.scene_path)}] FAILED: {exc}")
-                                finally:
-                                    _scene_log_path_var.reset(token)
-                            return ctx
-                        return work
+                    if is_flex_worker:
+                        work_fn = self._make_flex_step_work(
+                            step_name, step_idx, device_dispatcher,
+                        )
+                    else:
+                        def _make_step_work(pd, sn, si):
+                            def work(ctx: _PipelineCtx) -> _PipelineCtx:
+                                if not ctx.failed:
+                                    token = _scene_log_path_var.set(ctx.log_path)
+                                    try:
+                                        self._execute_step_in_ctx(ctx, sn, si, pd)
+                                    except Exception as exc:
+                                        ctx.failed = True
+                                        ctx.error = exc
+                                        logger.error(f"[{sn}][{self._scene_id(ctx.scene_path)}] FAILED: {exc}")
+                                    finally:
+                                        _scene_log_path_var.reset(token)
+                                return ctx
+                            return work
+                        work_fn = _make_step_work(proc_dict, step_name, step_idx)
 
                     all_threads.append(_make_worker(
-                        _make_step_work(proc_dict, step_name, step_idx),
-                        in_q, out_q, remaining, rem_lock, n_next,
+                        work_fn, in_q, out_q, remaining, rem_lock, n_next,
                     ))
 
             # Sink thread
@@ -2044,6 +2241,8 @@ class Project:
             f"Project run complete "
             f"({len(scene_list) - len(failed_scenes)}/{len(scene_list)} succeeded)."
         )
+        if device_dispatcher is not None:
+            logger.warning(device_dispatcher.stats_summary())
         if run_stats:
             self.run_stats()
 

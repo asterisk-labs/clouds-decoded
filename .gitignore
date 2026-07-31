@@ -228,3 +228,5 @@ CLAUDE.md
 # Development artifacts
 *.npz
 s3.*/
+.cdse
+.s3cfg

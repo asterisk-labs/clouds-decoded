@@ -38,7 +38,7 @@ class CloudHeightEmulatorConfig(BaseProcessorConfig):
         description="Overlap between windows in pixels."
     )
     batch_size: int = Field(
-        default=4,
+        default=1,
         ge=1,
         description="Batch size for inference."
     )

@@ -205,6 +205,7 @@ class Sentinel2Band:
         self,
         target_resolution: int,
         target_shape: Optional[tuple] = None,
+        device: Optional[str] = None,
     ) -> Sentinel2Band:
         """Create a child band resampled to *target_resolution* metres.
 
@@ -212,6 +213,12 @@ class Sentinel2Band:
             target_resolution: Desired pixel size in metres.
             target_shape: Explicit ``(H, W)`` for the output.  If ``None``,
                 computed from *native_resolution* and the current shape.
+            device: Resize backend selector. ``None`` (default) uses
+                scikit-image (cubic, anti-aliased) and preserves legacy
+                numerics. Any explicit string (``'cpu'``, ``'cuda'``,
+                ``'cuda:N'``) switches to ``torch.nn.functional.interpolate``
+                on that device. GPU paths are ~1% RMS off skimage for
+                ``order=3`` — fine for downstream use but not bit-exact.
 
         Returns:
             New ``Sentinel2Band`` with lazily resampled data.
@@ -230,16 +237,21 @@ class Sentinel2Band:
             target_shape = (round(src_shape[0] * scale), round(src_shape[1] * scale))
 
         _target_shape = target_shape
+        _device = device
 
-        def _derive(parent_data: np.ndarray) -> np.ndarray:
-            from skimage.transform import resize
-            return resize(
-                parent_data,
-                _target_shape,
-                order=3,
-                preserve_range=True,
-                anti_aliasing=True,
-            ).astype(parent_data.dtype)
+        if _device is None:
+            def _derive(parent_data: np.ndarray) -> np.ndarray:
+                from skimage.transform import resize
+                return resize(
+                    parent_data,
+                    _target_shape,
+                    order=3,
+                    preserve_range=True,
+                    anti_aliasing=True,
+                ).astype(parent_data.dtype)
+        else:
+            def _derive(parent_data: np.ndarray) -> np.ndarray:
+                return _resize_torch(parent_data, _target_shape, _device)
 
         return Sentinel2Band(
             name=self.name,
@@ -249,6 +261,42 @@ class Sentinel2Band:
             derive_fn=_derive,
             interpolation=self._interpolation,
         )
+
+
+def _resize_torch(
+    arr: np.ndarray,
+    target_shape: tuple,
+    device: str,
+) -> np.ndarray:
+    """Torch bicubic resize with anti-aliasing, matching skimage conventions.
+
+    Uses ``align_corners=False`` + ``antialias=True``, which gives the
+    closest available match to skimage's ``resize(order=3, anti_aliasing=True)``.
+    Returns an array with the same dtype as *arr*. Lazy-imports torch so
+    that CPU-only installs don't pay the import cost.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        logger.warning(
+            "to_resolution(device=%r) requested but CUDA is unavailable; "
+            "falling back to torch CPU.", device,
+        )
+        device = "cpu"
+
+    src_dtype = arr.dtype
+    t = torch.from_numpy(np.asarray(arr, dtype=np.float32)).to(device)
+    # grid_sample/interpolate needs (N, C, H, W).
+    t = t.unsqueeze(0).unsqueeze(0)
+    out = F.interpolate(
+        t,
+        size=target_shape,
+        mode="bicubic",
+        align_corners=False,
+        antialias=True,
+    )
+    return out.squeeze(0).squeeze(0).cpu().numpy().astype(src_dtype)
 
 
 class BandDict(dict):

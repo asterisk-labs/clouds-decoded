@@ -628,6 +628,21 @@ def project_run(
             "(not recommended)."
         ),
     ),
+    dispatcher: Optional[str] = typer.Option(
+        None, "--dispatcher",
+        help=(
+            "Parallel dispatcher: 'static' (default) round-robins GPUs to pinned "
+            "steps; 'smart' lets refocus / cloud_properties acquire per-scene "
+            "device leases with CPU fallback. Overrides the project.yaml value."
+        ),
+    ),
+    flex_slots_per_gpu: Optional[int] = typer.Option(
+        None, "--flex-slots-per-gpu",
+        help=(
+            "Smart dispatcher only: concurrent flex-step leases per GPU. "
+            "Drop to 1 if pinned steps are tight on VRAM. Default: 1."
+        ),
+    ),
 ):
     """
     Run the project pipeline on one or more scenes.
@@ -678,6 +693,19 @@ def project_run(
 
     try:
         project = Project.load(project_dir)
+
+        # CLI > project.yaml > defaults. Project.resolve_dispatcher_settings
+        # returns (mode, flex_slots_per_gpu) taking the user's YAML into
+        # account when the CLI options are unset.
+        eff_mode, eff_slots = project.resolve_dispatcher_settings(
+            cli_mode=dispatcher, cli_slots=flex_slots_per_gpu,
+        )
+        if dispatcher is not None and dispatcher not in ("static", "smart"):
+            logger.error(
+                f"--dispatcher must be 'static' or 'smart' (got {dispatcher!r})."
+            )
+            raise typer.Exit(1)
+
         project.run(
             scenes=scenes,
             force=force,
@@ -691,6 +719,8 @@ def project_run(
             run_stats=not no_stats,
             force_overwrite=force_overwrite,
             ignore_integrity=ignore_integrity,
+            dispatcher=eff_mode,
+            flex_slots_per_gpu=eff_slots,
         )
     except (FileNotFoundError, RuntimeError) as e:
         logger.error(str(e))

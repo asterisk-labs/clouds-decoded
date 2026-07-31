@@ -2,12 +2,15 @@
 """Configuration for the Cloud Property Inversion (Refl2Prop) module."""
 from __future__ import annotations
 
+import re as _re
 from enum import Enum
 from typing import Dict, List, Literal, Optional, Tuple
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 
 from clouds_decoded.config import BaseProcessorConfig
 from clouds_decoded.constants import DEFAULT_SURFACE_ALBEDO
+
+_DEVICE_RE = _re.compile(r"^(cpu|cuda(:\d+)?)$")
 
 # Default bands for inversion (can be customized per config)
 DEFAULT_BANDS = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B8A', 'B11', 'B12']
@@ -89,6 +92,14 @@ class Refl2PropConfig(BaseProcessorConfig):
             "'clouds-decoded download refl2prop' to fetch weights."
         ),
     )
+    device: Optional[str] = Field(
+        default=None,
+        description=(
+            "Compute device ('cpu', 'cuda', 'cuda:N', or None=auto). "
+            "When set, overrides the constructor's device argument so the "
+            "project-level dispatcher can steer placement via model_copy."
+        ),
+    )
 
     # Processing Parameters
     return_uncertainty: bool = Field(
@@ -167,6 +178,17 @@ class Refl2PropConfig(BaseProcessorConfig):
             from clouds_decoded.assets import get_asset
             object.__setattr__(self, "model_path", str(get_asset("models/refl2prop/default.pth")))
         return self
+
+    @field_validator('device')
+    @classmethod
+    def _validate_device(cls, v):
+        if v is None:
+            return v
+        if not _DEVICE_RE.match(v):
+            raise ValueError(
+                f"Invalid device '{v}'. Must be None, 'cpu', 'cuda', or 'cuda:N'."
+            )
+        return v
 
     # =========================================================================
     # Computed fields - derived from bands

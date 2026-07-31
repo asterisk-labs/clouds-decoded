@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Optional, Dict, Any, List
+from typing import Any, ClassVar, Dict, List, Optional
 import yaml
 from pathlib import Path
 import logging
@@ -12,6 +12,29 @@ class BaseProcessorConfig(BaseModel):
     Utilizes Pydantic for validation and type checking.
     """
     model_config = ConfigDict(extra='forbid')
+
+    # Fields that control *performance* or *placement* but not the
+    # semantic result of a step. Excluded from config hashing and stored
+    # provenance so that a scene processed on CPU today and re-run on
+    # GPU tomorrow is not treated as "stale config". Subclasses may
+    # extend this set (e.g. batch_size, n_workers) but should never
+    # *remove* entries without careful consideration.
+    NON_SEMANTIC_FIELDS: ClassVar[frozenset] = frozenset({"device"})
+
+    @classmethod
+    def _semantic_dump(cls, instance: "BaseProcessorConfig") -> Dict[str, Any]:
+        """Return a ``model_dump(mode='json')`` stripped of non-semantic keys.
+
+        Used by the project-level config hash and the file-provenance
+        integrity check. Computed fields are excluded as well, since
+        they are derived from other fields and would duplicate entries
+        in the hash input.
+        """
+        computed = type(instance).model_computed_fields
+        exclude = set(cls.NON_SEMANTIC_FIELDS)
+        if computed:
+            exclude |= set(computed.keys())
+        return instance.model_dump(mode='json', exclude=exclude)
     output_dir: Optional[str] = Field(None, description="Directory to save outputs")
     working_resolution: Optional[int] = Field(
         default=None,
