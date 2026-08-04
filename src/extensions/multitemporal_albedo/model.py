@@ -14,9 +14,12 @@ thousands of scenes stays within memory (the research code materialised
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .config import MultitemporalAlbedoParams
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +290,8 @@ def fit_cluster_temporal(signal_num: np.ndarray, signal_den: np.ndarray,
 
 def fit_cluster_model(refl: np.ndarray, train: np.ndarray, times: np.ndarray,
                       doy: np.ndarray, year: np.ndarray,
-                      params) -> Dict[str, np.ndarray]:
+                      params: "MultitemporalAlbedoParams",
+                      ) -> Dict[str, np.ndarray]:
     """Fit the full cluster model on a stack.
 
     Args:

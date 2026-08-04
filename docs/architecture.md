@@ -16,7 +16,39 @@ cloud_mask --> cloud_height --> albedo --> refocus --> cloud_properties
 4. **Refocus** -- Parallax correction using cloud height. Returns a new [`Sentinel2Scene`][clouds_decoded.data.sentinel.Sentinel2Scene] with `is_refocused=True`. No output file -- pure in-memory transformation.
 5. **Cloud Properties** -- Neural inversion on refocused scene, using height and albedo.
 
-The `full-workflow` CLI command and the project system both execute these steps in sequence.
+The `full-workflow` CLI command and the project system both execute these steps in sequence. The order is defined per recipe, not hard-coded — `full-workflow-multitemporal` runs the same steps with albedo second (see [Extensions](#extensions) for why).
+
+---
+
+## Extensions
+
+Everything above assumes **one scene at a time**: a processor gets a scene
+(plus optional per-scene inputs) and returns one output. Some methods
+fundamentally break that pattern — they need *many* scenes at once.
+
+Rather than complicating the processor interface, such methods live under
+`src/extensions/` and integrate with the project system from the outside:
+an extension runs **before** the per-scene orchestration and
+**pre-populates** per-scene step outputs (the `.tif`, the manifest entry,
+and the embedded provenance — produced by the same `Project` methods the
+orchestrator later validates against). The per-scene run then treats those
+steps as complete and fills in the rest.
+
+The building blocks an extension can use:
+
+- `Project.run(only_steps=[...])` — run a *prefix* of the workflow (e.g.
+  just `cloud_mask`) through the ordinary orchestrator; scenes stay
+  `staged` so a later full run picks them up.
+- `Project._config_hash(step)` / `_build_provenance(...)` / manifest
+  helpers — so pre-populated outputs pass the resume gates.
+- A dedicated recipe, when step order matters (resume restarts at the
+  first incomplete step).
+
+There is currently one extension: **multitemporal albedo**
+(`src/extensions/multitemporal_albedo/`), which fits a tile-level
+time-series model and writes `albedo.tif` for every scene before the run.
+It is the worked example for the pattern — see
+[Multitemporal Albedo](multitemporal-albedo.md) for the user-facing side.
 
 ---
 

@@ -67,6 +67,7 @@ nav:
   - Configuration: configuration.md
   - Data Classes: data-classes.md
   - Projects: projects.md
+  - Multitemporal Albedo: multitemporal-albedo.md
   - Architecture: architecture.md
   - API Reference:
     - api/index.md
@@ -98,3 +99,5 @@ nav:
       - api/constants.md
     - Project: api/project.md
     - Stats: api/stats.md
+    - Extensions:
+      - api/extensions-multitemporal-albedo.md

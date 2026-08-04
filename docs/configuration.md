@@ -49,15 +49,22 @@ Binary cloud mask via deep learning or thresholding. Source: `src/modules/cloud_
 | `method` | `Literal["senseiv2", "threshold"]` | `"senseiv2"` | Detection method |
 | `model_path` | `Optional[str]` | None (resolved from managed assets) | Path to model weights (.pt) |
 | `device` | `Optional[str]` | None (auto-detect) | Compute device: `"cuda"`, `"cpu"`, or None |
-| `batch_size` | `int` | `8` | Batch size for inference (1--64) |
-| `working_resolution` | `int` | `10` | Inference resolution in metres (10--60) |
-| `stride` | `int` | `128` | Tiling stride in pixels (1--256) |
+| `batch_size` | `int` | `1` | Batch size for inference (>= 1) |
+| `working_resolution` | `int` | `15` | Inference resolution in metres (10--60) |
+| `stride` | `int` | `170` | Tiling stride in pixels (1--256) |
 | `reclassify_embedded_shadow` | `bool` | `True` | Reclassify shadow pixels surrounded by cloud as thick cloud |
 | `shadow_reclassify_radius` | `int` | `50` | Neighbourhood radius (pixels) for shadow reclassification (1--200) |
 | `cloud_mask_classes` | `List[int]` | `[1, 2]` | Class indices to treat as cloud for binarization |
 | `cloud_mask_threshold` | `float` | `0.2` | Probability threshold for binarization (0--1) |
 | `threshold_band` | `str` | `"B08"` | Band for threshold method |
 | `threshold_value` | `float` | `0.06` | Reflectance threshold (0--1) |
+
+`model_path` accepts the shipped asset format or a finetuned training
+checkpoint (a wrapped `{"model": state_dict, ...}` file, or a bare
+SegFormer state dict with or without the legacy `segmenter.` key prefix).
+To drop in a custom checkpoint, set `model_path` (and typically
+`working_resolution`) in `configs/cloud_mask.yaml` — note this changes the
+config hash, so cached masks are re-computed.
 
 ---
 
@@ -98,7 +105,7 @@ Deep learning cloud height emulator (ResUNet). Source: `src/modules/cloud_height
 | `bands` | `List[str]` | `["B02","B03","B04","B08","B11","B12","B09","B10"]` | Input bands |
 | `window_size` | `Tuple[int, int]` | `(1024, 1024)` | Sliding window size (must be square) |
 | `overlap` | `int` | `512` | Window overlap in pixels |
-| `batch_size` | `int` | `4` | Inference batch size |
+| `batch_size` | `int` | `1` | Inference batch size |
 | `in_channels` | `int` | `8` | Number of input channels |
 | `device` | `Optional[str]` | None (auto-detect) | Compute device |
 | `working_resolution` | `int` | `10` | Inference resolution in metres |
@@ -114,11 +121,10 @@ Surface albedo estimation. Source: `src/modules/albedo_estimator/config.py`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `method` | `Literal["idw", "datadriven"]` | `"idw"` | Estimation method |
+| `method` | `Literal["idw", "datadriven", "multitemporal"]` | `"idw"` | Estimation method (`multitemporal` is project-only — see [Multitemporal Albedo](multitemporal-albedo.md)) |
 | `fallback` | `Literal["datadriven", "constant"]` | `"datadriven"` | Fallback when insufficient clear pixels |
 | `min_clear_fraction` | `float` | `0.05` | Min clear-sky fraction before fallback |
-| `cloud_mask_classes` | `List[int]` | `[1, 2, 3]` | Classes to treat as cloud |
-| `cloud_mask_threshold` | `float` | `0.5` | Probability threshold for cloud mask |
+| `multitemporal` | `Optional[MultitemporalAlbedoParams]` | None | Parameter block for the multitemporal method (required iff `method: multitemporal`; auto-filled with defaults) |
 | `output_resolution` | `int` | `300` | Output grid resolution in metres (10--1000) |
 | `max_samples` | `int` | `1000` | Max clear-sky pixels for IDW fitting |
 | `window_m` | `float` | `180.0` | Spatial averaging window in metres |
@@ -127,6 +133,35 @@ Surface albedo estimation. Source: `src/modules/albedo_estimator/config.py`.
 | `idw_smoothing_m` | `float` | `2000.0` | IDW regularisation distance in metres |
 | `model_path` | `Optional[str]` | None (resolved from managed assets) | Path to trained MLP checkpoint |
 | `default_albedo` | `Dict[str, float]` | per-band defaults | Constant fallback albedo per band |
+
+### [`MultitemporalAlbedoParams`][clouds_decoded.extensions.multitemporal_albedo.config.MultitemporalAlbedoParams]
+
+Embedded as the `multitemporal:` block of `albedo.yaml` when
+`method: multitemporal`. Source: `src/extensions/multitemporal_albedo/config.py`.
+See [Multitemporal Albedo](multitemporal-albedo.md) for what these control.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `grid_res` | `int` | `180` | Analysis grid resolution in metres (60--1080, multiple of 10) |
+| `min_scenes` | `int` | `50` | Minimum staged scenes for a fit |
+| `min_years` | `int` | `2` | Minimum distinct years in the series |
+| `min_date_span_days` | `int` | `365` | Minimum first-to-last span in days |
+| `min_clear_obs` | `int` | `20` | Clear observations needed for a pixel to join the fit |
+| `clustering` | `Literal["flat", "hierarchical"]` | `"flat"` | Clustering scheme (`flat` is the validated default) |
+| `n_clusters` | `int` | `100` | Cluster count (initial K for hierarchical) |
+| `n_kmeans_iter` | `int` | `25` | Max k-means iterations |
+| `max_clusters` | `int` | `600` | (hierarchical) Cluster count ceiling |
+| `split_mse_threshold` | `float` | `0.0008` | (hierarchical) Within-cluster MSE that triggers a split |
+| `min_postsplit_obs` | `int` | `30` | (hierarchical) Min post-split temporal density |
+| `seed` | `int` | `0` | RNG seed for k-means init |
+| `sigma_t` | `float` | `12.0` | Time-kernel std-dev in days |
+| `sigma_doy` | `float` | `12.0` | Cross-year day-of-year kernel std-dev in days |
+| `cross_year_lam` | `float` | `1.0` | Gain of the gated cross-year term |
+| `cross_year_d0` | `float` | `1.0` | Same-year support scale gating the cross-year term |
+| `robust_iters` | `int` | `3` | IRLS iterations down-weighting bright outliers |
+| `qc_holdout` | `bool` | `False` | Also fit with a held-out block and log MAE vs baseline |
+| `qc_holdout_year` | `int` | `0` | QC holdout year (0 = second-to-last in series) |
+| `qc_holdout_doy_window` | `Tuple[int, int]` | `(1, 90)` | QC holdout day-of-year window |
 
 ---
 

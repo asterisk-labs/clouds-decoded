@@ -65,7 +65,7 @@ clouds-decoded albedo scene.SAFE --method datadriven
 | `--output-path` | `albedo_output.tif` | Output file path |
 | `--mask-path` | None | Cloud mask for clear-sky sampling (required for IDW) |
 | `--config-path` | None | Config YAML |
-| `--method` | `idw` | `idw` or `datadriven` |
+| `--method` | `idw` | `idw` or `datadriven` (`multitemporal` is project-only — see [Multitemporal Albedo](multitemporal-albedo.md)) |
 | `--fallback` | `datadriven` | Fallback when insufficient clear pixels: `datadriven` or `constant` |
 | `--model-path` | None | Path to trained MLP checkpoint |
 | `--output-resolution` | `300` | Output resolution in metres/pixel |
@@ -191,6 +191,31 @@ clouds-decoded project run ./analysis --parallel -j 4
 | `--no-stats` | False | Skip automatic stats computation |
 | `--force-overwrite` | False | Reset and re-run scenes with changed configs |
 | `--ignore-integrity` | False | Skip config integrity check |
+
+If `configs/albedo.yaml` selects `method: multitemporal`, `run` first
+executes the tile-level pre-run stage automatically — see
+[Multitemporal Albedo](multitemporal-albedo.md).
+
+### `project prefit`
+
+Run only the multitemporal albedo pre-run stage: validate the staged time
+series, compute cloud masks, fit the tile-level model, and pre-populate
+`albedo.tif` for every scene. Useful for running the heavy stage separately
+(e.g. overnight) before a later `project run`, which then finds everything
+cached. Requires `method: multitemporal` in `configs/albedo.yaml`.
+
+```bash
+clouds-decoded project prefit ./analysis --parallel
+clouds-decoded project prefit ./analysis --crop-window "4978,4978,1024,1024"
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `project_dir` (arg) | required | Path to project directory |
+| `--parallel` | False | Run the cloud-mask pass with the parallel pipeline |
+| `--force` | False | Recompute cloud masks even if cached |
+| `--crop-window` | None | Fit on scenes staged with this crop window (fast validation runs) |
+| `--verbose`, `-v` | False | Print INFO-level logs to terminal |
 
 ### `project status`
 

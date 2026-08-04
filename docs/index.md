@@ -9,5 +9,6 @@
 - [Configuration](configuration.md) -- How the config system works, and a field-by-field reference for every module config.
 - [Data Classes](data-classes.md) -- The data class hierarchy for reading, writing, and inspecting processing outputs in Python.
 - [Projects](projects.md) -- The project system for batch processing: init, stage, run, status, and statistics.
+- [Multitemporal Albedo](multitemporal-albedo.md) -- Optional extension: fit a time-series model over a tile's archive for cloud-free albedo at every date.
 - [Architecture](architecture.md) -- Architecture overview for developers: pipeline design, processor pattern, and key abstractions.
 - [API Reference](api/index.md) -- Auto-generated reference for all public classes and functions.

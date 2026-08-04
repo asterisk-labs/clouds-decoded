@@ -37,11 +37,13 @@ my_analysis/
       albedo.tif
       properties.tif
       manifest.json     # Per-scene processing manifest
+      crops/<window>/   # Outputs for cropped runs (--crop-window), same layout
     <scene_id>/
       ...
   logs/                 # Per-scene log files
     <scene_id>/
       pipeline.log
+  multitemporal/        # Only with the multitemporal albedo extension
 ```
 
 ---
@@ -79,6 +81,8 @@ Each processing step's config is hashed (SHA-256 of the JSON-serialised config).
 
 The per-scene `manifest.json` tracks the status, config hash, output file, and timing for each step.
 
+Outputs don't have to come from the orchestrator itself: the multitemporal albedo extension pre-populates step outputs before the run, and they pass the same checks (manifest entry, file on disk, embedded provenance) as any cached result. See [Multitemporal Albedo](multitemporal-albedo.md).
+
 ---
 
 ## Pipeline Definition
@@ -95,7 +99,9 @@ Pipelines are defined as ordered sequences of [`WorkflowStepDef`][clouds_decoded
 | `output` | Output token name (None = terminal) |
 | `output_file` | Disk filename (None = ephemeral, no write/resume) |
 
-The built-in recipes (e.g. `full-workflow`, `cloud-height-comparison`) are stored in the package and embedded into `project.yaml` at init time. You can edit the workflow directly in `project.yaml` for custom pipelines.
+The built-in recipes (`full-workflow`, `full-workflow-multitemporal`, `cloud-height-comparison`) are stored in the package and embedded into `project.yaml` at init time. You can edit the workflow directly in `project.yaml` for custom pipelines.
+
+`full-workflow-multitemporal` is the same pipeline with albedo ordered directly after cloud_mask. It exists because resume restarts at the *first* incomplete step: the multitemporal albedo extension pre-populates `albedo.tif` before the per-scene run, and the earlier position keeps that output from being recomputed. Use it whenever `configs/albedo.yaml` selects `method: multitemporal` — see [Multitemporal Albedo](multitemporal-albedo.md).
 
 ---
 
