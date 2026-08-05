@@ -63,10 +63,12 @@ def predict_scene_albedo(model: Dict, scene_id: str,
 def prepopulate_scene(project, model: Dict, scene_path: str,
                       albedo_config, git_hash: Optional[str] = None,
                       footprint: Optional[np.ndarray] = None,
-                      crop_window: Optional[str] = None) -> bool:
+                      crop_window: Optional[str] = None,
+                      force: bool = False) -> bool:
     """Write ``albedo.tif`` + manifest entry for one scene (or one crop).
 
-    Returns True if written, False if the step was already complete.
+    Returns True if written, False if the step was already complete
+    (``force=True`` rewrites regardless — e.g. after a model refit).
     """
     from rasterio.transform import Affine
 
@@ -77,7 +79,7 @@ def prepopulate_scene(project, model: Dict, scene_path: str,
     scene_id = project._scene_id(scene_path)
     config_hash = project._config_hash("albedo")
     manifest = project._load_manifest(scene_id, scene_path, crop_window)
-    if manifest.is_step_complete("albedo", config_hash):
+    if not force and manifest.is_step_complete("albedo", config_hash):
         return False
 
     started = datetime.now()

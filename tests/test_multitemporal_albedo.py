@@ -423,6 +423,18 @@ class TestPrepopulate:
         assert not manifest.is_step_complete(
             "albedo", project._config_hash("albedo"))
 
+    def test_force_rewrites(self, project, model, tmp_path):
+        from clouds_decoded.extensions.multitemporal_albedo.prepopulate import (
+            prepopulate_scene,
+        )
+        sid = "S2A_MSIL1C_20230715T100031_N0510_R064_T37VCC_20230715T100031"
+        scene_path = str(tmp_path / f"{sid}.SAFE")
+        albedo_cfg = project._load_step_config("albedo")
+        assert prepopulate_scene(project, model, scene_path, albedo_cfg)
+        assert not prepopulate_scene(project, model, scene_path, albedo_cfg)
+        assert prepopulate_scene(project, model, scene_path, albedo_cfg,
+                                 force=True)
+
     def test_footprint_masks_nodata(self, project, model, tmp_path):
         from clouds_decoded.extensions.multitemporal_albedo.prepopulate import (
             predict_scene_albedo,
@@ -437,6 +449,73 @@ class TestPrepopulate:
             footprint=footprint)
         assert np.isnan(data[:, :, : W // 2]).all()
         assert np.isfinite(data[:, :, W // 2:]).all()
+
+
+# ---------------------------------------------------------------------------
+# Forced runs on pre-populated projects
+# ---------------------------------------------------------------------------
+
+class TestForceExemptSteps:
+    def test_force_resumes_after_exempt_prefix(self, tmp_path, monkeypatch):
+        """With force + exempt steps set (as the multitemporal hook does),
+        the per-scene run re-executes from the first non-exempt step instead
+        of re-running the albedo processor (which would raise)."""
+        import clouds_decoded.data as cd_data
+        from clouds_decoded.project import Project, StepResult, _PipelineCtx
+
+        project = Project.init(str(tmp_path / "proj"), name="T",
+                               pipeline="full-workflow-multitemporal")
+        sid = "S2A_MSIL1C_20230715T100031_N0510_R064_T37VCC_20230715T100031"
+        scene_path = str(tmp_path / f"{sid}.SAFE")
+        project.stage(scene_path)
+        project._scene_output_dir(sid).mkdir(parents=True)
+        manifest = project._load_manifest(sid, scene_path)
+        for step in ("cloud_mask", "albedo"):
+            manifest.steps[step] = StepResult(
+                status="completed", config_hash=project._config_hash(step))
+        project._save_manifest(sid, manifest)
+
+        class DummyScene:
+            product_uri = f"{sid}.SAFE"
+            def read(self, *a, **k): pass
+        monkeypatch.setattr(cd_data, "Sentinel2Scene", DummyScene)
+
+        ctx = _PipelineCtx(scene_path=scene_path, crop_window=None,
+                           log_path=tmp_path / "log.log", force=True,
+                           unsafe=True, git_hash=None)
+        project._force_exempt_steps = frozenset({"cloud_mask", "albedo"})
+        try:
+            project._prepare_scene_context(ctx)
+        finally:
+            project._force_exempt_steps = frozenset()
+        assert ctx.first_step_idx == 2  # resumes at cloud_height
+
+    def test_force_without_exemption_invalidates_all(self, tmp_path,
+                                                     monkeypatch):
+        import clouds_decoded.data as cd_data
+        from clouds_decoded.project import Project, StepResult, _PipelineCtx
+
+        project = Project.init(str(tmp_path / "proj"), name="T")
+        sid = "S2A_MSIL1C_20230715T100031_N0510_R064_T37VCC_20230715T100031"
+        scene_path = str(tmp_path / f"{sid}.SAFE")
+        project.stage(scene_path)
+        project._scene_output_dir(sid).mkdir(parents=True)
+        manifest = project._load_manifest(sid, scene_path)
+        manifest.steps["cloud_mask"] = StepResult(
+            status="completed",
+            config_hash=project._config_hash("cloud_mask"))
+        project._save_manifest(sid, manifest)
+
+        class DummyScene:
+            product_uri = f"{sid}.SAFE"
+            def read(self, *a, **k): pass
+        monkeypatch.setattr(cd_data, "Sentinel2Scene", DummyScene)
+
+        ctx = _PipelineCtx(scene_path=scene_path, crop_window=None,
+                           log_path=tmp_path / "log.log", force=True,
+                           unsafe=True, git_hash=None)
+        project._prepare_scene_context(ctx)
+        assert ctx.first_step_idx == 0
 
 
 # ---------------------------------------------------------------------------

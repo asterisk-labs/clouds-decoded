@@ -143,7 +143,7 @@ class MultitemporalAlbedoStage:
                 written = prepopulate_scene(
                     project, model, scene_path, albedo_cfg,
                     git_hash=git_hash, footprint=footprint,
-                    crop_window=crop_window)
+                    crop_window=crop_window, force=force)
             except Exception as exc:
                 logger.error("pre-populate failed for %s: %s", sid, exc)
                 continue
