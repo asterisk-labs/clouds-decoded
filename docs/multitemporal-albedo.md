@@ -141,6 +141,26 @@ Notes on crops:
   cache get a crop tag (`model_crop<...>.npz`), and outputs land in the
   standard `outputs/<scene_id>/crops/<window>/` directories.
 
+## Adding scenes later
+
+Staging more scenes and re-running `project run` works incrementally: only
+the new scenes are masked, the stack gains their extractions (existing
+ones are cached), the model is **refit** on the extended series, and only
+the new scenes get `albedo.tif` + downstream processing.
+
+Existing scenes deliberately keep their outputs from the earlier fit —
+with a long series, one more scene changes the model negligibly, and
+re-populating would cascade into re-running every downstream step for
+every scene. When you *do* want everything refreshed from the latest fit
+(e.g. after a large batch of new scenes), run:
+
+```bash
+clouds-decoded project run ./tile_analysis --force
+```
+
+which re-computes the masks, refits, rewrites every scene's albedo from
+the fresh model, and re-runs the remaining per-scene steps.
+
 ## Behaviour notes
 
 - Per-scene `albedo.tif` outputs are **masked to each scene's swath
