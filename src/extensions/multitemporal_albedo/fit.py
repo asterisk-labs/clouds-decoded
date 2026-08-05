@@ -47,6 +47,7 @@ def load_model(model_path: Path, expected_key: str) -> Optional[Dict]:
     model["transform"] = z["transform"]
     model["crs"] = str(z["crs"])
     model["bands"] = [str(b) for b in z["bands"]]
+    model["key"] = str(z["key"])
     return model
 
 
@@ -78,6 +79,7 @@ def fit_and_save(stack: Dict, stack_sig: str,
 
     model_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(model_path, key=key, **model)
+    model["key"] = key
     logger.info("fitted multitemporal model saved -> %s", model_path)
     return model
 

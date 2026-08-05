@@ -151,8 +151,11 @@ the new scenes get `albedo.tif` + downstream processing.
 Existing scenes deliberately keep their outputs from the earlier fit —
 with a long series, one more scene changes the model negligibly, and
 re-populating would cascade into re-running every downstream step for
-every scene. When you *do* want everything refreshed from the latest fit
-(e.g. after a large batch of new scenes), run:
+every scene. This is never silent: each `albedo.tif` is stamped with the
+signature of the model that produced it, and the stage **warns on every
+run** listing the scenes whose outputs come from a superseded fit. When
+you *do* want everything refreshed from the latest fit (e.g. after a
+large batch of new scenes), run:
 
 ```bash
 clouds-decoded project run ./tile_analysis --force

@@ -433,6 +433,12 @@ class AlbedoMetadata(Metadata):
         default_factory=dict,
         description="Per-band constant albedo values used in fallback mode"
     )
+    model_key: Optional[str] = Field(
+        default=None,
+        description="Data+params signature of the multitemporal model that "
+                    "produced this output (None for per-scene methods). Used "
+                    "to detect outputs from a superseded fit."
+    )
 
 
 class AlbedoData(GeoRasterData):

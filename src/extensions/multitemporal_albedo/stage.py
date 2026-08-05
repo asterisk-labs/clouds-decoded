@@ -27,6 +27,23 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _albedo_model_key(path: Path) -> Optional[str]:
+    """Read the model_key stamped into an albedo.tif's metadata tag
+    (None if absent or unreadable)."""
+    import json
+
+    import rasterio
+
+    from clouds_decoded.constants import METADATA_TAG
+
+    try:
+        with rasterio.open(path) as src:
+            meta = json.loads(src.tags().get(METADATA_TAG, "{}"))
+        return meta.get("model_key")
+    except Exception:
+        return None
+
+
 class MultitemporalAlbedoStage:
     """Orchestrates the tile-level fit + per-scene pre-population."""
 
@@ -133,6 +150,7 @@ class MultitemporalAlbedoStage:
         git_hash = project._get_git_hash()
         sid_to_t = {str(s): i for i, s in enumerate(stack["sids"])}
         n_written = n_skipped = 0
+        stale: list = []
         for scene_path, mask_path in mask_rows:
             sid = project._scene_id(scene_path)
             footprint = None
@@ -148,7 +166,25 @@ class MultitemporalAlbedoStage:
                 logger.error("pre-populate failed for %s: %s", sid, exc)
                 continue
             n_written += int(written)
-            n_skipped += int(not written)
+            if not written:
+                n_skipped += 1
+                # Skipped via config hash — but was it produced by the
+                # *current* fit? The data signature is not part of the
+                # config hash, so outputs can silently outlive their model.
+                out = (project._scene_output_dir(sid, crop_window)
+                       / "albedo.tif")
+                if _albedo_model_key(out) != model.get("key"):
+                    stale.append(sid)
         logger.warning(
             "Multitemporal albedo stage complete: %d albedo.tif written, "
             "%d already up to date.", n_written, n_skipped)
+        if stale:
+            logger.warning(
+                "%d scene(s) have albedo.tif from a SUPERSEDED multitemporal "
+                "fit (the model has since been refit on different data). "
+                "Differences are typically far below the model's own error, "
+                "but for outputs consistent with the current fit re-run with "
+                "--force ('project run --force' or 'project prefit --force'). "
+                "Affected: %s%s",
+                len(stale), ", ".join(stale[:5]),
+                f" (+{len(stale) - 5} more)" if len(stale) > 5 else "")

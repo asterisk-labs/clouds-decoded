@@ -99,6 +99,7 @@ def prepopulate_scene(project, model: Dict, scene_path: str,
             fallback_used=fallback_frac > 0,
             fallback_values=dict(albedo_config.default_albedo)
             if fallback_frac > 0 else {},
+            model_key=model.get("key"),
         ),
     )
     result = result.resample(albedo_config.output_resolution)

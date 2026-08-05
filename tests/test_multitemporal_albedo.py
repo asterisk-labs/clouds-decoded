@@ -423,6 +423,25 @@ class TestPrepopulate:
         assert not manifest.is_step_complete(
             "albedo", project._config_hash("albedo"))
 
+    def test_model_key_stamped_and_stale_detectable(self, project, model,
+                                                    tmp_path):
+        from clouds_decoded.extensions.multitemporal_albedo.prepopulate import (
+            prepopulate_scene,
+        )
+        from clouds_decoded.extensions.multitemporal_albedo.stage import (
+            _albedo_model_key,
+        )
+        sid = "S2A_MSIL1C_20230715T100031_N0510_R064_T37VCC_20230715T100031"
+        scene_path = str(tmp_path / f"{sid}.SAFE")
+        albedo_cfg = project._load_step_config("albedo")
+        model["key"] = "sig_v1"
+        prepopulate_scene(project, model, scene_path, albedo_cfg)
+        out = project._scene_output_dir(sid) / "albedo.tif"
+        assert _albedo_model_key(out) == "sig_v1"
+        # A refit (new key) makes the existing output detectably stale.
+        assert _albedo_model_key(out) != "sig_v2"
+        assert _albedo_model_key(tmp_path / "missing.tif") is None
+
     def test_force_rewrites(self, project, model, tmp_path):
         from clouds_decoded.extensions.multitemporal_albedo.prepopulate import (
             prepopulate_scene,
