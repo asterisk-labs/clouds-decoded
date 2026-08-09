@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 import numpy as np
 from pydantic import Field, field_validator
 from clouds_decoded.config import BaseProcessorConfig
@@ -97,6 +97,18 @@ class CloudHeightConfig(BaseProcessorConfig):
         ge=10,
         le=1000,
         description="Height search step size (meters)"
+    )
+    offset_rounding: Literal["truncate", "nearest"] = Field(
+        default="truncate",
+        description=(
+            "How the per-band patch offset is rounded to a whole pixel. "
+            "'truncate' is the historical behaviour (int(), i.e. floor for "
+            "positive indices). Because the offset changes sign with detector "
+            "parity, a floor bias of ~0.5 px maps to +0.5 px of height in one "
+            "parity and -0.5 px in the other -- a full-pixel differential, "
+            "worth ~600 m (B03) to ~1200 m (B08). 'nearest' removes the "
+            "systematic part of that."
+        )
     )
 
     # System

@@ -248,7 +248,8 @@ class CloudHeightProcessor(BaseProcessor):
             offset = offsets[i]
             if np.isnan(offset): continue
             
-            start = int(centre - along_track_size/2 - offset)
+            raw_start = centre - along_track_size/2 - offset
+            start = int(round(raw_start)) if self.config.offset_rounding == "nearest" else int(raw_start)
             end = start + along_track_size
             if start < 0 or end > data.shape[0]: 
                 return 0 # Boundary check
