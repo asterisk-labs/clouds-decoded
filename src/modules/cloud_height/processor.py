@@ -219,7 +219,15 @@ class CloudHeightProcessor(BaseProcessor):
         max_offset = int(np.ceil(max_offset_val.max()))
         
         shape_0 = column.bands[self.config.reference_band].shape[0]
-        if column.direction == 'up':
+        if self.config.min_height < 0:
+            # Two-sided search: offsets run both ways, so keep the same margin at
+            # both ends. Otherwise the negative half of the grid would be clipped
+            # by the boundary check near one edge and look artificially unlikely
+            # -- which would bias the very diagnostic min_height exists for.
+            min_offset_val = heightsToOffsets([self.config.min_height] * len(target_features), target_features.keys(), self.config.along_track_resolution)
+            margin = max(max_offset, int(np.ceil(np.abs(min_offset_val).max())))
+            centres = np.arange(along_track_size // 2 + margin, shape_0 - margin - along_track_size // 2, along_track_stride)
+        elif column.direction == 'up':
             centres = np.arange(along_track_size // 2, shape_0 - max_offset - along_track_size // 2, along_track_stride)
         else:
             centres = np.arange(along_track_size // 2 + max_offset, shape_0 - along_track_size // 2, along_track_stride)
@@ -394,8 +402,16 @@ class CloudHeightProcessor(BaseProcessor):
         final_gridded_heights[all_nan_mask] = np.nan
 
         # Mark zero-height pixels as invalid — height=0 is the search lower
-        # bound, not a physically meaningful cloud height.
-        final_gridded_heights[final_gridded_heights <= 0] = np.nan
+        # bound, not a physically meaningful cloud height. Skipped when the grid
+        # is deliberately two-sided: there 0 is an interior point, not a floor,
+        # and the negative retrievals are the whole point of the diagnostic.
+        #
+        # Also deferred when a parity correction will run: one parity sits low
+        # BECAUSE of the artefact, so masking first amputates the very tail the
+        # correction is meant to lift, leaving a truncated distribution and a
+        # misleading pixel count. _process reapplies it once the shift is done.
+        if self.config.min_height >= 0 and not getattr(self.config, "parity_correction", False):
+            final_gridded_heights[final_gridded_heights <= 0] = np.nan
 
         # Reshape to grid
         if not getattr(self.config, "quality_bands", False):

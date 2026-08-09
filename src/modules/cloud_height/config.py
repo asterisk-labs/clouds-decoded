@@ -86,6 +86,18 @@ class CloudHeightConfig(BaseProcessorConfig):
     )
 
     # Height Search Space
+    min_height: int = Field(
+        default=0,
+        ge=-10000,
+        le=0,
+        description=(
+            "Minimum cloud height to search (meters). 0 is the physical floor "
+            "and the production default. Negative values are a DIAGNOSTIC: a "
+            "detector whose retrievals come back systematically negative has "
+            "its parallax direction inverted, which a 0-floored grid hides by "
+            "pinning those columns at the floor instead."
+        )
+    )
     max_height: int = Field(
         default=18000,
         ge=1000,
@@ -195,7 +207,7 @@ class CloudHeightConfig(BaseProcessorConfig):
     @property
     def heights(self) -> np.ndarray:
         """Derived property: Array of heights to search."""
-        hs = np.arange(0, self.max_height, self.height_step)
+        hs = np.arange(self.min_height, self.max_height, self.height_step)
         if hs[-1] != self.max_height:
             hs = np.append(hs, self.max_height)
         return hs
