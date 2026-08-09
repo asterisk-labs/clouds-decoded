@@ -100,17 +100,45 @@ class ColumnExtractor:
     def getBandInterpolators(self,bands):
         """
         Get interpolators for the bands
+
+        Sample k of a band sits at the CENTRE of its pixel, (k + 0.5) * res
+        from the tile origin, not at k * res. Every band shares that origin, so
+        indexing them all as k * res mis-places each one by half of its OWN
+        pixel and leaves a fixed inter-band shift of 0.5 * (res_band - res_ref):
+
+            10 m bands  0 m      20 m bands  +5 m      60 m bands  +25 m
+
+        For a 3 m along-track grid that is 8.3 cells on the 60 m bands. It is
+        invisible to any all-10 m configuration -- which is every two-band
+        diagnostic, B02/B03/B04 -- because the term cancels exactly. It only
+        appears once bands of different resolutions are correlated together,
+        i.e. in the shipped 13-band retrieval.
+
+        There it becomes a DETECTOR PARITY artefact, because the shift is fixed
+        while the parallax offsets flip sign with parity: band k's features sit
+        at o_k(h)*s - eps_k while the search runs over o_k(h)*s, so one parity
+        is pulled by -eps and the other by +eps. Measured on 32TLS: a -900 m
+        step across every seam in the 13-band run, 0 m in an all-10 m run of
+        the same scene. Unaffected by `offset_rounding`, which is a separate
+        (and now fixed) truncation bug.
+
+        The correction is written relative to the reference band rather than as
+        the absolute (k + 0.5) * res, so the reference band's coordinates are
+        unchanged and existing all-10 m output stays bit-identical.
         """
         assert isinstance(bands, dict), "Bands must be a dictionary"
+        ref_res = BAND_RESOLUTIONS[self.conf.reference_band]
         interpolators = {}
         for band in bands.keys():
+            res = BAND_RESOLUTIONS[band]
+            half = 0.5 * (res - ref_res)
             interpolators[band] = RegularGridInterpolator((
-                    np.arange(bands[band].shape[0]) * BAND_RESOLUTIONS[band],
-                    np.arange(bands[band].shape[1]) * BAND_RESOLUTIONS[band]
-                ), 
-                bands[band], 
+                    np.arange(bands[band].shape[0]) * res + half,
+                    np.arange(bands[band].shape[1]) * res + half
+                ),
+                bands[band],
                 fill_value=np.nan,
-                bounds_error=False, 
+                bounds_error=False,
                 method='linear'
             )
         return interpolators
