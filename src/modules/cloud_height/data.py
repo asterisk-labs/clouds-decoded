@@ -1,3 +1,4 @@
+import logging
 import os
 import numpy as np
 import rasterio as rio
@@ -11,6 +12,9 @@ import rtree
 from clouds_decoded.data import Sentinel2Scene
 from clouds_decoded.constants import BAND_RESOLUTIONS
 from .physics import RotationTransform
+
+logger = logging.getLogger(__name__)
+
 
 class Column:
     def __init__(self,bands,points,footprint_id,mask=None):
@@ -75,7 +79,27 @@ class RetrievalCube:
 
 class ColumnExtractor:
     def __init__(self, scene: Sentinel2Scene, conf, mask=None):
-        self.bands = scene.bands
+        # Honour conf.bands when it is set. Historically this was ignored --
+        # every band the scene happened to hold was correlated, whatever the
+        # config said -- so a `bands:` list in the yaml silently did nothing.
+        # The reference band is always kept; it is the anchor all offsets are
+        # measured from.
+        wanted = list(getattr(conf, "bands", None) or [])
+        if wanted:
+            keep = [b for b in wanted if b in scene.bands]
+            if conf.reference_band in scene.bands and conf.reference_band not in keep:
+                keep.insert(0, conf.reference_band)
+            missing = [b for b in wanted if b not in scene.bands]
+            if missing:
+                logger.warning("Requested bands not present in scene, ignoring: %s", missing)
+            if len(keep) < 2:
+                raise ValueError(
+                    f"cloud_height needs >=2 bands present in the scene; "
+                    f"config asked for {wanted}, scene has {sorted(scene.bands)}"
+                )
+            self.bands = {b: scene.bands[b] for b in keep}
+        else:
+            self.bands = scene.bands
         self.footprints = scene.footprints
         self.angle = scene.image_azimuth
         self.conf = conf
