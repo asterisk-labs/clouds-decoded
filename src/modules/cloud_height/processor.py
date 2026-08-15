@@ -16,7 +16,8 @@ from clouds_decoded.base_processor import BaseProcessor
 from .data import ColumnExtractor, ColumnIterator, RetrievalCube
 from .physics import heightsToOffsets
 from .config import CloudHeightConfig
-from clouds_decoded.constants import BAND_RESOLUTIONS
+from clouds_decoded.constants import (BAND_RESOLUTIONS, BAND_TIME_DELAYS,
+                                      ORBITAL_VELOCITY, SPACECRAFT_ALTITUDE)
 
 # Module-level logger setup
 logger = logging.getLogger(__name__)
@@ -376,7 +377,11 @@ class CloudHeightProcessor(BaseProcessor):
         # Final Height Selection (argmax of smoothed correlation)
         final_height_indices = np.nanargmax(smoothed_scores, axis=1)
         final_gridded_heights = self.config.heights[final_height_indices]
-        
+
+        if self.config.tie_break == "centre":
+            final_gridded_heights = self._tread_centre(
+                smoothed_scores, final_height_indices)
+
         final_gridded_heights = final_gridded_heights.astype(np.float32)
         final_gridded_heights[all_nan_mask] = np.nan
 
@@ -386,3 +391,89 @@ class CloudHeightProcessor(BaseProcessor):
 
         # Reshape to grid
         return final_gridded_heights.reshape(grid_y.shape)
+
+    def _tread_centre(self, scores, first_max_idx):
+        """Midpoint of the tied run of heights that share the winning score.
+
+        The patch offset is rounded to a whole cell of the along-track grid, so
+        every candidate height inside one cell-crossing slices the SAME rows out
+        of the band array and scores identically. The winning "tread" therefore
+        says only that the height lies somewhere inside it, and reporting either
+        end is a statement about array ordering rather than about the data --
+        ``np.nanargmax`` returns the first maximum and ``config.heights``
+        ascends, so the historical answer is the tread's floor, low by half a
+        tread. Build the grid descending and the same code returns the ceiling.
+
+        The ties are exact: for two heights on one tread every contributing
+        neighbour has an identical score, and the smoothing sums identical
+        values with identical weights. ``tol`` is only a guard.
+
+        Args:
+            scores: (n_points, n_heights) smoothed correlation scores.
+            first_max_idx: ``np.nanargmax(scores, axis=1)``, i.e. the tread floor.
+
+        Returns:
+            Height per point, the midpoint of its tied tread.
+        """
+        heights = np.asarray(self.config.heights)
+        n, m = scores.shape
+        rows = np.arange(n)
+
+        peak = scores[rows, first_max_idx]
+        tol = 1e-9 * np.maximum(np.abs(peak), 1.0)
+        # NaN >= x is False, so NaNs terminate a run rather than extend it.
+        tied = scores >= (peak - tol)[:, None]
+
+        # argmax gives the FIRST maximum, so the run starts there; walk forward
+        # to the first untied column to find where it ends.
+        cols = np.arange(m)[None, :]
+        breaks = (~tied) & (cols > first_max_idx[:, None])
+        has_break = breaks.any(axis=1)
+        last_idx = np.where(has_break, breaks.argmax(axis=1) - 1, m - 1)
+
+        centres = 0.5 * (heights[first_max_idx] + heights[last_idx])
+
+        # A tread midpoint only means something if there is a peak to be inside
+        # of. Two ways a curve carries no information at all, and both tie far
+        # wider than any real tread:
+        #   * a constant patch takes the `np.std(patch) > 0` else-branch in
+        #     _correlateAtHeight and normalises to all zeros, so every height
+        #     scores exactly 0;
+        #   * the out-of-range sentinel there also returns 0, so a cell whose
+        #     real correlations are all negative peaks at 0 on the clipped tail.
+        # Reporting the midpoint of that is inventing a height: the value is
+        # (min_height + max_height)/2, so it moves when max_height moves. On
+        # 04WED B02-B03 it returns 9000 m for empty cells and, being positive,
+        # walks straight past the `<= 0` invalid filter downstream. Such cells
+        # have no height; say so.
+        #
+        # Note this cannot discard merely UNCERTAIN cells. The tie is exact
+        # equality, so a broad peak still ties over one tread: 58LHN has an
+        # FWHM of 13.4 km and 0.0% of its 354k cells tie at all.
+        run_span = heights[last_idx] - heights[first_max_idx]
+        degenerate = (peak <= 0) | (run_span > self._max_tied_span())
+        centres = np.where(degenerate, np.nan, centres)
+        return centres.astype(np.float32)
+
+    def _max_tied_span(self):
+        """Widest a legitimately tied run can be, in metres.
+
+        A run ends as soon as ANY band's rounded offset changes, and band b's
+        offset moves one cell every ``along_track_resolution * H / (V * dt_b)``
+        metres of height. The reference band never moves -- its delay is the
+        epoch, so its offset is identically zero -- and is excluded.
+
+        Takes the WIDEST tread over the bands in use rather than the narrowest,
+        which is deliberately permissive: it can never reject a real tread, and
+        it does not weaken the check, because a degenerate run spans the whole
+        height grid (~21 km against ~1.2 km here). One ``height_step`` of slack
+        covers the grid sampling. Falls back to all known bands when the config
+        does not pin the band list, since the scene's bands are not visible here.
+        """
+        bands = list(getattr(self.config, "bands", None) or BAND_TIME_DELAYS)
+        treads = [self.config.along_track_resolution * SPACECRAFT_ALTITUDE
+                  / (ORBITAL_VELOCITY * BAND_TIME_DELAYS[b])
+                  for b in bands if BAND_TIME_DELAYS.get(b, 0) > 0]
+        if not treads:                      # only the epoch band: nothing moves
+            return float("inf")
+        return max(treads) + self.config.height_step

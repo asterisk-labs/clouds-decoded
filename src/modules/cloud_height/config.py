@@ -110,6 +110,31 @@ class CloudHeightConfig(BaseProcessorConfig):
             "systematic part of that."
         )
     )
+    tie_break: Literal["floor", "centre"] = Field(
+        default="floor",
+        description=(
+            "Which height to report when several candidates share the winning "
+            "score. Because the patch offset is rounded to a whole cell of the "
+            "along-track grid, every height inside one cell-crossing produces "
+            "BYTE-IDENTICAL patches and therefore an identical score: the "
+            "score-vs-height curve is a staircase whose tread is "
+            "res * H / (V * dt), i.e. 603 m for B03, 316 m for B04, ~123 m for "
+            "B09 (B02 is the epoch, its offset is identically zero, so it never "
+            "moves). All that a tied tread tells you is that the height lies "
+            "somewhere inside it. 'floor' is the historical behaviour: "
+            "np.nanargmax returns the FIRST maximum and the height grid ascends "
+            "from min_height, so the lowest height of the tread is reported. "
+            "That biases every retrieval low by (W - height_step)/2, "
+            "which is -252 m for a B02-B03 pair at 3 m and is why such pairs "
+            "read below ground over low cloud."
+            "'centre' reports the midpoint of the tied tread instead, which is "
+            "unbiased and halves the worst-case error. It does NOT improve "
+            "resolution -- the tread width is still the uncertainty. Mixed "
+            "band sets are barely affected: with 13 bands the score changes "
+            "whenever ANY band crosses a cell, so treads are ~30 m, narrower "
+            "than a typical height_step, and there are few ties to break."
+        )
+    )
 
     # System
     use_emulator: bool = Field(
