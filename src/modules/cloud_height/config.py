@@ -135,6 +135,31 @@ class CloudHeightConfig(BaseProcessorConfig):
             "than a typical height_step, and there are few ties to break."
         )
     )
+    quality_bands: bool = Field(
+        default=False,
+        description=(
+            "Append per-cell quality metrics to the output raster. Band 0 stays "
+            "the height, so existing consumers are unaffected; the extra bands "
+            "are named in the output metadata. They are:\n"
+            "  peak_correlation -- the winning score. Signal strength. On 58LHN "
+            "0.52 for the cells that are wrong against 0.78 for the rest.\n"
+            "  fwhm -- width of the correlation peak at half its amplitude, in "
+            "metres. The retrieval's PRECISION.\n"
+            "  tied_span -- width of the exactly-tied run, in metres. The hard "
+            "resolution floor imposed by rounding the patch offset to a whole "
+            "cell: heights inside it are indistinguishable by construction.\n"
+            "All three are computed from the retrieval's own score curve and so "
+            "all three measure PRECISION, not accuracy. They cannot detect a "
+            "displaced peak. Cloud advection shifts the peak bodily -- adding "
+            "H/V = 105.9 m of apparent height per m/s of along-track wind -- and "
+            "leaves it sharp, so a cell can score well on every band here and "
+            "still be wrong by kilometres. On 58LHN the advection-contaminated "
+            "cells have the SHARPEST peaks in the scene (FWHM 4.9 km against "
+            "13.4 km), so ranking by fwhm alone inverts. Detecting that needs an "
+            "estimate independent of the height, i.e. across-track motion, which "
+            "this module does not compute."
+        )
+    )
 
     # System
     use_emulator: bool = Field(

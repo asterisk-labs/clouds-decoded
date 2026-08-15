@@ -152,7 +152,15 @@ class CloudHeightProcessor(BaseProcessor):
         
         # Prepare Metadata
         meta_dict = self.config.model_dump() if hasattr(self.config, 'model_dump') else self.config.dict()
-        meta = CloudHeightMetadata(processing_config=meta_dict)
+        # Named only when the quality bands are present. A plain height raster
+        # is left unnamed so the stats module keeps emitting flat keys -- see
+        # CloudHeightMetadata.band_names.
+        band_names = []
+        if (final_gridded_heights is not None and final_gridded_heights.ndim == 3
+                and final_gridded_heights.shape[0] > 1):
+            band_names = (["cloud_top_height"]
+                          + ["peak_correlation", "fwhm", "tied_span"][:final_gridded_heights.shape[0] - 1])
+        meta = CloudHeightMetadata(processing_config=meta_dict, band_names=band_names)
 
         # Calculate Transform and CRS
         if scene.transform is None:
@@ -390,7 +398,17 @@ class CloudHeightProcessor(BaseProcessor):
         final_gridded_heights[final_gridded_heights <= 0] = np.nan
 
         # Reshape to grid
-        return final_gridded_heights.reshape(grid_y.shape)
+        if not getattr(self.config, "quality_bands", False):
+            return final_gridded_heights.reshape(grid_y.shape)
+
+        # Band 0 stays the height so existing consumers, which all index [0],
+        # are unaffected. The quality bands are masked to match it, so a cell is
+        # either fully described or fully absent.
+        extra = self._quality_bands(smoothed_scores, final_height_indices)
+        invalid = ~np.isfinite(final_gridded_heights)
+        extra = [np.where(invalid, np.nan, b).astype(np.float32) for b in extra]
+        stack = np.stack([final_gridded_heights, *extra])
+        return stack.reshape((stack.shape[0],) + grid_y.shape)
 
     def _tread_centre(self, scores, first_max_idx):
         """Midpoint of the tied run of heights that share the winning score.
@@ -416,21 +434,7 @@ class CloudHeightProcessor(BaseProcessor):
             Height per point, the midpoint of its tied tread.
         """
         heights = np.asarray(self.config.heights)
-        n, m = scores.shape
-        rows = np.arange(n)
-
-        peak = scores[rows, first_max_idx]
-        tol = 1e-9 * np.maximum(np.abs(peak), 1.0)
-        # NaN >= x is False, so NaNs terminate a run rather than extend it.
-        tied = scores >= (peak - tol)[:, None]
-
-        # argmax gives the FIRST maximum, so the run starts there; walk forward
-        # to the first untied column to find where it ends.
-        cols = np.arange(m)[None, :]
-        breaks = (~tied) & (cols > first_max_idx[:, None])
-        has_break = breaks.any(axis=1)
-        last_idx = np.where(has_break, breaks.argmax(axis=1) - 1, m - 1)
-
+        last_idx, peak = self._tied_run(scores, first_max_idx)
         centres = 0.5 * (heights[first_max_idx] + heights[last_idx])
 
         # A tread midpoint only means something if there is a peak to be inside
@@ -454,6 +458,55 @@ class CloudHeightProcessor(BaseProcessor):
         degenerate = (peak <= 0) | (run_span > self._max_tied_span())
         centres = np.where(degenerate, np.nan, centres)
         return centres.astype(np.float32)
+
+    def _tied_run(self, scores, first_max_idx):
+        """End of the exactly-tied run starting at the argmax, and the peak score.
+
+        ``np.nanargmax`` returns the FIRST maximum, so the run starts there;
+        walk forward to the first untied column to find where it ends.
+
+        Args:
+            scores: (n_points, n_heights) smoothed correlation scores.
+            first_max_idx: ``np.nanargmax(scores, axis=1)``.
+
+        Returns:
+            ``(last_idx, peak)`` -- the last index of the tied run, and the
+            winning score, both per point.
+        """
+        n, m = scores.shape
+        peak = scores[np.arange(n), first_max_idx]
+        tol = 1e-9 * np.maximum(np.abs(peak), 1.0)
+        # NaN >= x is False, so NaNs terminate a run rather than extend it.
+        tied = scores >= (peak - tol)[:, None]
+        cols = np.arange(m)[None, :]
+        breaks = (~tied) & (cols > first_max_idx[:, None])
+        last_idx = np.where(breaks.any(axis=1), breaks.argmax(axis=1) - 1, m - 1)
+        return last_idx, peak
+
+    def _quality_bands(self, scores, first_max_idx):
+        """Per-cell precision metrics, read off the score curve.
+
+        All three describe how well-localised the winning peak is. None of them
+        can tell whether it is in the RIGHT place -- see the ``quality_bands``
+        config description.
+
+        Returns:
+            ``(peak_correlation, fwhm, tied_span)``. ``fwhm`` and ``tied_span``
+            are in metres.
+        """
+        heights = np.asarray(self.config.heights)
+        step = float(self.config.height_step)
+        last_idx, peak = self._tied_run(scores, first_max_idx)
+
+        # Half-max is taken against each curve's OWN amplitude, so a strong flat
+        # curve and a weak flat curve are described alike; an absolute threshold
+        # would conflate amplitude with width.
+        floor = np.nanmin(scores, axis=1)
+        half = floor + 0.5 * (peak - floor)
+        fwhm = np.count_nonzero(scores >= half[:, None], axis=1) * step
+
+        tied_span = heights[last_idx] - heights[first_max_idx]
+        return peak.astype(np.float32), fwhm.astype(np.float32), tied_span.astype(np.float32)
 
     def _max_tied_span(self):
         """Widest a legitimately tied run can be, in metres.

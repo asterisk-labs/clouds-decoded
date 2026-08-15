@@ -153,8 +153,13 @@ def layer_from_cloud_mask(data) -> Layer:
 
 
 def layer_from_cloud_height(data) -> Layer:
-    """Create a Layer from a CloudHeightGridData instance."""
-    arr = _squeeze_2d(data.data)
+    """Create the height Layer from a CloudHeightGridData instance.
+
+    Band 0 is always the height. When ``cloud_height.quality_bands`` is on the
+    array carries further bands, and ``_squeeze_2d`` leaves those untouched --
+    the extent would then be computed off the band axis. Take band 0 explicitly.
+    """
+    arr = data.data[0] if (data.data is not None and data.data.ndim == 3) else _squeeze_2d(data.data)
     extent = _extent_from_transform(data.transform, *arr.shape[:2]) if data.transform else None
     res = abs(data.transform.a) if data.transform else None
 
@@ -170,6 +175,47 @@ def layer_from_cloud_height(data) -> Layer:
         extent=extent,
         resolution_m=res,
     )
+
+
+# Per-band render presets for the cloud-height quality bands. All three describe
+# how well-localised the correlation peak is, never whether it is in the right
+# place -- a sharply peaked cell can still be displaced by cloud advection.
+_HEIGHT_QUALITY_RENDER: Dict[str, RenderConfig] = {
+    "peak_correlation": RenderConfig(cmap="viridis", vmin=0, vmax=1,
+                                     label="Peak Correlation", units=""),
+    "fwhm": RenderConfig(cmap="magma_r", vmin=0,
+                         label="Peak Width (FWHM)", units="m"),
+    "tied_span": RenderConfig(cmap="cividis", vmin=0,
+                              label="Unresolvable Span", units="m"),
+}
+
+
+def layers_from_cloud_height(data) -> List[Layer]:
+    """Height Layer plus one Layer per quality band, if the raster carries them.
+
+    Mirrors ``layers_from_cloud_properties``: band names come from the metadata,
+    so a single-band raster written before ``quality_bands` existed still yields
+    exactly the height layer.
+    """
+    layers = [layer_from_cloud_height(data)]
+    arr = data.data
+    if arr is None or arr.ndim != 3 or arr.shape[0] < 2:
+        return layers
+
+    names = list(getattr(data.metadata, "band_names", []) or [])
+    extent = _extent_from_transform(data.transform, arr.shape[-2], arr.shape[-1]) if data.transform else None
+    res = abs(data.transform.a) if data.transform else None
+
+    for i in range(1, arr.shape[0]):
+        name = names[i] if i < len(names) else f"band_{i}"
+        layers.append(Layer(
+            name=f"Height quality: {name}",
+            data=arr[i].astype(np.float32),
+            render=_HEIGHT_QUALITY_RENDER.get(name, RenderConfig(label=name)),
+            extent=extent,
+            resolution_m=res,
+        ))
+    return layers
 
 
 # Per-band render presets for cloud properties
