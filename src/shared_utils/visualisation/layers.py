@@ -178,8 +178,7 @@ def layer_from_cloud_height(data) -> Layer:
 
 
 # Per-band render presets for the cloud-height quality bands. All three describe
-# how well-localised the correlation peak is, never whether it is in the right
-# place -- a sharply peaked cell can still be displaced by cloud advection.
+# how well-localised the correlation peak is.
 _HEIGHT_QUALITY_RENDER: Dict[str, RenderConfig] = {
     "peak_correlation": RenderConfig(cmap="viridis", vmin=0, vmax=1,
                                      label="Peak Correlation", units=""),

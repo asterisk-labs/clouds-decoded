@@ -141,14 +141,12 @@ class ColumnExtractor:
         There it becomes a DETECTOR PARITY artefact, because the shift is fixed
         while the parallax offsets flip sign with parity: band k's features sit
         at o_k(h)*s - eps_k while the search runs over o_k(h)*s, so one parity
-        is pulled by -eps and the other by +eps. Measured on 32TLS: a -900 m
-        step across every seam in the 13-band run, 0 m in an all-10 m run of
-        the same scene. Unaffected by `offset_rounding`, which is a separate
-        (and now fixed) truncation bug.
+        is pulled by -eps and the other by +eps.
 
         The correction is written relative to the reference band rather than as
         the absolute (k + 0.5) * res, so the reference band's coordinates are
-        unchanged and existing all-10 m output stays bit-identical.
+        unchanged.
+        Unaffected by offset_rounding, which is a separate (and now fixed) truncation bug.
         """
         assert isinstance(bands, dict), "Bands must be a dictionary"
         ref_res = BAND_RESOLUTIONS[self.conf.reference_band]

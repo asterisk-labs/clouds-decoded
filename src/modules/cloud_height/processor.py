@@ -222,8 +222,7 @@ class CloudHeightProcessor(BaseProcessor):
         if self.config.min_height < 0:
             # Two-sided search: offsets run both ways, so keep the same margin at
             # both ends. Otherwise the negative half of the grid would be clipped
-            # by the boundary check near one edge and look artificially unlikely
-            # -- which would bias the very diagnostic min_height exists for.
+            # by the boundary check near one edge and look artificially unlikely.
             min_offset_val = heightsToOffsets([self.config.min_height] * len(target_features), target_features.keys(), self.config.along_track_resolution)
             margin = max(max_offset, int(np.ceil(np.abs(min_offset_val).max())))
             centres = np.arange(along_track_size // 2 + margin, shape_0 - margin - along_track_size // 2, along_track_stride)
@@ -457,14 +456,7 @@ class CloudHeightProcessor(BaseProcessor):
         #   * the out-of-range sentinel there also returns 0, so a cell whose
         #     real correlations are all negative peaks at 0 on the clipped tail.
         # Reporting the midpoint of that is inventing a height: the value is
-        # (min_height + max_height)/2, so it moves when max_height moves. On
-        # 04WED B02-B03 it returns 9000 m for empty cells and, being positive,
-        # walks straight past the `<= 0` invalid filter downstream. Such cells
-        # have no height; say so.
-        #
-        # Note this cannot discard merely UNCERTAIN cells. The tie is exact
-        # equality, so a broad peak still ties over one tread: 58LHN has an
-        # FWHM of 13.4 km and 0.0% of its 354k cells tie at all.
+        # (min_height + max_height)/2, so it moves when max_height moves.
         run_span = heights[last_idx] - heights[first_max_idx]
         degenerate = (peak <= 0) | (run_span > self._max_tied_span())
         centres = np.where(degenerate, np.nan, centres)
