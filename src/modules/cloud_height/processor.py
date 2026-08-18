@@ -405,12 +405,7 @@ class CloudHeightProcessor(BaseProcessor):
         # bound, not a physically meaningful cloud height. Skipped when the grid
         # is deliberately two-sided: there 0 is an interior point, not a floor,
         # and the negative retrievals are the whole point of the diagnostic.
-        #
-        # Also deferred when a parity correction will run: one parity sits low
-        # BECAUSE of the artefact, so masking first amputates the very tail the
-        # correction is meant to lift, leaving a truncated distribution and a
-        # misleading pixel count. _process reapplies it once the shift is done.
-        if self.config.min_height >= 0 and not getattr(self.config, "parity_correction", False):
+        if self.config.min_height >= 0:
             final_gridded_heights[final_gridded_heights <= 0] = np.nan
 
         # Reshape to grid
