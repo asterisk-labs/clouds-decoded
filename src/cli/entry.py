@@ -825,8 +825,6 @@ def project_stats(
 @project_app.command("report")
 def project_report(
     project_dir: str = typer.Argument(..., help="Path to project directory"),
-    output: Optional[str] = typer.Option(None, "--output", "-o",
-                                          help="Output HTML path (default: <project_dir>/report.html)"),
     dpi: int = typer.Option(72, "--dpi", help="Thumbnail DPI (default: 72)"),
     regenerate: bool = typer.Option(False, "--regenerate",
                                      help="Regenerate thumbnails even if they already exist"),
@@ -839,6 +837,9 @@ def project_report(
     self-contained HTML file with an interactive timeseries chart and a
     scene browser (prev/next + layer thumbnails).
 
+    The report is always written to <project_dir>/report.html, because the
+    thumbnail paths inside it are relative to the project directory.
+
     \b
         clouds-decoded project report ./my_analysis
         clouds-decoded project report ./my_analysis --dpi 100
@@ -848,7 +849,6 @@ def project_report(
     project_path = Path(project_dir).resolve()
     out = generate_report(
         project_dir=project_path,
-        output_path=Path(output).resolve() if output else None,
         dpi=dpi,
         regenerate_figures=regenerate,
         workers=workers,

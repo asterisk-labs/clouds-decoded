@@ -1071,7 +1071,13 @@ def generate_report(
     brand_logo: Optional[str] = None,
     project_logo: Optional[str] = None,
 ) -> Path:
-    """Generate an HTML report with map, timeseries and scene thumbnail browser."""
+    """Generate an HTML report with map, timeseries and scene thumbnail browser.
+
+    ``output_path`` defaults to ``<project_dir>/report.html`` and should stay
+    inside ``project_dir``: thumbnail paths in the HTML are relative to it, so a
+    report written elsewhere renders with every image broken. The CLI does not
+    expose this argument for that reason.
+    """
     output_path = output_path or project_dir / "report.html"
     figures_dir = project_dir / "figures"
     figures_dir.mkdir(exist_ok=True)
@@ -1114,7 +1120,7 @@ def generate_report(
 
     html = _render_html(
         scenes, tile_colors, map_png, map_points, project_dir.name,
-        brand_logo=_asset_uri("asterisk-labs.png") if brand_logo is None else brand_logo,
+        brand_logo=_asset_uri("asterisk-labs.svg") if brand_logo is None else brand_logo,
         project_logo=_asset_uri("clouds-decoded.webp") if project_logo is None else project_logo,
     )
     output_path.write_text(html)
