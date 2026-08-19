@@ -822,6 +822,41 @@ def project_stats(
         raise typer.Exit(1)
 
 
+@project_app.command("report")
+def project_report(
+    project_dir: str = typer.Argument(..., help="Path to project directory"),
+    output: Optional[str] = typer.Option(None, "--output", "-o",
+                                          help="Output HTML path (default: <project_dir>/report.html)"),
+    dpi: int = typer.Option(72, "--dpi", help="Thumbnail DPI (default: 72)"),
+    regenerate: bool = typer.Option(False, "--regenerate",
+                                     help="Regenerate thumbnails even if they already exist"),
+    workers: int = typer.Option(4, "--workers", "-w",
+                                help="Number of parallel workers for thumbnail generation (default: 4)"),
+):
+    """Generate an HTML report with timeseries and scene thumbnail browser.
+
+    Generates missing thumbnails at the specified DPI, then writes a
+    self-contained HTML file with an interactive timeseries chart and a
+    scene browser (prev/next + layer thumbnails).
+
+    \b
+        clouds-decoded project report ./my_analysis
+        clouds-decoded project report ./my_analysis --dpi 100
+    """
+    from clouds_decoded.visualisation.project_report import generate_report
+
+    project_path = Path(project_dir).resolve()
+    out = generate_report(
+        project_dir=project_path,
+        output_path=Path(output).resolve() if output else None,
+        dpi=dpi,
+        regenerate_figures=regenerate,
+        workers=workers,
+    )
+    logger.info(f"Report: {out}")
+    logger.info(f"Serve with: python -m http.server 8080 --directory {project_path}")
+
+
 @project_app.command("delete")
 def project_delete(
     project_dir: str = typer.Argument(..., help="Path to project directory"),
