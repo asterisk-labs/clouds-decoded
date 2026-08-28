@@ -1,6 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 import multiprocessing
+import queue
 import os
 import tempfile
 import pickle
@@ -104,9 +105,24 @@ class CloudHeightProcessor(BaseProcessor):
                     p.start()
 
                 total_columns = len(column_iterator)
+                stall_timeout = self.config.stall_timeout
                 with tqdm(total=total_columns, desc="Processing Columns") as pbar:
-                    for _ in range(total_columns):
-                        result = result_queue.get()
+                    for done in range(total_columns):
+                        try:
+                            result = result_queue.get(timeout=stall_timeout)
+                        except queue.Empty:
+                            # No result for stall_timeout seconds. A process that
+                            # died holding the queue's internal lock leaves every
+                            # survivor blocked in get() with nothing raised, so
+                            # waiting longer cannot recover it - abort the scene
+                            # and let the caller move on to the next one.
+                            self._report_stall(
+                                column_iterator, workers, done, total_columns,
+                                stall_timeout)
+                            raise RuntimeError(
+                                f"Cloud-height retrieval stalled after "
+                                f"{done}/{total_columns} columns "
+                                f"(no result for {stall_timeout:.0f}s)")
                         if 'error' in result:
                             logger.error(result['error'])
                         else:
@@ -183,6 +199,22 @@ class CloudHeightProcessor(BaseProcessor):
             transform=transform,
             crs=crs
         )
+
+    @staticmethod
+    def _report_stall(column_iterator, workers, done, total, timeout):
+        """Say exactly who is missing, so the next stall names its own cause."""
+        dead = [(p.pid, p.exitcode) for p in workers if p.exitcode is not None]
+        logger.error(
+            "Stalled after %d/%d columns: no result for %.0fs. "
+            "producer alive=%s, workers alive=%d/%d.",
+            done, total, timeout, column_iterator.process.is_alive(),
+            sum(p.is_alive() for p in workers), len(workers))
+        for pid, code in dead:
+            how = f"signal {-code}" if code < 0 else f"exit code {code}"
+            extra = " (SIGKILL - typically the OOM killer)" if code == -9 else ""
+            logger.error("  worker %s is gone: %s%s", pid, how, extra)
+        if not dead and not column_iterator.process.is_alive():
+            logger.error("  the producer exited without sending its sentinels")
 
     def _worker_job(self, data_queue, result_queue):
         while True:

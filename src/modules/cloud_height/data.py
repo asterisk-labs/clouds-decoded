@@ -310,25 +310,45 @@ class ColumnIterator:
         self.process.start()
 
     def _worker(self, queue, n_workers):
-        for i in range(self.length):
-            column = self.extractor[i]
+        """Produce one queue item per column.
 
-            while queue.full():
-                time.sleep(0.1)  # Wait for space in the queue
-                
-            if column is not None:
-                filename = f"column_{uuid.uuid4()}.pkl" 
-                column_path = os.path.join(self.temp_dir, filename)
-                
-                with open(column_path, 'wb') as f:
-                    pickle.dump(column, f)
-                
-                queue.put(column_path)
-            else:
-                queue.put("EMPTY_COLUMN")
+        Every exit path must send the sentinels, or the consumers block for
+        ever: they only stop on None, and the main loop only stops once it has
+        counted one result per column. A column that cannot be built is sent as
+        EMPTY_COLUMN so the count still balances.
+        """
+        try:
+            for i in range(self.length):
+                try:
+                    column = self.extractor[i]
+                except Exception:
+                    logger.exception(
+                        "Column %d could not be built; sending it as empty", i)
+                    column = None
 
-        for _ in range(n_workers):
-            queue.put(None)
+                while queue.full():
+                    time.sleep(0.1)  # Wait for space in the queue
+
+                if column is not None:
+                    filename = f"column_{uuid.uuid4()}.pkl"
+                    column_path = os.path.join(self.temp_dir, filename)
+
+                    try:
+                        with open(column_path, 'wb') as f:
+                            pickle.dump(column, f)
+                    except Exception:
+                        logger.exception(
+                            "Column %d could not be written to %s; "
+                            "sending it as empty", i, self.temp_dir)
+                        queue.put("EMPTY_COLUMN")
+                        continue
+
+                    queue.put(column_path)
+                else:
+                    queue.put("EMPTY_COLUMN")
+        finally:
+            for _ in range(n_workers):
+                queue.put(None)
 
     def __iter__(self):
         return self

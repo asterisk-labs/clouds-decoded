@@ -175,6 +175,17 @@ class CloudHeightConfig(BaseProcessorConfig):
         default=None,
         description="Temporary directory for intermediate files (default: /dev/shm)"
     )
+    stall_timeout: float = Field(
+        default=900.0,
+        gt=0,
+        description=(
+            "Seconds to wait for the next column result before declaring the "
+            "scene stalled and aborting it. A process that dies holding the "
+            "work queue's internal lock blocks every other worker without "
+            "raising anything, so an unbounded wait never returns. Must exceed "
+            "the slowest single column; columns typically take 1-2 s."
+        )
+    )
 
     @field_validator('bands')
     @classmethod
