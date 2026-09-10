@@ -854,7 +854,13 @@ def project_report(
         workers=workers,
     )
     logger.info(f"Report: {out}")
-    logger.info(f"Serve with: python -m http.server 8080 --directory {project_path}")
+    # --bind 127.0.0.1 is not optional advice: python -m http.server defaults to
+    # all interfaces, so without it this publishes the whole project directory --
+    # project.db and every output included -- to anyone who can reach the host.
+    logger.info("Serve with: python -m http.server 8080 --bind 127.0.0.1 "
+                f"--directory {project_path}")
+    logger.info("  then browse http://localhost:8080 (ssh -L 8080:localhost:8080 "
+                "<host> if the project is on a remote machine)")
 
 
 @project_app.command("delete")
