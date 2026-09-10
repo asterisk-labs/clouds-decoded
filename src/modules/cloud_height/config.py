@@ -111,7 +111,7 @@ class CloudHeightConfig(BaseProcessorConfig):
         description="Height search step size (meters)"
     )
     offset_rounding: Literal["truncate", "nearest"] = Field(
-        default="truncate",
+        default="nearest",
         description=(
             "How the per-band patch offset is rounded to a whole pixel. "
             "'truncate' is the historical behaviour (int(), i.e. floor for "
@@ -119,11 +119,15 @@ class CloudHeightConfig(BaseProcessorConfig):
             "parity, a floor bias of ~0.5 px maps to +0.5 px of height in one "
             "parity and -0.5 px in the other -- a full-pixel differential, "
             "worth ~600 m (B03) to ~1200 m (B08). 'nearest' removes the "
-            "systematic part of that."
+            "systematic part of that and is the default: truncation is a bug, "
+            "not a modelling choice. Measured over 23 scenes, the B02-B03 seam "
+            "step goes from +0.299 px under 'truncate' to 0.000 px under "
+            "'nearest', matching an independent implementation. Set 'truncate' "
+            "only to reproduce a product built before this default changed."
         )
     )
     tie_break: Literal["floor", "centre"] = Field(
-        default="floor",
+        default="centre",
         description=(
             "Which height to report when several candidates share the winning "
             "score. Because the patch offset is rounded to a whole cell of the "
@@ -137,8 +141,10 @@ class CloudHeightConfig(BaseProcessorConfig):
             "That biases every retrieval low by (W - height_step)/2, "
             "which is why two-band pairs read below ground over low cloud. "
             "'centre' reports the midpoint of the tied tread instead, which is "
-            "unbiased and halves the worst-case error. It does NOT improve "
-            "resolution: the tread width is still the uncertainty. "
+            "unbiased and halves the worst-case error, and is the default: "
+            "reporting the floor of a tie is a bias, not a choice. It does NOT "
+            "improve resolution: the tread width is still the uncertainty. "
+            "Set 'floor' only to reproduce a pre-existing product. "
             "Mixed band sets are barely affected: with 13 bands the score changes "
             "whenever ANY band crosses a cell, so treads are ~18 m, narrower "
             "than a typical height_step, and there are few ties to break."
