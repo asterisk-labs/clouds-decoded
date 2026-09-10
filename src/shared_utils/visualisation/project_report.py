@@ -165,7 +165,7 @@ def _available_layers(figures_dir: Path, scene_id: str) -> list[str]:
 def _build_scenes(df, figures_dir: Path, path_prefix: str = '', compact: bool = False) -> list[dict]:
     """Build scene dicts. ``path_prefix`` is prepended to each layer path so a
     combined report served from a parent dir can reference per-project figures,
-    e.g. ``path_prefix='Rama_examples/'`` -> ``Rama_examples/figures/<sid>/...``."""
+    e.g. ``path_prefix='<project>/'`` -> ``<project>/figures/<sid>/...``."""
     skip = {'run_id', 'scene_id', 'sensing_time', 'tile_id', 'satellite',
             'lat_center', 'lon_center'}
     scenes = []
@@ -982,9 +982,9 @@ function drawChart() {{
     const yOff = rowY[key];
     const ch = rowH(key) - padT - padB;
 
-    // Scale to the tile on screen, not to every tile in the project. Rama's
-    // 8 tiles span very different cloud regimes, so a global maximum flattened
-    // the line you were actually looking at.
+    // Scale to the tile on screen, not to every tile in the project. Tiles in
+    // one project can span very different cloud regimes, and a global maximum
+    // flattens the line actually being looked at.
     const allVals = SCENES
       .filter(s => !activeTile || s.tile_id === activeTile)
       .map(s => s.stats[key]).filter(v => v != null);
@@ -1703,10 +1703,10 @@ def generate_report(
     # recoloured by theme and clicked, so they are the ones to keep.
     # Rendered ~7x the on-screen size (displayed ~418px wide) so the basemap
     # survives zooming, and at Natural Earth 10m so the extra pixels carry real
-    # coastline detail rather than a smoother version of 50m. Measured on
-    # cas_meeting_examples: 653 KB and 0.7s, against 57 KB at the old 500x380.
-    # Going to 4400px would cover the full 12x but costs 1.1 MB, which is a poor
-    # trade on a small project -- the zoom cap is lowered to match instead.
+    # coastline detail rather than a smoother version of 50m. Costs ~650 KB and
+    # ~0.7s, against 57 KB at the old 500x380. Going to 4400px would cover the
+    # full 12x but costs 1.1 MB, a poor trade on a small project -- the zoom cap
+    # is lowered to match instead.
     #
     # The first 10m draw in a process pays a one-time ~18s shapefile load.
     map_png, map_points = _generate_map(
