@@ -37,6 +37,10 @@ _PALETTE_LIGHT = [
 #: "unassigned", where a recycled hue reads as a specific tile.
 _TILE_OTHER = {'dark': '#6b7280', 'light': '#8a9099'}
 
+#: stats_* tables deliberately kept out of the report. Albedo is an input to the
+#: retrieval rather than one of its results.
+_STATS_EXCLUDE = frozenset({'stats_albedo'})
+
 _STAT_LABELS = {
     'cloud_frac':          'Cloud fraction',
     'tau__mean':           'τ mean',
@@ -127,12 +131,22 @@ def _load_project_data(project_dir: Path, db_path: Optional[Path] = None):
         ORDER BY sm.sensing_time
     """).df()
 
-    if 'stats_cloud_mask' in tables:
-        df = df.merge(conn.execute("SELECT * FROM stats_cloud_mask").df(),
-                      on='run_id', how='left')
-    if 'stats_cloud_properties' in tables:
-        df = df.merge(conn.execute("SELECT * FROM stats_cloud_properties").df(),
-                      on='run_id', how='left')
+    # Merge every stats_* table rather than a hardcoded pair, so a step whose
+    # stats are computed later (cloud_height, say) shows up in the report and in
+    # the scene filter without another code change.
+    #
+    # albedo is excluded on purpose: it is an input to the retrieval, not a
+    # result, so it does not belong in a report of what was retrieved.
+    for table in sorted(t for t in tables
+                        if t.startswith('stats_') and t not in _STATS_EXCLUDE):
+        cols = df.columns
+        add = conn.execute(f'SELECT * FROM "{table}"').df()
+        # Several stats tables carry n_pixels; keep the first and suffix the
+        # rest, otherwise the merge produces n_pixels_x / n_pixels_y silently.
+        dup = [c for c in add.columns if c != 'run_id' and c in cols]
+        if dup:
+            add = add.rename(columns={c: f"{table[len('stats_'):]}__{c}" for c in dup})
+        df = df.merge(add, on='run_id', how='left')
     conn.close()
     return df
 
@@ -431,6 +445,17 @@ body {{ font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto
 .tchk.focused .tname {{ color: var(--accent-ink); }}
 .tchk .rgn {{ color: var(--text-3); }}
 .tab-dot {{ width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 2px var(--surface-2); }}
+/* Scene filter */
+#pop-filter.open {{ display: block; min-width: 300px; }}
+.filter-row {{ display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }}
+.flabel {{ font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); font-weight: 600; width: 66px; flex-shrink: 0; }}
+#pop-filter select, #pop-filter input[type=number] {{ background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font-size: 0.75rem; font-family: inherit; flex: 1; min-width: 0; }}
+#pop-filter select:hover, #pop-filter input[type=number]:hover {{ border-color: var(--accent); }}
+.filter-note {{ font-size: 0.68rem; color: var(--text-3); font-variant-numeric: tabular-nums; }}
+#cnt-filter.active {{ color: var(--accent-ink); }}
+/* Scenes excluded by the filter still show on the chart, greyed, so you can see
+   what the range removed rather than only what it kept. */
+#progress .filtered {{ color: var(--accent-ink); }}
 /* ---- Map + chart ---- */
 #top-panels {{ display: flex; gap: 10px; padding: 10px 14px; flex-shrink: 0; align-items: stretch; }}
 #map-wrap {{ position: relative; flex-shrink: 0; height: 320px; overflow: hidden; border-radius: 10px; cursor: grab; border: 1px solid var(--border); background: var(--surface-1); }}
@@ -539,7 +564,33 @@ body {{ font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto
         </div>
       </div>
     </div>
-    <span class="info-i" title="Tiles selects which tile is plotted and browsed. Plots chooses which cloud-property statistics are plotted, and the number box sets each plot's height. Layers chooses which per-scene thumbnails appear below.">i</span>
+    <div class="popwrap">
+      <button class="tbtn" id="btn-filter" aria-expanded="false">
+        <span class="bar-label">Filter</span><span class="cnt" id="cnt-filter">off</span><span class="caret">▾</span>
+      </button>
+      <div class="popover" id="pop-filter">
+        <div class="filter-row">
+          <label class="flabel">Variable</label>
+          <select id="f-var"></select>
+        </div>
+        <div class="filter-row">
+          <label class="flabel">Statistic</label>
+          <select id="f-stat"></select>
+        </div>
+        <div class="filter-row">
+          <label class="flabel">Between</label>
+          <input type="number" id="f-min" step="any" title="minimum (inclusive)">
+          <span class="dr-sep">and</span>
+          <input type="number" id="f-max" step="any" title="maximum (inclusive)">
+        </div>
+        <div class="filter-row filter-note"><span id="f-range"></span></div>
+        <div class="pop-actions" style="border-top:1px solid var(--border);border-bottom:none;padding-top:6px;margin-top:4px">
+          <button id="f-apply">Apply</button>
+          <button id="f-clear">Clear</button>
+        </div>
+      </div>
+    </div>
+    <span class="info-i" title="Tiles selects which tile is plotted and browsed. Plots chooses which cloud-property statistics are plotted, and the number box sets each plot's height. Layers chooses which per-scene thumbnails appear below. Filter restricts the scenes the browser steps through to those whose chosen statistic falls in a range.">i</span>
   </div>
 </div>
 
@@ -694,10 +745,77 @@ function activeScenes() {{
   return SCENES.filter(s => {{
     if (activeTile && s.tile_id !== activeTile) return false;
     const t = s.date ? new Date(s.date).getTime() : null;   // scope to the selected time range
-    return t != null && t >= dateStart && t <= dateEnd;
+    if (t == null || t < dateStart || t > dateEnd) return false;
+    return statFilterPasses(s);
   }});
 }}
 
+// ── Scene filter ──────────────────────────────────────────────────────────────
+// Narrow what the browser steps through to scenes whose chosen statistic falls
+// in a range. IQR and spread are derived from the stored percentiles here rather
+// than being extra columns the pipeline has to write.
+const STAT_FUNCS = {{
+  mean:   v => v.mean,
+  p050:   v => v.p050,
+  p025:   v => v.p025,
+  p075:   v => v.p075,
+  p005:   v => v.p005,
+  p095:   v => v.p095,
+  p000:   v => v.p000,
+  p100:   v => v.p100,
+  iqr:    v => (v.p075 != null && v.p025 != null) ? v.p075 - v.p025 : null,
+  spread: v => (v.p095 != null && v.p005 != null) ? v.p095 - v.p005 : null,
+}};
+const STAT_UI = {{
+  value: 'value', mean: 'mean', p050: 'median (p50)', p025: 'p25', p075: 'p75',
+  p005: 'p5', p095: 'p95', p000: 'min', p100: 'max',
+  iqr: 'IQR (p75-p25)', spread: 'spread (p95-p5)',
+}};
+
+// Group flat stat keys into variable -> {{statistic: key}}. A key with no '__'
+// (cloud_frac) becomes a variable whose only statistic is the value itself.
+const STAT_VARS = (function () {{
+  const out = {{}};
+  SCENES.forEach(s => Object.keys(s.stats || {{}}).forEach(k => {{
+    if (k.endsWith('n_pixels')) return;            // bookkeeping, not a measurement
+    const i = k.indexOf('__');
+    const v = i === -1 ? k : k.slice(0, i);
+    const st = i === -1 ? 'value' : k.slice(i + 2);
+    (out[v] = out[v] || {{}})[st] = k;
+  }}));
+  return out;
+}})();
+
+let statFilter = null;   // {{variable, stat, min, max}}, or null when off
+
+function statValue(s, variable, stat) {{
+  const map = STAT_VARS[variable];
+  if (!map) return null;
+  if (map.value !== undefined) return s.stats[map.value] ?? null;
+  const parts = {{}};
+  Object.entries(map).forEach(([k, key]) => {{ parts[k] = s.stats[key]; }});
+  const fn = STAT_FUNCS[stat];
+  const v = fn ? fn(parts) : null;
+  return (v === undefined || v === null || Number.isNaN(v)) ? null : v;
+}}
+
+function statFilterPasses(s) {{
+  if (!statFilter) return true;
+  const v = statValue(s, statFilter.variable, statFilter.stat);
+  if (v == null) return false;      // no value cannot satisfy a range
+  return v >= statFilter.min && v <= statFilter.max;
+}}
+
+// Range of a variable/statistic over the tile in view, used to seed the inputs
+// with something sensible instead of making you guess the units.
+function statRange(variable, stat) {{
+  const vals = SCENES
+    .filter(s => !activeTile || s.tile_id === activeTile)
+    .map(s => statValue(s, variable, stat))
+    .filter(v => v != null);
+  if (!vals.length) return null;
+  return {{ min: Math.min(...vals), max: Math.max(...vals) }};
+}}
 
 // The one place tile selection is decided. Selecting a tile in the popover,
 // clicking its dot on the map and clicking a point on the chart all land here,
@@ -715,6 +833,7 @@ function switchTile(tile) {{
   if (radio) radio.checked = true;
   const cnt = document.getElementById('cnt-tiles');
   if (cnt) cnt.textContent = tile || '';
+  window.dispatchEvent(new Event('cd-tile-changed'));   // filter re-seeds its range
   showScene(0);          // redraws chart + map dots
 }}
 
@@ -1133,8 +1252,15 @@ function showScene(idx) {{
 
   document.getElementById('si-date').textContent = s.date || '—';
   document.getElementById('si-sub').textContent = [s.tile_id, s.satellite].filter(Boolean).join(' · ');
-  document.getElementById('progress').textContent =
-    `${{s.tile_id || ''}}  ·  Scene ${{current + 1}} / ${{sc.length}}`;
+  // Say what the filter removed, not just what survived — otherwise a narrow
+  // range looks like a project with very few scenes.
+  let prog = `${{s.tile_id || ''}}  ·  Scene ${{current + 1}} / ${{sc.length}}`;
+  if (statFilter) {{
+    const inTile = SCENES.filter(x =>
+      (!activeTile || x.tile_id === activeTile)).length;
+    prog += `  ·  <span class="filtered">filtered from ${{inTile}}</span>`;
+  }}
+  document.getElementById('progress').innerHTML = prog;
 
   // Stat tiles: label above value, tabular figures, so the numbers line up in
   // the same place from scene to scene instead of reflowing as a sentence.
@@ -1277,7 +1403,8 @@ function preloadScene(idx) {{
 // ── Toolbar popovers ─────────────────────────────────────────────────────────
 // The tile / plot / layer pickers were three permanent rows. Same checkboxes,
 // now one button each; only one popover is open at a time.
-const POPS = [['btn-tiles', 'pop-tiles'], ['btn-vars', 'pop-vars'], ['btn-layers', 'pop-layers']];
+const POPS = [['btn-tiles', 'pop-tiles'], ['btn-vars', 'pop-vars'],
+              ['btn-layers', 'pop-layers'], ['btn-filter', 'pop-filter']];
 function closePops(except) {{
   POPS.forEach(([b, p]) => {{
     if (p === except) return;
@@ -1330,6 +1457,107 @@ function updateCounts() {{
 }}
 document.querySelectorAll('.popover input[type=checkbox]').forEach(cb =>
   cb.addEventListener('change', updateCounts));
+
+// ── Scene filter UI ──────────────────────────────────────────────────────────
+(function buildFilterUI() {{
+  const varSel = document.getElementById('f-var');
+  const statSel = document.getElementById('f-stat');
+  const minIn = document.getElementById('f-min');
+  const maxIn = document.getElementById('f-max');
+  const note = document.getElementById('f-range');
+  const badge = document.getElementById('cnt-filter');
+  if (!varSel) return;
+
+  const names = Object.keys(STAT_VARS).sort();
+  if (!names.length) {{
+    const btn = document.getElementById('btn-filter');
+    if (btn) btn.style.display = 'none';
+    return;
+  }}
+  names.forEach(v => {{
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = (LAYER_TITLES['properties_' + v] || v.replace(/_/g, ' '));
+    varSel.appendChild(o);
+  }});
+
+  function fillStats() {{
+    const map = STAT_VARS[varSel.value] || {{}};
+    // Offer only statistics this variable can actually produce: 'value' for a
+    // bare key, the stored percentiles, and the derived ones when their inputs
+    // are present.
+    const avail = map.value !== undefined ? ['value']
+      : Object.keys(STAT_UI).filter(k =>
+          (k in map) ||
+          (k === 'iqr' && 'p075' in map && 'p025' in map) ||
+          (k === 'spread' && 'p095' in map && 'p005' in map));
+    statSel.innerHTML = '';
+    avail.forEach(k => {{
+      const o = document.createElement('option');
+      o.value = k; o.textContent = STAT_UI[k] || k;
+      statSel.appendChild(o);
+    }});
+    if (avail.includes('p050')) statSel.value = 'p050';
+    seedRange();
+  }}
+
+  function seedRange() {{
+    const r = statRange(varSel.value, statSel.value);
+    if (!r) {{ note.textContent = 'no values for this tile'; return; }}
+    const fmt = v => Math.abs(v) >= 1000 || (v !== 0 && Math.abs(v) < 0.01)
+      ? v.toExponential(2) : v.toFixed(3);
+    note.textContent = `observed ${{fmt(r.min)}} … ${{fmt(r.max)}}`;
+    if (minIn.value === '') minIn.placeholder = fmt(r.min);
+    if (maxIn.value === '') maxIn.placeholder = fmt(r.max);
+  }}
+
+  varSel.addEventListener('change', fillStats);
+  statSel.addEventListener('change', () => {{ minIn.value = ''; maxIn.value = ''; seedRange(); }});
+
+  function apply() {{
+    const r = statRange(varSel.value, statSel.value);
+    const lo = minIn.value !== '' ? parseFloat(minIn.value) : (r ? r.min : -Infinity);
+    const hi = maxIn.value !== '' ? parseFloat(maxIn.value) : (r ? r.max : Infinity);
+    if (Number.isNaN(lo) || Number.isNaN(hi) || lo > hi) {{
+      note.textContent = 'min must not exceed max';
+      return;
+    }}
+    statFilter = {{ variable: varSel.value, stat: statSel.value, min: lo, max: hi }};
+    const kept = activeScenes().length;
+    if (!kept) {{
+      // An empty browser is worse than no filter: nothing to look at and no
+      // obvious way back. Refuse and say so.
+      statFilter = null;
+      note.textContent = 'no scenes match — filter not applied';
+      return;
+    }}
+    badge.textContent = varSel.value + ' ' + statSel.value;
+    badge.classList.add('active');
+    seedRange();
+    current = 0;
+    showScene(0);
+    closePops(null);
+  }}
+
+  function clear() {{
+    statFilter = null;
+    minIn.value = ''; maxIn.value = '';
+    badge.textContent = 'off';
+    badge.classList.remove('active');
+    seedRange();
+    current = 0;
+    showScene(0);
+  }}
+
+  document.getElementById('f-apply').addEventListener('click', apply);
+  document.getElementById('f-clear').addEventListener('click', clear);
+  [minIn, maxIn].forEach(el => el.addEventListener('keydown', e => {{
+    if (e.key === 'Enter') apply();
+  }}));
+  fillStats();
+  // Re-seed when the tile changes: ranges are per-tile.
+  window.addEventListener('cd-tile-changed', seedRange);
+}})();
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 // Dark stays the default so an existing report looks unchanged; the choice is
