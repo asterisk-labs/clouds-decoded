@@ -13,12 +13,29 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_PALETTE = [
-    '#4fc3f7', '#ffb74d', '#81c784', '#ce93d8',
-    '#ff8a65', '#4db6ac', '#e57373', '#fff176',
-    '#f06292', '#9575cd', '#a1887f', '#90a4ae',
-    '#aed581', '#7986cb', '#dce775', '#4dd0e1',
+#: Categorical slots for tile identity, in fixed order. Four hues come from the
+#: bundled logos -- sky from clouds-decoded.webp (#1890f0), yellow/indigo/green
+#: from asterisk-labs.svg (#f7cc09, #492ae8, #c4ffc2) -- restepped per surface;
+#: orange, magenta, teal and violet fill the wheel.
+#:
+#: Checked against the colour-vision gates rather than chosen by eye. Worst
+#: adjacent pair: CVD dE 11.2 (deutan) / tritan 8.3, normal-vision 20.8, every
+#: slot >= 3:1 on its own surface, in BOTH modes (OKLab x100).
+#:
+#: Do NOT reorder or extend. The ORDERING is the safety mechanism -- it is what
+#: holds adjacent pairs apart, and most orderings of these same eight hues fail.
+#: A ninth hue cannot clear the gates at all; extra tiles fold to _TILE_OTHER.
+_PALETTE_DARK = [
+    '#0689e9', '#e26a2b', '#6159ff', '#008400',
+    '#da5592', '#b18e00', '#0095a2', '#934cc8',
 ]
+_PALETTE_LIGHT = [
+    '#0083e2', '#db6423', '#5c4dff', '#007d00',
+    '#d34e8c', '#a98900', '#008e9a', '#8d46c1',
+]
+#: Neutral for tiles past the palette. Grey is deliberate: it reads as
+#: "unassigned", where a recycled hue reads as a specific tile.
+_TILE_OTHER = {'dark': '#6b7280', 'light': '#8a9099'}
 
 _STAT_LABELS = {
     'cloud_frac':          'Cloud fraction',
@@ -46,14 +63,49 @@ def _asset_uri(filename: str) -> str:
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
 
 
+def _asset_uri_light(filename: str) -> str:
+    """Data URI for the light-mode variant of ``filename``, falling back to the
+    default when there isn't one.
+
+    Convention: ``asterisk-labs.svg`` -> ``asterisk-labs-light.svg``, alongside
+    it in ``assets/``. Drop the file in and it is picked up; nothing else to
+    register, since pyproject already ships ``assets/*``.
+
+    A logo is a brand asset, so the light version is a file someone supplies
+    rather than something this module derives by recolouring.
+    """
+    path = _ASSETS / filename
+    light = path.with_name(f"{path.stem}-light{path.suffix}")
+    if light.exists():
+        return _asset_uri(light.name)
+    return _asset_uri(filename)
+
+
 def _extract_date(scene_id: str) -> Optional[str]:
     m = re.search(r"_(\d{4})(\d{2})(\d{2})T", scene_id)
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else None
 
 
-def _tile_colors(scenes: list[dict]) -> dict[str, str]:
+def _tile_colors(scenes: list[dict], mode: str = 'dark') -> dict[str, str]:
+    """Assign one categorical slot per tile, in fixed order, never cycling.
+
+    Past the palette every tile gets the same neutral. Recycling hues instead
+    (the old ``_PALETTE[i % len]``) silently gave different tiles an identical
+    colour on both the map dots and the chart lines -- harmless at 12 tiles with
+    a 16-entry list, wrong at the 51 of a full campaign. Colour cannot carry 51
+    identities, so the report stops pretending it can and the tile checkboxes
+    become the way to isolate one.
+    """
+    palette = _PALETTE_DARK if mode == 'dark' else _PALETTE_LIGHT
+    other = _TILE_OTHER[mode]
     tiles = sorted({s['tile_id'] for s in scenes if s.get('tile_id')})
-    return {t: _PALETTE[i % len(_PALETTE)] for i, t in enumerate(tiles)}
+    return {t: (palette[i] if i < len(palette) else other)
+            for i, t in enumerate(tiles)}
+
+
+def _tile_color_map(scenes: list[dict]) -> dict[str, dict[str, str]]:
+    """Both modes at once, so the page can swap palettes without regenerating."""
+    return {m: _tile_colors(scenes, m) for m in ('dark', 'light')}
 
 
 def _load_project_data(project_dir: Path, db_path: Optional[Path] = None):
@@ -136,7 +188,8 @@ def _build_scenes(df, figures_dir: Path, path_prefix: str = '', compact: bool = 
 
 def _generate_map(scenes: list[dict], tile_colors: dict[str, str],
                   width_px: int = 500, height_px: int = 380,
-                  dpi: int = 96, draw_markers: bool = True
+                  dpi: int = 96, draw_markers: bool = True,
+                  feature_scale: str = '50m'
                   ) -> tuple[Optional[str], Optional[list[dict]]]:
     """Return (base64_png, list_of_pixel_coords) for the map.
 
@@ -187,11 +240,11 @@ def _generate_map(scenes: list[dict], tile_colors: dict[str, str],
         ax = fig.add_axes([0, 0, 1, 1], projection=proj)
         ax.set_facecolor('#0d1b2a')
         ax.set_extent(extent, crs=proj)
-        ax.add_feature(cfeature.OCEAN.with_scale('50m'), facecolor='#0d1b2a')
-        ax.add_feature(cfeature.LAND.with_scale('50m'), facecolor='#1e2d1e')
-        ax.add_feature(cfeature.COASTLINE.with_scale('50m'),
+        ax.add_feature(cfeature.OCEAN.with_scale(feature_scale), facecolor='#0d1b2a')
+        ax.add_feature(cfeature.LAND.with_scale(feature_scale), facecolor='#1e2d1e')
+        ax.add_feature(cfeature.COASTLINE.with_scale(feature_scale),
                        linewidth=0.5, edgecolor='#556655')
-        ax.add_feature(cfeature.BORDERS.with_scale('50m'),
+        ax.add_feature(cfeature.BORDERS.with_scale(feature_scale),
                        linewidth=0.3, edgecolor='#445544')
 
         # Plot markers (optional — the interactive canvas draws them for the
@@ -237,7 +290,9 @@ def _render_html(scenes: list[dict], tile_colors: dict[str, str],
                  map_png: Optional[str], map_points: Optional[list],
                  project_name: str, regions: Optional[dict] = None,
                  fig_base: str = '', brand_logo: str = '', project_url: str = '',
-                 project_logo: str = '') -> str:
+                 project_logo: str = '',
+                 tile_colors_modes: Optional[dict] = None,
+                 brand_logo_light: str = '', project_logo_light: str = '') -> str:
 
     regions = regions or {}
     # Optionally hyperlink the first title segment (before the first " · ") to project_url.
@@ -248,23 +303,28 @@ def _render_html(scenes: list[dict], tile_colors: dict[str, str],
     else:
         title_html = project_name
     data_json = json.dumps(scenes)
-    tile_colors_json = json.dumps(tile_colors)
+    # Ship both palettes so the viewer can switch theme without regenerating.
+    # ``tile_colors`` stays the dark set (what the baked map PNG was drawn with).
+    tile_colors_modes_json = json.dumps(
+        tile_colors_modes or {'dark': tile_colors, 'light': tile_colors})
     map_points_json = json.dumps(map_points or [])
     fig_base_json = json.dumps(fig_base)   # if set, layers are basenames → URL = fig_base+scene_id+'/'+name
 
-    # Tile checkboxes — one per tile, toggle its dots on the map + line on the
-    # timeseries. Labelled "TILEID (Region)". All checked by default.
+    # One tile at a time: radio, not checkbox. The chart plots the tile you are
+    # looking at and nothing else, so selecting a tile here, clicking its dot on
+    # the map, and stepping through its scenes are all the same action.
     def _tile_label(t):
         rg = regions.get(t, '')
         return f'{t} <span class="rgn">({rg})</span>' if rg else t
     _sorted_tiles = sorted(tile_colors.items())
     _default_tile = _sorted_tiles[0][0] if _sorted_tiles else None
     tile_tabs_html = ''.join(
-        f'<div class="tchk" data-tile="{t}">'
-        f'<input type="checkbox" data-tile="{t}"{" checked" if t == _default_tile else ""} '
-        f'title="show / hide this tile\'s line on the chart">'
-        f'<span class="tab-dot" style="background:{c}"></span>'
-        f'<span class="tname" data-tile="{t}" title="view this tile in the browser below">{_tile_label(t)}</span></div>'
+        f'<label class="tchk" data-tile="{t}">'
+        f'<input type="radio" name="tile-select" data-tile="{t}"'
+        f'{" checked" if t == _default_tile else ""} '
+        f'title="plot this tile and browse its scenes">'
+        f'<span class="tab-dot" data-tile="{t}" style="background:{c}"></span>'
+        f'<span class="tname" data-tile="{t}">{_tile_label(t)}</span></label>'
         for t, c in _sorted_tiles
     )
 
@@ -281,9 +341,13 @@ def _render_html(scenes: list[dict], tile_colors: dict[str, str],
     else:
         map_html = '<div id="map-wrap" style="display:none"></div>'
 
-    logo_html = (f'<img id="logo" src="{brand_logo}" alt="asterisk labs">'
+    # Both variants ride along on the element; applyTheme() swaps src. When no
+    # -light file exists the two are identical and the swap is a no-op.
+    logo_html = (f'<img id="logo" src="{brand_logo}" alt="asterisk labs" '
+                 f'data-dark="{brand_logo}" data-light="{brand_logo_light or brand_logo}">'
                  if brand_logo else '')
-    logo2_html = (f'<img id="logo2" src="{project_logo}" alt="clouds decoded">'
+    logo2_html = (f'<img id="logo2" src="{project_logo}" alt="clouds decoded" '
+                  f'data-dark="{project_logo}" data-light="{project_logo_light or project_logo}">'
                   if project_logo else '')
 
     return f"""<!DOCTYPE html>
@@ -293,79 +357,130 @@ def _render_html(scenes: list[dict], tile_colors: dict[str, str],
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{project_name} — clouds-decoded report</title>
 <style>
+/* ---- Theme tokens -------------------------------------------------------
+   Dark is the default so an existing report keeps its look; [data-theme=light]
+   wins both ways and is remembered per viewer. Every colour below is a token so
+   the two palettes swap in one place instead of being spread through the file. */
+:root {{
+  color-scheme: dark;
+  --bg: #0f1117; --surface-1: #161a24; --surface-2: #1d2231; --surface-3: #272d40;
+  --border: #2a3142; --border-strong: #3b4459;
+  --text-1: #e7eaf1; --text-2: #98a2b6; --text-3: #6a7488;
+  --accent: #4aa3f0; --accent-ink: #cfe4fb; --accent-weak: #17324d;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.28);
+  --thumb-border: #2b3243; --scrim: rgba(6,8,12,.94);
+}}
+:root[data-theme="light"] {{
+  color-scheme: light;
+  --bg: #f6f7fa; --surface-1: #ffffff; --surface-2: #f0f2f7; --surface-3: #e3e7ef;
+  --border: #d9dee8; --border-strong: #b6bfcf;
+  --text-1: #12161f; --text-2: #545f75; --text-3: #78829a;
+  --accent: #0b62c4; --accent-ink: #0a4c99; --accent-weak: #dcebfc;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 4px 14px rgba(16,24,40,.08);
+  --thumb-border: #dbe1ea; --scrim: rgba(20,24,32,.85);
+}}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: system-ui, sans-serif; background: #111; color: #ddd; }}
-#header {{ position: relative; padding: 10px 16px 8px; background: #1a1a2e; border-bottom: 1px solid #333; display: flex; flex-direction: column; align-items: center; gap: 7px; flex-shrink: 0; }}
-#header h1 {{ font-size: 1.5rem; font-weight: 600; letter-spacing: 0.2px; }}
-#brand {{ display: flex; justify-content: center; align-items: center; }}
-#header-controls {{ display: flex; align-items: center; gap: 18px; }}
-#daterange {{ display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #888; }}
-.info-i {{ display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; border: 1px solid #4a6fa5; color: #7eb8f7; font: italic 700 0.62rem Georgia, serif; cursor: help; margin-left: 6px; flex-shrink: 0; }}
-.info-i:hover {{ background: #1e3050; color: #cfe0f5; }}
-#daterange .dr-label {{ text-transform: uppercase; letter-spacing: 0.5px; font-size: 0.68rem; color: #667; }}
-#daterange .dr-sep {{ color: #556; }}
-#daterange input[type=date] {{ background: #1e1e2e; color: #ccc; border: 1px solid #333; border-radius: 4px; padding: 2px 5px; font-size: 0.75rem; color-scheme: dark; }}
-#daterange input[type=date]:hover {{ border-color: #4a6fa5; }}
-#date-reset {{ background: #1e1e2e; color: #999; border: 1px solid #333; border-radius: 4px; padding: 2px 9px; font-size: 0.72rem; cursor: pointer; }}
-#date-reset:hover {{ background: #2e2e4e; color: #ccc; }}
-#header .meta {{ font-size: 0.8rem; color: #888; }}
-#logo {{ position: absolute; left: 16px; top: 10px; height: calc(100% - 18px); width: auto; }}
-#logo2 {{ position: absolute; right: 16px; top: 10px; height: calc(100% - 18px); width: auto; }}
+body {{ font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg); color: var(--text-1); -webkit-font-smoothing: antialiased; }}
+/* ---- Header: one row, logos inline, title left ---- */
+#header {{ position: relative; padding: 9px 14px; background: var(--surface-1);
+           border-bottom: 1px solid var(--border); display: flex; align-items: center;
+           gap: 12px; flex-shrink: 0; }}
+#header h1 {{ font-size: 1.02rem; font-weight: 650; letter-spacing: -0.01em; color: var(--text-1); white-space: nowrap; }}
+#brand {{ display: flex; align-items: center; gap: 10px; min-width: 0; }}
+#header-controls {{ display: flex; align-items: center; gap: 8px; margin-left: auto; }}
+#daterange {{ display: flex; align-items: center; gap: 5px; font-size: 0.75rem; color: var(--text-2); }}
+.info-i {{ display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; border: 1px solid var(--border-strong); color: var(--text-2); font: italic 700 0.62rem Georgia, serif; cursor: help; margin-left: 6px; flex-shrink: 0; background: var(--surface-2); }}
+.info-i:hover {{ background: var(--accent-weak); color: var(--accent-ink); border-color: var(--accent); }}
+#daterange .dr-label {{ text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.63rem; color: var(--text-3); font-weight: 600; }}
+#daterange .dr-sep {{ color: var(--text-3); }}
+#daterange input[type=date] {{ background: var(--surface-2); color: var(--text-1); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font-size: 0.73rem; font-family: inherit; }}
+#daterange input[type=date]:hover {{ border-color: var(--accent); }}
+#date-reset, .tbtn {{ background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 0.72rem; font-family: inherit; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }}
+#date-reset:hover, .tbtn:hover {{ background: var(--surface-3); color: var(--text-1); border-color: var(--border-strong); }}
+.tbtn.open {{ background: var(--accent-weak); color: var(--accent-ink); border-color: var(--accent); }}
+.tbtn .caret {{ font-size: 0.6rem; opacity: .7; }}
+.tbtn .cnt {{ font-variant-numeric: tabular-nums; color: var(--text-3); }}
+#header .meta {{ font-size: 0.8rem; color: var(--text-2); }}
+#logo, #logo2 {{ height: 26px; width: auto; flex-shrink: 0; }}
 #header h1 a {{ color: inherit; text-decoration: none; }}
-#header h1 a:hover {{ color: #7eb8f7; text-decoration: underline; }}
-/* Sticky top bar (header + toolbars) so toggles stay reachable while the page scrolls */
-#topbar {{ position: sticky; top: 0; z-index: 30; background: #111; flex-shrink: 0; }}
-/* per-section "i" badges positioned over the map / chart */
-.map-i, .chart-i {{ position: absolute; top: 6px; right: 6px; z-index: 6; margin: 0; background: rgba(18,18,28,0.85); }}
+#header h1 a:hover {{ color: var(--accent); }}
+#topbar {{ position: sticky; top: 0; z-index: 30; background: var(--bg); flex-shrink: 0; box-shadow: var(--shadow); }}
+.map-i, .chart-i {{ position: absolute; top: 8px; right: 8px; z-index: 6; margin: 0; background: var(--surface-1); }}
 .chart-i {{ right: 12px; }}
-/* per-plot height box */
-.row-h {{ width: 44px; background: #12121c; color: #9db4d0; border: 1px solid #2c3346; border-radius: 3px; font-size: 0.66rem; padding: 1px 3px; margin-left: 5px; }}
-.row-h:hover {{ border-color: #4a6fa5; }}
-/* Fixed top: map + chart */
-#top-panels {{ display: flex; gap: 8px; padding: 8px; flex-shrink: 0; }}
-#map-wrap {{ position: relative; flex-shrink: 0; height: 200px; overflow: hidden; border-radius: 6px; cursor: grab; }}
-#map-wrap.grabbing {{ cursor: grabbing; }}
-#map-inner {{ position: relative; transform-origin: 0 0; will-change: transform; }}
-#map-bg {{ display: block; height: 200px; width: auto; }}
-#map-canvas {{ position: absolute; top: 0; left: 0; pointer-events: auto; }}
-#chart-wrap {{ flex: 1; min-width: 0; position: relative; }}
-#chart-canvas {{ display: block; width: 100%; cursor: pointer; }}
-/* Tile + plot + layer toggle checkboxes */
-#tab-bar, #var-bar, #layer-bar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 8px; background: #151520; border-bottom: 1px solid #333; flex-shrink: 0; overflow-x: auto; }}
-#tab-bar {{ border-top: 1px solid #222; }}
-.bar-label {{ font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: #666; margin-right: 6px; }}
-.tchk {{ padding: 4px 12px; border-radius: 4px; border: 1px solid #333; background: #1e1e2e; color: #bbb; font-size: 0.78rem; white-space: nowrap; display: flex; align-items: center; gap: 5px; user-select: none; }}
-.tchk input {{ margin: 0; cursor: pointer; accent-color: #4a6fa5; }}
+.row-h {{ width: 46px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); border-radius: 5px; font-size: 0.66rem; font-family: inherit; padding: 2px 4px; margin-left: 5px; }}
+.row-h:hover {{ border-color: var(--accent); }}
+/* ---- One toolbar; tile / variable / layer pickers live in popovers ---- */
+#toolbar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 14px;
+            background: var(--surface-1); border-bottom: 1px solid var(--border); flex-shrink: 0; }}
+.bar-label {{ font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); font-weight: 600; margin-right: 4px; }}
+.popwrap {{ position: relative; }}
+.popover {{ display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+            background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: 10px;
+            box-shadow: var(--shadow); padding: 8px; min-width: 240px; max-width: min(560px, 90vw);
+            max-height: 60vh; overflow: auto; }}
+.popover.open {{ display: flex; flex-wrap: wrap; gap: 4px; align-content: start; }}
+.pop-actions {{ display: flex; gap: 6px; width: 100%; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }}
+.pop-actions button {{ background: none; border: none; color: var(--accent); font: inherit; font-size: 0.72rem; cursor: pointer; padding: 0 2px; }}
+.pop-actions button:hover {{ text-decoration: underline; }}
+.tchk {{ padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-1); font-size: 0.76rem; white-space: nowrap; display: flex; align-items: center; gap: 6px; user-select: none; cursor: pointer; }}
+.tchk:hover {{ border-color: var(--border-strong); background: var(--surface-3); }}
+.tchk input {{ margin: 0; cursor: pointer; accent-color: var(--accent); }}
 .tchk .tname {{ cursor: pointer; }}
-.tchk .tname:hover {{ color: #fff; text-decoration: underline; }}
-.tchk.focused {{ border-color: #4a6fa5; box-shadow: 0 0 0 1px #4a6fa5 inset; background: #1e3050; }}
-.tchk.focused .tname {{ color: #7eb8f7; }}
-.tchk .rgn {{ color: #777; }}
-.tab-dot {{ width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }}
-/* Scene browser */
-#scene-panel {{ display: flex; align-items: flex-start; gap: 10px; padding: 8px; }}
-#nav-prev, #nav-next, #nav-play {{ flex-shrink: 0; width: 36px; height: 36px; font-size: 1.2rem; background: #1e1e2e; border: 1px solid #444; border-radius: 6px; color: #ccc; cursor: pointer; margin-top: 4px; }}
-#nav-prev:hover, #nav-next:hover, #nav-play:hover {{ background: #2e2e4e; }}
-#nav-play.playing {{ background: #2e1e1e; border-color: #664444; color: #ff8a65; }}
-#speed-select {{ background: #1e1e2e; color: #888; border: 1px solid #333; border-radius: 4px; font-size: 0.72rem; padding: 2px 4px; margin-top: 4px; width: 52px; }}
-#scene-info {{ flex-shrink: 0; width: 160px; font-size: 0.78rem; line-height: 1.7; }}
-#si-date {{ font-size: 0.95rem; font-weight: 600; color: #7eb8f7; }}
-#si-sub {{ font-size: 0.68rem; color: #666; margin-top: 1px; word-break: break-all; }}
-#si-stats {{ margin-top: 6px; color: #aaa; }}
-#si-stats b {{ color: #ccc; }}
-#layer-grid {{ flex: 1; align-self: stretch; display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 6px; align-content: start; }}
-.layer-thumb {{ text-align: center; }}
+.tchk.focused {{ border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; background: var(--accent-weak); }}
+.tchk.focused .tname {{ color: var(--accent-ink); }}
+.tchk .rgn {{ color: var(--text-3); }}
+.tab-dot {{ width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 2px var(--surface-2); }}
+/* ---- Map + chart ---- */
+#top-panels {{ display: flex; gap: 10px; padding: 10px 14px; flex-shrink: 0; align-items: stretch; }}
+#map-wrap {{ position: relative; flex-shrink: 0; height: 320px; overflow: hidden; border-radius: 10px; cursor: grab; border: 1px solid var(--border); background: var(--surface-1); }}
+#map-wrap.grabbing {{ cursor: grabbing; }}
+/* #map-inner needs a resolved height, otherwise `height:100%` on #map-bg below
+   has an auto-height parent to resolve against, silently falls back to auto, and
+   the basemap renders at its natural size while the dots are still positioned
+   with clientHeight/naturalHeight -- map and dots then disagree by that ratio. */
+#map-inner {{ position: relative; height: 100%; transform-origin: 0 0; will-change: transform; }}
+#map-bg {{ display: block; height: 100%; width: auto; }}
+#map-canvas {{ position: absolute; top: 0; left: 0; pointer-events: auto; }}
+#chart-wrap {{ flex: 1; min-width: 0; position: relative; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); padding: 6px; }}
+#chart-canvas {{ display: block; width: 100%; cursor: pointer; }}
+/* ---- Scene browser ---- */
+#scene-panel {{ display: flex; align-items: flex-start; gap: 12px; padding: 2px 14px 16px; }}
+#nav-prev, #nav-next, #nav-play {{ flex-shrink: 0; width: 34px; height: 34px; font-size: 1.05rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; color: var(--text-1); cursor: pointer; margin-top: 4px; }}
+#nav-prev:hover, #nav-next:hover, #nav-play:hover {{ background: var(--surface-3); border-color: var(--border-strong); }}
+#nav-play.playing {{ background: var(--accent-weak); border-color: var(--accent); color: var(--accent-ink); }}
+#speed-select {{ background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); border-radius: 6px; font-size: 0.7rem; font-family: inherit; padding: 3px 4px; margin-top: 4px; width: 54px; }}
+#scene-info {{ flex-shrink: 0; width: 208px; font-size: 0.78rem; }}
+#si-date {{ font-size: 1.05rem; font-weight: 650; color: var(--text-1); letter-spacing: -0.01em; }}
+#si-sub {{ font-size: 0.67rem; color: var(--text-3); margin-top: 2px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+/* Stats as aligned tiles: label above, value in tabular figures, so columns
+   line up between scenes instead of reflowing as a sentence. */
+#si-stats {{ margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }}
+.stat {{ background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; min-width: 0; }}
+.stat .k {{ display: block; font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.055em; color: var(--text-3); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.stat .v {{ display: block; font-size: 0.95rem; font-weight: 600; color: var(--text-1); font-variant-numeric: tabular-nums; line-height: 1.35; }}
+/* ---- Layer grid, grouped by role ---- */
+#layer-grid {{ flex: 1; align-self: stretch; display: flex; flex-direction: column; gap: 12px; min-width: 0; }}
+.layer-group {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; align-content: start; }}
+.group-head {{ grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-3); font-weight: 700; }}
+.group-head::after {{ content: ""; flex: 1; height: 1px; background: var(--border); }}
+.layer-thumb {{ text-align: center; min-width: 0; }}
 .layer-thumb.overview {{ grid-column: 1 / -1; }}
-.layer-thumb.overview img {{ max-width: 50%; margin: 0 auto; }}
-.layer-thumb img {{ width: 100%; height: auto; display: block; border: 2px solid #2a2a3a; border-radius: 4px; cursor: pointer; }}
-.layer-thumb img:hover {{ border-color: #7eb8f7; }}
-.layer-label {{ font-size: 0.8rem; color: #b9c2cf; font-weight: 600; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-#progress {{ font-size: 0.75rem; color: #666; }}
-/* Lightbox */
-#lightbox {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.93); z-index: 100; align-items: center; justify-content: center; }}
+.layer-thumb.overview img {{ max-width: 46%; margin: 0 auto; }}
+.layer-thumb img {{ width: 100%; height: auto; display: block; border: 1px solid var(--thumb-border); border-radius: 8px; cursor: pointer; background: var(--surface-1); }}
+.layer-thumb img:hover {{ border-color: var(--accent); }}
+.layer-label {{ font-size: 0.73rem; color: var(--text-2); font-weight: 600; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+#progress {{ font-size: 0.72rem; color: var(--text-3); margin-top: 8px; font-variant-numeric: tabular-nums; }}
+/* ---- Lightbox ---- */
+#lightbox {{ display: none; position: fixed; inset: 0; background: var(--scrim); z-index: 100; align-items: center; justify-content: center; }}
 #lightbox.active {{ display: flex; }}
-#lightbox img {{ max-width: 95vw; max-height: 95vh; border-radius: 4px; }}
-#lb-close {{ position: fixed; top: 14px; right: 18px; font-size: 1.8rem; color: #bbb; cursor: pointer; z-index: 101; }}
+#lightbox img {{ max-width: 95vw; max-height: 95vh; border-radius: 6px; }}
+#lb-close {{ position: fixed; top: 14px; right: 18px; font-size: 1.8rem; color: var(--text-1); cursor: pointer; z-index: 101; }}
+@media print {{
+  #topbar {{ position: static; box-shadow: none; }}
+  .popover, #nav-play, #speed-select {{ display: none !important; }}
+}}
 </style>
 </head>
 <body>
@@ -384,22 +499,47 @@ body {{ font-family: system-ui, sans-serif; background: #111; color: #ddd; }}
         <input type="date" id="date-end" title="end date">
         <button id="date-reset" title="reset to full range">Reset</button>
       </div>
+      <button class="tbtn" id="theme-toggle" title="Switch between light and dark">
+        <span id="theme-icon">☾</span>
+      </button>
     </div>
   </div>
 
-  <!-- Selection rows (kept on top, above the map / time series / images) -->
-  <div id="tab-bar">
-    <span class="bar-label">Tiles</span>
-    <span class="info-i" title="Add or remove each tile's line on the time series.">i</span>
-    {tile_tabs_html}
-  </div>
-  <div id="var-bar">
-    <span class="bar-label">Plots</span>
-    <span class="info-i" title="Choose which cloud-property statistics are plotted over time. The number box next to each variable sets that plot's height in pixels.">i</span>
-  </div>
-  <div id="layer-bar">
-    <span class="bar-label">Layers</span>
-    <span class="info-i" title="Choose which per-scene retrieval thumbnails appear in the scene browser below.">i</span>
+  <!-- One toolbar. The tile / variable / layer pickers were three permanent
+       full-width rows; they are the same controls, now behind popovers so the
+       chrome above the data is one row instead of four. -->
+  <div id="toolbar">
+    <div class="popwrap">
+      <button class="tbtn" id="btn-tiles" aria-expanded="false">
+        <span class="bar-label">Tiles</span><span class="cnt" id="cnt-tiles"></span><span class="caret">▾</span>
+      </button>
+      <div class="popover" id="pop-tiles">
+        {tile_tabs_html}
+      </div>
+    </div>
+    <div class="popwrap">
+      <button class="tbtn" id="btn-vars" aria-expanded="false">
+        <span class="bar-label">Plots</span><span class="cnt" id="cnt-vars"></span><span class="caret">▾</span>
+      </button>
+      <div class="popover" id="pop-vars">
+        <div class="pop-actions">
+          <button data-act="all" data-for="vars">Select all</button>
+          <button data-act="none" data-for="vars">Clear</button>
+        </div>
+      </div>
+    </div>
+    <div class="popwrap">
+      <button class="tbtn" id="btn-layers" aria-expanded="false">
+        <span class="bar-label">Layers</span><span class="cnt" id="cnt-layers"></span><span class="caret">▾</span>
+      </button>
+      <div class="popover" id="pop-layers">
+        <div class="pop-actions">
+          <button data-act="all" data-for="layers">Select all</button>
+          <button data-act="none" data-for="layers">Clear</button>
+        </div>
+      </div>
+    </div>
+    <span class="info-i" title="Tiles selects which tile is plotted and browsed. Plots chooses which cloud-property statistics are plotted, and the number box sets each plot's height. Layers chooses which per-scene thumbnails appear below.">i</span>
   </div>
 </div>
 
@@ -440,7 +580,26 @@ body {{ font-family: system-ui, sans-serif; background: #111; color: #ddd; }}
 const SCENES = {data_json};
 const FIG_BASE = {fig_base_json};   // '' = layers hold full paths; else build url = FIG_BASE+scene_id+'/'+name
 const layerURL = (s, name) => FIG_BASE ? (FIG_BASE + s.scene_id + '/' + name) : name;
-const TILE_COLORS = {tile_colors_json};
+// Both palettes ship; the active one is chosen by theme so a mode switch does
+// not need the report regenerating. TILE_COLORS stays the name the chart and
+// map read, and is repointed by applyTheme().
+const TILE_COLORS_BY_MODE = {tile_colors_modes_json};
+let TILE_COLORS = TILE_COLORS_BY_MODE.dark;
+
+// A canvas does not inherit CSS, so anything painted into the chart or onto the
+// map dots has to read the theme tokens explicitly -- otherwise the plot stays
+// dark after a switch to light mode. Refreshed by applyTheme().
+let THEME = {{}};
+function refreshTheme() {{
+  const cs = getComputedStyle(document.documentElement);
+  const g = n => cs.getPropertyValue(n).trim() || '#888';
+  THEME = {{
+    surface1: g('--surface-1'), surface2: g('--surface-2'),
+    border: g('--border'), borderStrong: g('--border-strong'),
+    text1: g('--text-1'), text2: g('--text-2'), text3: g('--text-3'),
+  }};
+}}
+refreshTheme();
 const MAP_POINTS = {map_points_json};
 const CHART_VARS = [
   {{ key: 'cloud_frac',          label: 'Cloud frac' }},
@@ -459,6 +618,15 @@ const LAYER_TITLES = {{
   overview: 'Overview',
 }};
 const DEFAULT_LAYERS = ['true_colour', 'cloud_height', 'properties_ice_liq_ratio'];  // landing thumbnails
+// Which section of the scene browser each layer belongs to. Unlisted layers
+// fall through to 'Other' so a newly added product still shows up.
+const LAYER_GROUP = {{
+  true_colour: 'Inputs', cloud_mask: 'Inputs', overview: 'Inputs',
+  cloud_height: 'Retrieved', properties_tau: 'Retrieved',
+  properties_r_eff_liq: 'Retrieved', properties_r_eff_ice: 'Retrieved',
+  properties_ice_liq_ratio: 'Retrieved', ice_composite: 'Retrieved',
+  properties_uncertainty: 'Quality',
+}};
 
 // All retrieval-plot layer types present across scenes, ordered like the grid.
 const ALL_LAYERS = (function() {{
@@ -474,7 +642,7 @@ function prettyLayer(n) {{ return LAYER_TITLES[n] || n.replace(/_/g, ' ').replac
 
 // Layer toggles — one checkbox per retrieval plot; filters the scene-browser grid.
 (function buildLayerToggles() {{
-  const bar = document.getElementById('layer-bar');
+  const bar = document.getElementById('pop-layers');
   if (!bar) return;
   ALL_LAYERS.forEach(n => {{
     const label = document.createElement('label');
@@ -530,43 +698,38 @@ function activeScenes() {{
   }});
 }}
 
-// Scene-browser focus (set by clicking a map dot or chart point) — independent
-// of the visibility checkboxes.
+
+// The one place tile selection is decided. Selecting a tile in the popover,
+// clicking its dot on the map and clicking a point on the chart all land here,
+// and the chart then plots exactly this tile -- there is no separate notion of
+// "which tiles are plotted" any more.
 function switchTile(tile) {{
   setPlaying(false);
   activeTile = tile || null;
   current = 0;
-  document.querySelectorAll('#tab-bar .tchk').forEach(l =>
+  document.querySelectorAll('#pop-tiles .tchk').forEach(l =>
     l.classList.toggle('focused', l.dataset.tile === (tile || ''))
   );
-  showScene(0);
+  const radio = document.querySelector(
+    '#pop-tiles input[data-tile="' + (tile || '') + '"]');
+  if (radio) radio.checked = true;
+  const cnt = document.getElementById('cnt-tiles');
+  if (cnt) cnt.textContent = tile || '';
+  showScene(0);          // redraws chart + map dots
 }}
 
-// Tile checkboxes toggle tile visibility on the map + timeseries (via hiddenTiles).
-// Scope to #tab-bar so this does NOT also bind to the plot/layer checkboxes (which
-// share the .tchk class) — otherwise toggling those would fire this handler too.
-document.querySelectorAll('#tab-bar .tchk input').forEach(cb =>
-  cb.addEventListener('change', () => {{
-    if (cb.checked) hiddenTiles.delete(cb.dataset.tile);
-    else hiddenTiles.add(cb.dataset.tile);
-    drawChart();
-    drawMapDots();
+document.querySelectorAll('#pop-tiles input[name="tile-select"]').forEach(rb =>
+  rb.addEventListener('change', () => {{
+    if (rb.checked) switchTile(rb.dataset.tile);
   }})
-);
-
-// Click a tile NAME to select it for viewing in the scene browser (independent of
-// the checkbox, which only shows/hides it on the map + timeseries).
-document.querySelectorAll('#tab-bar .tname').forEach(el =>
-  el.addEventListener('click', () => switchTile(el.dataset.tile))
 );
 
 // ── Chart ────────────────────────────────────────────────────────────────────
 const chartCanvas = document.getElementById('chart-canvas');
 const chartCtx = chartCanvas.getContext('2d');
 let chartPoints = [];
-const DEFAULT_TILE = Object.keys(TILE_COLORS).sort()[0];                          // landing: one tile's line
-let hiddenTiles = new Set(Object.keys(TILE_COLORS).filter(t => t !== DEFAULT_TILE));
-let visibleVars = new Set([CHART_VARS[0].key]);   // landing: one line; users toggle more via Plots
+const DEFAULT_TILE = Object.keys(TILE_COLORS).sort()[0];   // landing tile
+let visibleVars = new Set([CHART_VARS[0].key]);   // landing: one variable; add more via Plots
 let legendItems = [];
 const LEGEND_H = 24;
 const AXIS_H = 20;     // room for the date axis under the timeseries
@@ -604,7 +767,7 @@ function dateTicks(t0, t1) {{
 
 // Plot toggles — one checkbox per timeseries variable, built from CHART_VARS.
 (function buildVarToggles() {{
-  const bar = document.getElementById('var-bar');
+  const bar = document.getElementById('pop-vars');
   if (!bar) return;
   CHART_VARS.forEach(v => {{
     const label = document.createElement('label');
@@ -635,43 +798,52 @@ function drawChart() {{
   vars.forEach(v => {{ rowY[v.key] = cum; cum += rowH(v.key); }});
   const bodyBottom = cum;
   const totalH = bodyBottom + AXIS_H;
-  chartCanvas.width = W;
-  chartCanvas.height = totalH;
+  // Bitmap in device pixels, CSS box in CSS pixels, then a transform so the
+  // drawing code below stays in CSS pixels. Setting only .width/.height left the
+  // bitmap at whatever the width was when it was last drawn while CSS kept
+  // stretching it to 100% of the panel -- so after a resize every circle came
+  // out as an ellipse and the text sheared.
+  //
+  // style.width is deliberately NOT pinned: `width:100%` is what makes
+  // offsetWidth report the space actually available. Pinning it here would make
+  // the next measurement read back this same value and the chart could never
+  // grow again.
+  const dpr = window.devicePixelRatio || 1;
+  chartCanvas.width = Math.round(W * dpr);
+  chartCanvas.height = Math.round(totalH * dpr);
   chartCanvas.style.height = totalH + 'px';
+  chartCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const padL = 44, padR = 10, padT = 8, padB = 6;
   const cw = W - padL - padR;
 
-  chartCtx.fillStyle = '#0d1117';
+  chartCtx.fillStyle = THEME.surface1;
   chartCtx.fillRect(0, 0, W, totalH);
 
-  // ── Legend ──────────────────────────────────────────────────────────────────
+  // ── Caption ─────────────────────────────────────────────────────────────────
+  // A single series needs no legend box -- the caption names it. This replaces
+  // the old row of per-tile toggles: the chart now shows the tile being browsed,
+  // so a legend listing every tile would describe lines that are not drawn.
   legendItems = [];
-  let lx = padL;
   chartCtx.font = '9px monospace';
-  Object.entries(TILE_COLORS).forEach(([tid, color]) => {{
-    const hidden = hiddenTiles.has(tid);
-    const tw = chartCtx.measureText(tid).width;
-    const itemW = 10 + 4 + tw + 10;
-    chartCtx.globalAlpha = hidden ? 0.35 : 1;
-    chartCtx.fillStyle = color;
-    chartCtx.beginPath();
-    chartCtx.arc(lx + 5, LEGEND_H / 2, 4, 0, Math.PI * 2);
-    chartCtx.fill();
-    chartCtx.fillStyle = hidden ? '#555' : '#ccc';
-    chartCtx.textAlign = 'left';
-    chartCtx.fillText(tid, lx + 12, LEGEND_H / 2 + 4);
-    if (hidden) {{
-      chartCtx.strokeStyle = '#555'; chartCtx.lineWidth = 1; chartCtx.globalAlpha = 0.5;
-      chartCtx.beginPath(); chartCtx.moveTo(lx, LEGEND_H / 2); chartCtx.lineTo(lx + itemW - 8, LEGEND_H / 2); chartCtx.stroke();
-    }}
+  if (activeTile) {{
     chartCtx.globalAlpha = 1;
-    legendItems.push({{ tid, x: lx, w: itemW }});
-    lx += itemW;
-  }});
+    chartCtx.fillStyle = TILE_COLORS[activeTile] || THEME.text3;
+    chartCtx.beginPath();
+    chartCtx.arc(padL + 5, LEGEND_H / 2, 4, 0, Math.PI * 2);
+    chartCtx.fill();
+    chartCtx.fillStyle = THEME.text1;
+    chartCtx.textAlign = 'left';
+    chartCtx.fillText(activeTile, padL + 12, LEGEND_H / 2 + 4);
+    const nS = SCENES.filter(s => s.tile_id === activeTile).length;
+    chartCtx.fillStyle = THEME.text3;
+    chartCtx.fillText(nS + (nS === 1 ? ' scene' : ' scenes'),
+                      padL + 12 + chartCtx.measureText(activeTile).width + 10,
+                      LEGEND_H / 2 + 4);
+  }}
 
   // ── Separator ───────────────────────────────────────────────────────────────
-  chartCtx.strokeStyle = '#333'; chartCtx.lineWidth = 1;
+  chartCtx.strokeStyle = THEME.border; chartCtx.lineWidth = 1;
   chartCtx.beginPath(); chartCtx.moveTo(0, LEGEND_H); chartCtx.lineTo(W, LEGEND_H); chartCtx.stroke();
 
   // ── Time series rows ────────────────────────────────────────────────────────
@@ -691,24 +863,29 @@ function drawChart() {{
     const yOff = rowY[key];
     const ch = rowH(key) - padT - padB;
 
-    const allVals = SCENES.map(s => s.stats[key]).filter(v => v != null);
+    // Scale to the tile on screen, not to every tile in the project. Rama's
+    // 8 tiles span very different cloud regimes, so a global maximum flattened
+    // the line you were actually looking at.
+    const allVals = SCENES
+      .filter(s => !activeTile || s.tile_id === activeTile)
+      .map(s => s.stats[key]).filter(v => v != null);
     if (!allVals.length) return;
     const vMax = Math.max(...allVals) * 1.1 || 1;
     const ty = v => yOff + padT + ch - (v / vMax) * ch;
 
     if (vi > 0) {{
-      chartCtx.strokeStyle = '#222'; chartCtx.lineWidth = 1;
+      chartCtx.strokeStyle = THEME.border; chartCtx.lineWidth = 1;
       chartCtx.beginPath(); chartCtx.moveTo(0, yOff); chartCtx.lineTo(W, yOff); chartCtx.stroke();
     }}
 
     chartCtx.font = '8px monospace'; chartCtx.textAlign = 'right';
-    chartCtx.fillStyle = '#666';
+    chartCtx.fillStyle = THEME.text3;
     chartCtx.fillText(vMax.toFixed(2), padL - 3, yOff + padT + 4);
     chartCtx.fillText('0', padL - 3, yOff + padT + ch);
-    chartCtx.font = 'bold 10px system-ui'; chartCtx.fillStyle = '#bbb'; chartCtx.textAlign = 'left';
+    chartCtx.font = 'bold 10px system-ui'; chartCtx.fillStyle = THEME.text2; chartCtx.textAlign = 'left';
     chartCtx.fillText(label, padL + 4, yOff + padT + 4);
 
-    chartCtx.strokeStyle = '#1e1e2e'; chartCtx.lineWidth = 1;
+    chartCtx.strokeStyle = THEME.surface2; chartCtx.lineWidth = 1;
     chartCtx.beginPath(); chartCtx.moveTo(padL, yOff + padT + ch); chartCtx.lineTo(padL + cw, yOff + padT + ch); chartCtx.stroke();
 
     const byTile = {{}};
@@ -719,25 +896,27 @@ function drawChart() {{
       (byTile[tid] = byTile[tid] || []).push({{ i, x: tx(i), y: ty(v) }});
     }});
 
+    // Only the tile being browsed is plotted. Drawing the others faintly meant
+    // clicking a dot on the map changed several lines at once, and the y-scale
+    // was set by tiles you were not looking at.
     Object.entries(byTile).forEach(([tid, pts]) => {{
-      if (hiddenTiles.has(tid)) return;
-      const color = TILE_COLORS[tid] || '#aaa';
-      const isActiveTile = !activeTile || tid === activeTile;
+      if (activeTile && tid !== activeTile) return;
+      const color = TILE_COLORS[tid] || THEME.text3;
       chartCtx.strokeStyle = color;
-      chartCtx.globalAlpha = isActiveTile ? 0.4 : 0.12;
-      chartCtx.lineWidth = 1;
+      chartCtx.globalAlpha = 0.55;
+      chartCtx.lineWidth = 1.5;
       chartCtx.beginPath();
       pts.forEach((p, j) => j === 0 ? chartCtx.moveTo(p.x, p.y) : chartCtx.lineTo(p.x, p.y));
       chartCtx.stroke();
       pts.forEach(p => {{
         const isCurrent = p.i === currentGlobal;
-        chartCtx.globalAlpha = isCurrent ? 1 : (isActiveTile ? 0.7 : 0.18);
+        chartCtx.globalAlpha = isCurrent ? 1 : 0.8;
         chartCtx.fillStyle = color;
         chartCtx.beginPath();
-        chartCtx.arc(p.x, p.y, isCurrent ? 4 : 1.5, 0, Math.PI * 2);
+        chartCtx.arc(p.x, p.y, isCurrent ? 4.5 : 2, 0, Math.PI * 2);
         chartCtx.fill();
-        if (isCurrent) {{ chartCtx.strokeStyle = 'white'; chartCtx.lineWidth = 1.5; chartCtx.stroke(); }}
-        if (isActiveTile && vi === 0) chartPoints.push({{ i: p.i, x: p.x, y: p.y, tid }});
+        if (isCurrent) {{ chartCtx.strokeStyle = THEME.text1; chartCtx.lineWidth = 1.5; chartCtx.stroke(); }}
+        if (vi === 0) chartPoints.push({{ i: p.i, x: p.x, y: p.y, tid }});
       }});
     }});
     chartCtx.globalAlpha = 1;
@@ -745,38 +924,28 @@ function drawChart() {{
 
   // ── Date axis ─────────────────────────────────────────────────────────────
   const yAxis = bodyBottom;
-  chartCtx.strokeStyle = '#333'; chartCtx.lineWidth = 1;
+  chartCtx.strokeStyle = THEME.border; chartCtx.lineWidth = 1;
   chartCtx.beginPath(); chartCtx.moveTo(padL, yAxis); chartCtx.lineTo(padL + cw, yAxis); chartCtx.stroke();
   chartCtx.font = '9px system-ui'; chartCtx.textAlign = 'center';
   for (const {{ t, lab }} of dateTicks(tMin, tMax)) {{
     const x = txT(t);
     if (x < padL - 1 || x > padL + cw + 1) continue;
-    chartCtx.strokeStyle = '#444';
+    chartCtx.strokeStyle = THEME.borderStrong;
     chartCtx.beginPath(); chartCtx.moveTo(x, yAxis); chartCtx.lineTo(x, yAxis + 4); chartCtx.stroke();
-    chartCtx.fillStyle = '#8a8a99'; chartCtx.fillText(lab, x, yAxis + 15);
+    chartCtx.fillStyle = THEME.text3; chartCtx.fillText(lab, x, yAxis + 15);
   }}
 }}
 
 chartCanvas.onclick = e => {{
   const r = chartCanvas.getBoundingClientRect();
-  const mx = (e.clientX - r.left) * (chartCanvas.width / r.width);
-  const my = (e.clientY - r.top) * (chartCanvas.height / r.height);
+  // CSS pixels: everything was drawn through the devicePixelRatio transform, so
+  // scaling by bitmap/CSS here would put the hit test at dpr times the cursor.
+  const mx = e.clientX - r.left;
+  const my = e.clientY - r.top;
 
-  // Legend area — toggle tile visibility
-  if (my < LEGEND_H) {{
-    for (const item of legendItems) {{
-      if (mx >= item.x && mx < item.x + item.w) {{
-        if (hiddenTiles.has(item.tid)) hiddenTiles.delete(item.tid);
-        else hiddenTiles.add(item.tid);
-        const cb = document.querySelector('.tchk input[data-tile="' + item.tid + '"]');
-        if (cb) cb.checked = !hiddenTiles.has(item.tid);   // keep checkbox in sync
-        drawChart();
-        drawMapDots();
-        return;
-      }}
-    }}
-    return;
-  }}
+  // Caption strip is not interactive any more — one tile is plotted, and it is
+  // chosen from the Tiles picker or by clicking the map.
+  if (my < LEGEND_H) return;
 
   // Time series area — navigate to nearest scene
   let closest = null, minDx = Infinity, closestTile = null;
@@ -805,19 +974,55 @@ function mapBaseScale() {{
   return (mapBg && mapBg.naturalHeight) ? (mapWrap.clientHeight / mapBg.naturalHeight) : 1;
 }}
 
+// Size the dot canvas to its CSS box AND to the device pixel ratio, then undo
+// the ratio with a transform so drawing code stays in CSS pixels.
+//
+// Without this the canvas bitmap keeps whatever size it had when the page first
+// loaded. Any later change to its CSS box -- a browser zoom, a window resize --
+// leaves the browser stretching that stale bitmap, so the dots grow with the map
+// instead of staying a constant size, and blur as they go.
+function sizeMapCanvas() {{
+  if (!mapCanvas || !mapWrap) return false;
+  const dpr = window.devicePixelRatio || 1;
+  const w = mapWrap.clientWidth, h = mapWrap.clientHeight;
+  if (!w || !h) return false;
+  mapCanvas.style.width = w + 'px';
+  mapCanvas.style.height = h + 'px';
+  mapCanvas.width = Math.round(w * dpr);
+  mapCanvas.height = Math.round(h * dpr);
+  mapCanvas.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+  return true;
+}}
+
 function initMap() {{
   if (!mapBg || !MAP_POINTS.length || !mapWrap) return;
-  mapCanvas.width = mapWrap.clientWidth;    // canvas covers the viewport, unscaled
-  mapCanvas.height = mapWrap.clientHeight;
+  if (!sizeMapCanvas()) return;
   drawMapDots();
+}}
+
+// Re-size on anything that changes the box: browser zoom, window resize, layout.
+if (window.ResizeObserver && mapWrap) {{
+  new ResizeObserver(() => {{ if (sizeMapCanvas()) drawMapDots(); }}).observe(mapWrap);
+}} else {{
+  window.addEventListener('resize', () => {{ if (sizeMapCanvas()) drawMapDots(); }});
 }}
 
 // Dots live on a viewport-fixed canvas (NOT inside the transformed image), so they
 // keep a constant on-screen size and stay crisp at any zoom.
 function drawMapDots() {{
-  if (!mapCanvas.width) return;
+  if (!mapCanvas.width || !mapWrap) return;
   const ctx = mapCanvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  // Own the transform on every frame instead of trusting whatever sizeMapCanvas
+  // last left behind. Clear under the IDENTITY transform using the bitmap's own
+  // dimensions: clearing in CSS pixels while the context happened to be at
+  // identity wiped only the top-left 1/dpr of the bitmap, so previous frames
+  // survived around the edges and dots accumulated as rings on top of each
+  // other -- which reads as dots that grow and double when you zoom.
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const cw = mapWrap.clientWidth, ch = mapWrap.clientHeight;
   const ds = mapBaseScale() * mapScale;
   const sc = activeScenes();
   const currentGlobal = sc.length ? SCENE_IDX[sc[current]?.scene_id] : -1;
@@ -827,15 +1032,19 @@ function drawMapDots() {{
     const tid = SCENES[i].tile_id;
     // every tile's dots are always drawn — tile toggles only affect the chart lines
     const x = mapTx + p.x * ds, y = mapTy + p.y * ds;
-    if (x < -8 || y < -8 || x > mapCanvas.width + 8 || y > mapCanvas.height + 8) return;
+    if (x < -8 || y < -8 || x > cw + 8 || y > ch + 8) return;
     const isActiveTile = !activeTile || tid === activeTile;
     const isCurrent = i === currentGlobal;
     ctx.globalAlpha = isCurrent ? 1 : (isActiveTile ? 0.7 : 0.3);
-    ctx.fillStyle = TILE_COLORS[tid] || '#aaa';
+    ctx.fillStyle = TILE_COLORS[tid] || THEME.text3;
     ctx.beginPath();
     ctx.arc(x, y, isCurrent ? 6 : 4, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = isCurrent ? 'white' : 'rgba(255,255,255,0.5)';
+    // The basemap PNG is baked by cartopy and is dark in BOTH themes, so the
+    // ring is chosen against the map, not against the page. Theming it to
+    // --surface-1 was wrong: in dark mode that painted a near-black ring onto a
+    // near-black basemap.
+    ctx.strokeStyle = isCurrent ? '#ffffff' : 'rgba(255,255,255,0.55)';
     ctx.lineWidth = isCurrent ? 2 : 1;
     ctx.stroke();
   }});
@@ -871,7 +1080,10 @@ if (mapCanvas) {{
 // Only the basemap image is transformed; dots are redrawn (constant size) each frame.
 (function() {{
   if (!mapWrap || !mapInner) return;
-  const MIN = 1, MAX = 12;
+  // Capped to what the basemap can actually resolve: it is rendered ~7x the
+  // displayed width, so allowing 12x only offered blur. The dots stay sharp at
+  // any zoom -- they are drawn on the canvas, not baked into the image.
+  const MIN = 1, MAX = 7;
   const apply = () => {{
     mapInner.style.transform = 'translate(' + mapTx + 'px,' + mapTy + 'px) scale(' + mapScale + ')';
     drawMapDots();
@@ -924,12 +1136,15 @@ function showScene(idx) {{
   document.getElementById('progress').textContent =
     `${{s.tile_id || ''}}  ·  Scene ${{current + 1}} / ${{sc.length}}`;
 
-  const statLines = Object.entries({{
+  // Stat tiles: label above value, tabular figures, so the numbers line up in
+  // the same place from scene to scene instead of reflowing as a sentence.
+  const statTiles = Object.entries({{
     cloud_frac: 'Cloud frac', tau__mean: 'τ mean',
     r_eff_liq__p050: 'r_eff liq p50', ice_liq_ratio__mean: 'Ice/liq',
   }}).filter(([k]) => s.stats[k] != null)
-    .map(([k, lbl]) => `<b>${{lbl}}:</b> ${{s.stats[k].toFixed(3)}}`);
-  document.getElementById('si-stats').innerHTML = statLines.join('<br>');
+    .map(([k, lbl]) => `<div class="stat"><span class="k">${{lbl}}</span>` +
+                       `<span class="v">${{s.stats[k].toFixed(3)}}</span></div>`);
+  document.getElementById('si-stats').innerHTML = statTiles.join('');
 
   const grid = document.getElementById('layer-grid');
   grid.innerHTML = '';
@@ -944,21 +1159,41 @@ function showScene(idx) {{
     if (bi !== -1) return 1;
     return 0;
   }});
+  // Group by role rather than one flat auto-fill: what went in, what came out,
+  // and how much to trust it. Anything unrecognised falls through to OTHER so a
+  // new layer still appears instead of vanishing.
+  const groups = [['Inputs', []], ['Retrieved', []], ['Quality', []], ['Other', []]];
+  const GI = {{ Inputs: 0, Retrieved: 1, Quality: 2, Other: 3 }};
   sortedLayers
     .filter(path => visibleLayers.has(path.split('/').pop().replace('.png', '')))
     .forEach(path => {{
-    const name = path.split('/').pop().replace('.png', '');
-    const div = document.createElement('div');
-    div.className = 'layer-thumb' + (name === 'overview' ? ' overview' : '');
-    const img = document.createElement('img');
-    const src = layerURL(s, path);
-    img.src = src;
-    img.onclick = () => openLightbox(src);
-    const lbl = document.createElement('div');
-    lbl.className = 'layer-label';
-    lbl.textContent = labelFromPath(path);
-    div.appendChild(img); div.appendChild(lbl);
-    grid.appendChild(div);
+      const name = path.split('/').pop().replace('.png', '');
+      groups[GI[LAYER_GROUP[name] || 'Other']][1].push(path);
+    }});
+  groups.filter(([, paths]) => paths.length).forEach(([gname, paths]) => {{
+    const sec = document.createElement('div');
+    sec.className = 'layer-group';
+    const head = document.createElement('div');
+    head.className = 'group-head';
+    head.textContent = gname;
+    sec.appendChild(head);
+    paths.forEach(path => {{
+      const name = path.split('/').pop().replace('.png', '');
+      const div = document.createElement('div');
+      div.className = 'layer-thumb' + (name === 'overview' ? ' overview' : '');
+      const img = document.createElement('img');
+      const src = layerURL(s, path);
+      img.src = src;
+      img.loading = 'lazy';
+      img.alt = labelFromPath(path) + ' — ' + (s.scene_id || '');
+      img.onclick = () => openLightbox(src);
+      const lbl = document.createElement('div');
+      lbl.className = 'layer-label';
+      lbl.textContent = labelFromPath(path);
+      div.appendChild(img); div.appendChild(lbl);
+      sec.appendChild(div);
+    }});
+    grid.appendChild(sec);
   }});
 
   drawChart();
@@ -1014,6 +1249,19 @@ document.addEventListener('keydown', e => {{
 }});
 
 window.addEventListener('resize', () => {{ drawChart(); initMap(); }});
+// A plain resize listener misses layout-only changes -- a popover opening, the
+// scrollbar appearing, a font settling -- which move the panel without resizing
+// the window. Observe the panel itself.
+if (window.ResizeObserver) {{
+  const cw = document.getElementById('chart-wrap');
+  if (cw) {{
+    let lastW = 0;
+    new ResizeObserver(() => {{
+      const w = cw.clientWidth;
+      if (w && w !== lastW) {{ lastW = w; drawChart(); }}
+    }}).observe(cw);
+  }}
+}}
 
 // ── Preloader ─────────────────────────────────────────────────────────────────
 const _preloadCache = {{}};
@@ -1026,11 +1274,105 @@ function preloadScene(idx) {{
   sc[i].layers.forEach(path => {{ const img = new Image(); img.src = layerURL(sc[i], path); }});
 }}
 
+// ── Toolbar popovers ─────────────────────────────────────────────────────────
+// The tile / plot / layer pickers were three permanent rows. Same checkboxes,
+// now one button each; only one popover is open at a time.
+const POPS = [['btn-tiles', 'pop-tiles'], ['btn-vars', 'pop-vars'], ['btn-layers', 'pop-layers']];
+function closePops(except) {{
+  POPS.forEach(([b, p]) => {{
+    if (p === except) return;
+    document.getElementById(p).classList.remove('open');
+    const btn = document.getElementById(b);
+    btn.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+  }});
+}}
+POPS.forEach(([b, p]) => {{
+  const btn = document.getElementById(b), pop = document.getElementById(p);
+  if (!btn || !pop) return;
+  btn.addEventListener('click', e => {{
+    e.stopPropagation();
+    const willOpen = !pop.classList.contains('open');
+    closePops(willOpen ? p : null);
+    pop.classList.toggle('open', willOpen);
+    btn.classList.toggle('open', willOpen);
+    btn.setAttribute('aria-expanded', String(willOpen));
+  }});
+  pop.addEventListener('click', e => e.stopPropagation());
+}});
+document.addEventListener('click', () => closePops(null));
+document.addEventListener('keydown', e => {{ if (e.key === 'Escape') closePops(null); }});
+
+// Select all / Clear inside each popover.
+document.querySelectorAll('.pop-actions button').forEach(btn =>
+  btn.addEventListener('click', () => {{
+    const pop = document.getElementById('pop-' + btn.dataset.for);
+    const want = btn.dataset.act === 'all';
+    pop.querySelectorAll('input[type=checkbox]').forEach(cb => {{
+      if (cb.checked !== want) {{ cb.checked = want; cb.dispatchEvent(new Event('change')); }}
+    }});
+    updateCounts();
+  }})
+);
+
+// "3 / 12" next to each button, so the collapsed state still says what is on.
+function updateCounts() {{
+  // 'tiles' is deliberately absent: it is a single choice, so its badge shows
+  // the selected tile's name and is owned by switchTile(), not a "n / m" count.
+  [['vars', 'cnt-vars'], ['layers', 'cnt-layers']].forEach(([k, id]) => {{
+    const pop = document.getElementById('pop-' + k);
+    const el = document.getElementById(id);
+    if (!pop || !el) return;
+    const all = pop.querySelectorAll('input[type=checkbox]');
+    const on = pop.querySelectorAll('input[type=checkbox]:checked');
+    el.textContent = all.length ? on.length + ' / ' + all.length : '';
+  }});
+}}
+document.querySelectorAll('.popover input[type=checkbox]').forEach(cb =>
+  cb.addEventListener('change', updateCounts));
+
+// ── Theme ────────────────────────────────────────────────────────────────────
+// Dark stays the default so an existing report looks unchanged; the choice is
+// remembered per viewer. Tile colours are restepped per surface, not reused:
+// a hue that clears the contrast gate on #0f1117 does not clear it on #f6f7fa.
+function applyTheme(mode) {{
+  document.documentElement.setAttribute('data-theme', mode);
+  TILE_COLORS = TILE_COLORS_BY_MODE[mode] || TILE_COLORS_BY_MODE.dark;
+  document.querySelectorAll('.tab-dot[data-tile]').forEach(d => {{
+    d.style.background = TILE_COLORS[d.dataset.tile] || '#8a9099';
+  }});
+  // Logos carry both variants; when no -light file was supplied the two data
+  // URIs are identical and this changes nothing.
+  document.querySelectorAll('#logo, #logo2').forEach(img => {{
+    const next = mode === 'light' ? img.dataset.light : img.dataset.dark;
+    if (next && img.getAttribute('src') !== next) img.setAttribute('src', next);
+  }});
+  const icon = document.getElementById('theme-icon');
+  if (icon) icon.textContent = mode === 'light' ? '☀' : '☾';
+  try {{ localStorage.setItem('cd-report-theme', mode); }} catch (e) {{}}
+  // Re-read the tokens BEFORE repainting: the chart and dots are canvas, so
+  // they take no colour from the stylesheet on their own.
+  refreshTheme();
+  drawChart();
+  drawMapDots();
+}}
+(function initTheme() {{
+  let saved = null;
+  try {{ saved = localStorage.getItem('cd-report-theme'); }} catch (e) {{}}
+  applyTheme(saved === 'light' ? 'light' : 'dark');
+  const btn = document.getElementById('theme-toggle');
+  if (btn) btn.addEventListener('click', () => {{
+    const now = document.documentElement.getAttribute('data-theme');
+    applyTheme(now === 'light' ? 'dark' : 'light');
+  }});
+}})();
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 // Select the first tile by default
 const firstTile = Object.keys(TILE_COLORS).sort()[0];
 if (firstTile) switchTile(firstTile);
 else showScene(0);
+updateCounts();
 </script>
 </body>
 </html>"""
@@ -1113,15 +1455,45 @@ def generate_report(
                     logger.info(f"[{scene_id}] thumbnails done ({done_count}/{len(tasks)})")
 
     scenes = _build_scenes(df, figures_dir)
-    tile_colors = _tile_colors(scenes)
+    tile_modes = _tile_color_map(scenes)
+    tile_colors = tile_modes['dark']
+
+    n_tiles = len({s['tile_id'] for s in scenes if s.get('tile_id')})
+    if n_tiles > len(_PALETTE_DARK):
+        logger.warning(
+            "%d tiles but only %d categorical colours — the remaining %d share a "
+            "neutral grey. Use the tile filter to isolate one.",
+            n_tiles, len(_PALETTE_DARK), n_tiles - len(_PALETTE_DARK))
 
     logger.info("Generating map...")
-    map_png, map_points = _generate_map(scenes, tile_colors)
+    # Basemap only. With draw_markers=True matplotlib baked a marker per scene
+    # INTO the PNG, and the interactive canvas then drew its own dot on top of
+    # each one. The baked copy is part of the image, so it scaled with the
+    # zoom transform while the canvas dot stayed a constant 4px -- giving a
+    # growing disc with a small dot at its centre, and two dots per scene at
+    # every zoom level. The canvas markers are the ones that can be positioned,
+    # recoloured by theme and clicked, so they are the ones to keep.
+    # Rendered ~7x the on-screen size (displayed ~418px wide) so the basemap
+    # survives zooming, and at Natural Earth 10m so the extra pixels carry real
+    # coastline detail rather than a smoother version of 50m. Measured on
+    # cas_meeting_examples: 653 KB and 0.7s, against 57 KB at the old 500x380.
+    # Going to 4400px would cover the full 12x but costs 1.1 MB, which is a poor
+    # trade on a small project -- the zoom cap is lowered to match instead.
+    #
+    # The first 10m draw in a process pays a one-time ~18s shapefile load.
+    map_png, map_points = _generate_map(
+        scenes, tile_colors, draw_markers=False,
+        width_px=3000, height_px=2280, dpi=150, feature_scale='10m')
 
     html = _render_html(
         scenes, tile_colors, map_png, map_points, project_dir.name,
         brand_logo=_asset_uri("asterisk-labs.svg") if brand_logo is None else brand_logo,
         project_logo=_asset_uri("clouds-decoded.webp") if project_logo is None else project_logo,
+        brand_logo_light=(_asset_uri_light("asterisk-labs.svg")
+                          if brand_logo is None else brand_logo),
+        project_logo_light=(_asset_uri_light("clouds-decoded.webp")
+                            if project_logo is None else project_logo),
+        tile_colors_modes=tile_modes,
     )
     output_path.write_text(html)
     logger.info(f"Report written to {output_path}")
