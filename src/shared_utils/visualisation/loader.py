@@ -8,7 +8,7 @@ from .layers import (
     Layer,
     RGBConfig,
     layer_from_cloud_mask,
-    layer_from_cloud_height,
+    layers_from_cloud_height,
     layer_from_rgb,
     layers_from_albedo,
     layers_from_cloud_properties,
@@ -97,7 +97,7 @@ def _load_tif(path: Path, step: str, layers: List[Layer]):
         elif step == "cloud_height":
             from clouds_decoded.data import CloudHeightGridData
             data = CloudHeightGridData.from_file(str(path))
-            layers.append(layer_from_cloud_height(data))
+            layers.extend(layers_from_cloud_height(data))
 
         elif step == "albedo":
             from clouds_decoded.data import AlbedoData

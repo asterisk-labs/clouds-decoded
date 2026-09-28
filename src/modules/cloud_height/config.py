@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 import numpy as np
 from pydantic import Field, field_validator
 from clouds_decoded.config import BaseProcessorConfig
@@ -86,6 +86,18 @@ class CloudHeightConfig(BaseProcessorConfig):
     )
 
     # Height Search Space
+    min_height: int = Field(
+        default=0,
+        ge=-10000,
+        le=0,
+        description=(
+            "Minimum cloud height to search (meters). 0 is the physical floor "
+            "and the production default. Negative values are a DIAGNOSTIC: a "
+            "detector whose retrievals come back systematically negative has "
+            "its parallax direction inverted, which a 0-floored grid hides by "
+            "pinning those columns at the floor instead."
+        )
+    )
     max_height: int = Field(
         default=18000,
         ge=1000,
@@ -97,6 +109,62 @@ class CloudHeightConfig(BaseProcessorConfig):
         ge=10,
         le=1000,
         description="Height search step size (meters)"
+    )
+    offset_rounding: Literal["truncate", "nearest"] = Field(
+        default="nearest",
+        description=(
+            "How the per-band patch offset is rounded to a whole pixel. "
+            "'truncate' is the historical behaviour (int(), i.e. floor for "
+            "positive indices). Because the offset changes sign with detector "
+            "parity, a floor bias of ~0.5 px maps to +0.5 px of height in one "
+            "parity and -0.5 px in the other -- a full-pixel differential, "
+            "worth ~600 m (B03) to ~1200 m (B08). 'nearest' removes the "
+            "systematic part of that and is the default: truncation is a bug, "
+            "not a modelling choice. Measured over 23 scenes, the B02-B03 seam "
+            "step goes from +0.299 px under 'truncate' to 0.000 px under "
+            "'nearest', matching an independent implementation. Set 'truncate' "
+            "only to reproduce a product built before this default changed."
+        )
+    )
+    tie_break: Literal["floor", "centre"] = Field(
+        default="centre",
+        description=(
+            "Which height to report when several candidates share the winning "
+            "score. Because the patch offset is rounded to a whole cell of the "
+            "along-track grid, every height inside one cell-crossing produces "
+            "BYTE-IDENTICAL patches and therefore an identical score: the "
+            "score-vs-height curve is a staircase. All that a tied tread tells "
+            "you is that the height lies somewhere inside it. "
+            "'floor' is the historical behaviour: "
+            "np.nanargmax returns the FIRST maximum and the height grid ascends "
+            "from min_height, so the lowest height of the tread is reported. "
+            "That biases every retrieval low by (W - height_step)/2, "
+            "which is why two-band pairs read below ground over low cloud. "
+            "'centre' reports the midpoint of the tied tread instead, which is "
+            "unbiased and halves the worst-case error, and is the default: "
+            "reporting the floor of a tie is a bias, not a choice. It does NOT "
+            "improve resolution: the tread width is still the uncertainty. "
+            "Set 'floor' only to reproduce a pre-existing product. "
+            "Mixed band sets are barely affected: with 13 bands the score changes "
+            "whenever ANY band crosses a cell, so treads are ~18 m, narrower "
+            "than a typical height_step, and there are few ties to break."
+        )
+    )
+    quality_bands: bool = Field(
+        default=False,
+        description=(
+            "Append per-cell quality metrics to the output raster. Band 0 stays "
+            "the height, so existing consumers are unaffected; the extra bands "
+            "are named in the output metadata. They are:\n"
+            "  peak_correlation -- the winning score. Signal strength.\n"
+            "  fwhm -- width of the correlation peak at half its amplitude, in "
+            "metres. The retrieval's PRECISION.\n"
+            "  tied_span -- width of the exactly-tied run, in metres. The hard "
+            "resolution floor imposed by rounding the patch offset to a whole "
+            "cell: heights inside it are indistinguishable by construction.\n"
+            "All three are computed from the retrieval's own score curve and so "
+            "all three measure PRECISION, not accuracy."
+        )
     )
 
     # System
@@ -112,6 +180,17 @@ class CloudHeightConfig(BaseProcessorConfig):
     temp_dir: Optional[str] = Field(
         default=None,
         description="Temporary directory for intermediate files (default: /dev/shm)"
+    )
+    stall_timeout: float = Field(
+        default=900.0,
+        gt=0,
+        description=(
+            "Seconds to wait for the next column result before declaring the "
+            "scene stalled and aborting it. A process that dies holding the "
+            "work queue's internal lock blocks every other worker without "
+            "raising anything, so an unbounded wait never returns. Must exceed "
+            "the slowest single column; columns typically take 1-2 s."
+        )
     )
 
     @field_validator('bands')
@@ -133,7 +212,7 @@ class CloudHeightConfig(BaseProcessorConfig):
     @property
     def heights(self) -> np.ndarray:
         """Derived property: Array of heights to search."""
-        hs = np.arange(0, self.max_height, self.height_step)
+        hs = np.arange(self.min_height, self.max_height, self.height_step)
         if hs[-1] != self.max_height:
             hs = np.append(hs, self.max_height)
         return hs

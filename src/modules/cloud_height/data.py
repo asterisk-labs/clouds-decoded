@@ -1,3 +1,4 @@
+import logging
 import os
 import numpy as np
 import rasterio as rio
@@ -11,6 +12,9 @@ import rtree
 from clouds_decoded.data import Sentinel2Scene
 from clouds_decoded.constants import BAND_RESOLUTIONS
 from .physics import RotationTransform
+
+logger = logging.getLogger(__name__)
+
 
 class Column:
     def __init__(self,bands,points,footprint_id,mask=None):
@@ -75,7 +79,27 @@ class RetrievalCube:
 
 class ColumnExtractor:
     def __init__(self, scene: Sentinel2Scene, conf, mask=None):
-        self.bands = scene.bands
+        # Honour conf.bands when it is set. Historically this was ignored --
+        # every band the scene happened to hold was correlated, whatever the
+        # config said -- so a `bands:` list in the yaml silently did nothing.
+        # The reference band is always kept; it is the anchor all offsets are
+        # measured from.
+        wanted = list(getattr(conf, "bands", None) or [])
+        if wanted:
+            keep = [b for b in wanted if b in scene.bands]
+            if conf.reference_band in scene.bands and conf.reference_band not in keep:
+                keep.insert(0, conf.reference_band)
+            missing = [b for b in wanted if b not in scene.bands]
+            if missing:
+                logger.warning("Requested bands not present in scene, ignoring: %s", missing)
+            if len(keep) < 2:
+                raise ValueError(
+                    f"cloud_height needs >=2 bands present in the scene; "
+                    f"config asked for {wanted}, scene has {sorted(scene.bands)}"
+                )
+            self.bands = {b: scene.bands[b] for b in keep}
+        else:
+            self.bands = scene.bands
         self.footprints = scene.footprints
         self.angle = scene.image_azimuth
         self.conf = conf
@@ -100,17 +124,43 @@ class ColumnExtractor:
     def getBandInterpolators(self,bands):
         """
         Get interpolators for the bands
+
+        Sample k of a band sits at the CENTRE of its pixel, (k + 0.5) * res
+        from the tile origin, not at k * res. Every band shares that origin, so
+        indexing them all as k * res mis-places each one by half of its OWN
+        pixel and leaves a fixed inter-band shift of 0.5 * (res_band - res_ref):
+
+            10 m bands  0 m      20 m bands  +5 m      60 m bands  +25 m
+
+        For a 3 m along-track grid that is 8.3 cells on the 60 m bands. It is
+        invisible to any all-10 m configuration -- which is every two-band
+        diagnostic, B02/B03/B04 -- because the term cancels exactly. It only
+        appears once bands of different resolutions are correlated together,
+        i.e. in the shipped 13-band retrieval.
+
+        There it becomes a DETECTOR PARITY artefact, because the shift is fixed
+        while the parallax offsets flip sign with parity: band k's features sit
+        at o_k(h)*s - eps_k while the search runs over o_k(h)*s, so one parity
+        is pulled by -eps and the other by +eps.
+
+        The correction is written relative to the reference band rather than as
+        the absolute (k + 0.5) * res, so the reference band's coordinates are
+        unchanged.
+        Unaffected by offset_rounding, which is a separate (and now fixed) truncation bug.
         """
         assert isinstance(bands, dict), "Bands must be a dictionary"
+        ref_res = BAND_RESOLUTIONS[self.conf.reference_band]
         interpolators = {}
         for band in bands.keys():
+            res = BAND_RESOLUTIONS[band]
+            half = 0.5 * (res - ref_res)
             interpolators[band] = RegularGridInterpolator((
-                    np.arange(bands[band].shape[0]) * BAND_RESOLUTIONS[band],
-                    np.arange(bands[band].shape[1]) * BAND_RESOLUTIONS[band]
-                ), 
-                bands[band], 
+                    np.arange(bands[band].shape[0]) * res + half,
+                    np.arange(bands[band].shape[1]) * res + half
+                ),
+                bands[band],
                 fill_value=np.nan,
-                bounds_error=False, 
+                bounds_error=False,
                 method='linear'
             )
         return interpolators
@@ -260,25 +310,45 @@ class ColumnIterator:
         self.process.start()
 
     def _worker(self, queue, n_workers):
-        for i in range(self.length):
-            column = self.extractor[i]
+        """Produce one queue item per column.
 
-            while queue.full():
-                time.sleep(0.1)  # Wait for space in the queue
-                
-            if column is not None:
-                filename = f"column_{uuid.uuid4()}.pkl" 
-                column_path = os.path.join(self.temp_dir, filename)
-                
-                with open(column_path, 'wb') as f:
-                    pickle.dump(column, f)
-                
-                queue.put(column_path)
-            else:
-                queue.put("EMPTY_COLUMN")
+        Every exit path must send the sentinels, or the consumers block for
+        ever: they only stop on None, and the main loop only stops once it has
+        counted one result per column. A column that cannot be built is sent as
+        EMPTY_COLUMN so the count still balances.
+        """
+        try:
+            for i in range(self.length):
+                try:
+                    column = self.extractor[i]
+                except Exception:
+                    logger.exception(
+                        "Column %d could not be built; sending it as empty", i)
+                    column = None
 
-        for _ in range(n_workers):
-            queue.put(None)
+                while queue.full():
+                    time.sleep(0.1)  # Wait for space in the queue
+
+                if column is not None:
+                    filename = f"column_{uuid.uuid4()}.pkl"
+                    column_path = os.path.join(self.temp_dir, filename)
+
+                    try:
+                        with open(column_path, 'wb') as f:
+                            pickle.dump(column, f)
+                    except Exception:
+                        logger.exception(
+                            "Column %d could not be written to %s; "
+                            "sending it as empty", i, self.temp_dir)
+                        queue.put("EMPTY_COLUMN")
+                        continue
+
+                    queue.put(column_path)
+                else:
+                    queue.put("EMPTY_COLUMN")
+        finally:
+            for _ in range(n_workers):
+                queue.put(None)
 
     def __iter__(self):
         return self

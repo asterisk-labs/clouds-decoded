@@ -1,6 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 import multiprocessing
+import queue
 import os
 import tempfile
 import pickle
@@ -16,7 +17,8 @@ from clouds_decoded.base_processor import BaseProcessor
 from .data import ColumnExtractor, ColumnIterator, RetrievalCube
 from .physics import heightsToOffsets
 from .config import CloudHeightConfig
-from clouds_decoded.constants import BAND_RESOLUTIONS
+from clouds_decoded.constants import (BAND_RESOLUTIONS, BAND_TIME_DELAYS,
+                                      ORBITAL_VELOCITY, SPACECRAFT_ALTITUDE)
 
 # Module-level logger setup
 logger = logging.getLogger(__name__)
@@ -103,9 +105,24 @@ class CloudHeightProcessor(BaseProcessor):
                     p.start()
 
                 total_columns = len(column_iterator)
+                stall_timeout = self.config.stall_timeout
                 with tqdm(total=total_columns, desc="Processing Columns") as pbar:
-                    for _ in range(total_columns):
-                        result = result_queue.get()
+                    for done in range(total_columns):
+                        try:
+                            result = result_queue.get(timeout=stall_timeout)
+                        except queue.Empty:
+                            # No result for stall_timeout seconds. A process that
+                            # died holding the queue's internal lock leaves every
+                            # survivor blocked in get() with nothing raised, so
+                            # waiting longer cannot recover it - abort the scene
+                            # and let the caller move on to the next one.
+                            self._report_stall(
+                                column_iterator, workers, done, total_columns,
+                                stall_timeout)
+                            raise RuntimeError(
+                                f"Cloud-height retrieval stalled after "
+                                f"{done}/{total_columns} columns "
+                                f"(no result for {stall_timeout:.0f}s)")
                         if 'error' in result:
                             logger.error(result['error'])
                         else:
@@ -151,7 +168,15 @@ class CloudHeightProcessor(BaseProcessor):
         
         # Prepare Metadata
         meta_dict = self.config.model_dump() if hasattr(self.config, 'model_dump') else self.config.dict()
-        meta = CloudHeightMetadata(processing_config=meta_dict)
+        # Named only when the quality bands are present. A plain height raster
+        # is left unnamed so the stats module keeps emitting flat keys -- see
+        # CloudHeightMetadata.band_names.
+        band_names = []
+        if (final_gridded_heights is not None and final_gridded_heights.ndim == 3
+                and final_gridded_heights.shape[0] > 1):
+            band_names = (["cloud_top_height"]
+                          + ["peak_correlation", "fwhm", "tied_span"][:final_gridded_heights.shape[0] - 1])
+        meta = CloudHeightMetadata(processing_config=meta_dict, band_names=band_names)
 
         # Calculate Transform and CRS
         if scene.transform is None:
@@ -174,6 +199,22 @@ class CloudHeightProcessor(BaseProcessor):
             transform=transform,
             crs=crs
         )
+
+    @staticmethod
+    def _report_stall(column_iterator, workers, done, total, timeout):
+        """Say exactly who is missing, so the next stall names its own cause."""
+        dead = [(p.pid, p.exitcode) for p in workers if p.exitcode is not None]
+        logger.error(
+            "Stalled after %d/%d columns: no result for %.0fs. "
+            "producer alive=%s, workers alive=%d/%d.",
+            done, total, timeout, column_iterator.process.is_alive(),
+            sum(p.is_alive() for p in workers), len(workers))
+        for pid, code in dead:
+            how = f"signal {-code}" if code < 0 else f"exit code {code}"
+            extra = " (SIGKILL - typically the OOM killer)" if code == -9 else ""
+            logger.error("  worker %s is gone: %s%s", pid, how, extra)
+        if not dead and not column_iterator.process.is_alive():
+            logger.error("  the producer exited without sending its sentinels")
 
     def _worker_job(self, data_queue, result_queue):
         while True:
@@ -210,7 +251,14 @@ class CloudHeightProcessor(BaseProcessor):
         max_offset = int(np.ceil(max_offset_val.max()))
         
         shape_0 = column.bands[self.config.reference_band].shape[0]
-        if column.direction == 'up':
+        if self.config.min_height < 0:
+            # Two-sided search: offsets run both ways, so keep the same margin at
+            # both ends. Otherwise the negative half of the grid would be clipped
+            # by the boundary check near one edge and look artificially unlikely.
+            min_offset_val = heightsToOffsets([self.config.min_height] * len(target_features), target_features.keys(), self.config.along_track_resolution)
+            margin = max(max_offset, int(np.ceil(np.abs(min_offset_val).max())))
+            centres = np.arange(along_track_size // 2 + margin, shape_0 - margin - along_track_size // 2, along_track_stride)
+        elif column.direction == 'up':
             centres = np.arange(along_track_size // 2, shape_0 - max_offset - along_track_size // 2, along_track_stride)
         else:
             centres = np.arange(along_track_size // 2 + max_offset, shape_0 - along_track_size // 2, along_track_stride)
@@ -248,7 +296,8 @@ class CloudHeightProcessor(BaseProcessor):
             offset = offsets[i]
             if np.isnan(offset): continue
             
-            start = int(centre - along_track_size/2 - offset)
+            raw_start = centre - along_track_size/2 - offset
+            start = int(round(raw_start)) if self.config.offset_rounding == "nearest" else int(raw_start)
             end = start + along_track_size
             if start < 0 or end > data.shape[0]: 
                 return 0 # Boundary check
@@ -375,13 +424,144 @@ class CloudHeightProcessor(BaseProcessor):
         # Final Height Selection (argmax of smoothed correlation)
         final_height_indices = np.nanargmax(smoothed_scores, axis=1)
         final_gridded_heights = self.config.heights[final_height_indices]
-        
+
+        if self.config.tie_break == "centre":
+            final_gridded_heights = self._tread_centre(
+                smoothed_scores, final_height_indices)
+
         final_gridded_heights = final_gridded_heights.astype(np.float32)
         final_gridded_heights[all_nan_mask] = np.nan
 
         # Mark zero-height pixels as invalid — height=0 is the search lower
-        # bound, not a physically meaningful cloud height.
-        final_gridded_heights[final_gridded_heights <= 0] = np.nan
+        # bound, not a physically meaningful cloud height. Skipped when the grid
+        # is deliberately two-sided: there 0 is an interior point, not a floor,
+        # and the negative retrievals are the whole point of the diagnostic.
+        if self.config.min_height >= 0:
+            final_gridded_heights[final_gridded_heights <= 0] = np.nan
 
         # Reshape to grid
-        return final_gridded_heights.reshape(grid_y.shape)
+        if not getattr(self.config, "quality_bands", False):
+            return final_gridded_heights.reshape(grid_y.shape)
+
+        # Band 0 stays the height so existing consumers, which all index [0],
+        # are unaffected. The quality bands are masked to match it, so a cell is
+        # either fully described or fully absent.
+        extra = self._quality_bands(smoothed_scores, final_height_indices)
+        invalid = ~np.isfinite(final_gridded_heights)
+        extra = [np.where(invalid, np.nan, b).astype(np.float32) for b in extra]
+        stack = np.stack([final_gridded_heights, *extra])
+        return stack.reshape((stack.shape[0],) + grid_y.shape)
+
+    def _tread_centre(self, scores, first_max_idx):
+        """Midpoint of the tied run of heights that share the winning score.
+
+        The patch offset is rounded to a whole cell of the along-track grid, so
+        every candidate height inside one cell-crossing slices the SAME rows out
+        of the band array and scores identically. The winning "tread" therefore
+        says only that the height lies somewhere inside it, and reporting either
+        end is a statement about array ordering rather than about the data --
+        ``np.nanargmax`` returns the first maximum and ``config.heights``
+        ascends, so the historical answer is the tread's floor, low by half a
+        tread. Build the grid descending and the same code returns the ceiling.
+
+        The ties are exact: for two heights on one tread every contributing
+        neighbour has an identical score, and the smoothing sums identical
+        values with identical weights. ``tol`` is only a guard.
+
+        Args:
+            scores: (n_points, n_heights) smoothed correlation scores.
+            first_max_idx: ``np.nanargmax(scores, axis=1)``, i.e. the tread floor.
+
+        Returns:
+            Height per point, the midpoint of its tied tread.
+        """
+        heights = np.asarray(self.config.heights)
+        last_idx, peak = self._tied_run(scores, first_max_idx)
+        centres = 0.5 * (heights[first_max_idx] + heights[last_idx])
+
+        # A tread midpoint only means something if there is a peak to be inside
+        # of. Two ways a curve carries no information at all, and both tie far
+        # wider than any real tread:
+        #   * a constant patch takes the `np.std(patch) > 0` else-branch in
+        #     _correlateAtHeight and normalises to all zeros, so every height
+        #     scores exactly 0;
+        #   * the out-of-range sentinel there also returns 0, so a cell whose
+        #     real correlations are all negative peaks at 0 on the clipped tail.
+        # Reporting the midpoint of that is inventing a height: the value is
+        # (min_height + max_height)/2, so it moves when max_height moves.
+        run_span = heights[last_idx] - heights[first_max_idx]
+        degenerate = (peak <= 0) | (run_span > self._max_tied_span())
+        centres = np.where(degenerate, np.nan, centres)
+        return centres.astype(np.float32)
+
+    def _tied_run(self, scores, first_max_idx):
+        """End of the exactly-tied run starting at the argmax, and the peak score.
+
+        ``np.nanargmax`` returns the FIRST maximum, so the run starts there;
+        walk forward to the first untied column to find where it ends.
+
+        Args:
+            scores: (n_points, n_heights) smoothed correlation scores.
+            first_max_idx: ``np.nanargmax(scores, axis=1)``.
+
+        Returns:
+            ``(last_idx, peak)`` -- the last index of the tied run, and the
+            winning score, both per point.
+        """
+        n, m = scores.shape
+        peak = scores[np.arange(n), first_max_idx]
+        tol = 1e-9 * np.maximum(np.abs(peak), 1.0)
+        # NaN >= x is False, so NaNs terminate a run rather than extend it.
+        tied = scores >= (peak - tol)[:, None]
+        cols = np.arange(m)[None, :]
+        breaks = (~tied) & (cols > first_max_idx[:, None])
+        last_idx = np.where(breaks.any(axis=1), breaks.argmax(axis=1) - 1, m - 1)
+        return last_idx, peak
+
+    def _quality_bands(self, scores, first_max_idx):
+        """Per-cell precision metrics, read off the score curve.
+
+        All three describe how well-localised the winning peak is. None of them
+        can tell whether it is in the RIGHT place -- see the ``quality_bands``
+        config description.
+
+        Returns:
+            ``(peak_correlation, fwhm, tied_span)``. ``fwhm`` and ``tied_span``
+            are in metres.
+        """
+        heights = np.asarray(self.config.heights)
+        step = float(self.config.height_step)
+        last_idx, peak = self._tied_run(scores, first_max_idx)
+
+        # Half-max is taken against each curve's OWN amplitude, so a strong flat
+        # curve and a weak flat curve are described alike; an absolute threshold
+        # would conflate amplitude with width.
+        floor = np.nanmin(scores, axis=1)
+        half = floor + 0.5 * (peak - floor)
+        fwhm = np.count_nonzero(scores >= half[:, None], axis=1) * step
+
+        tied_span = heights[last_idx] - heights[first_max_idx]
+        return peak.astype(np.float32), fwhm.astype(np.float32), tied_span.astype(np.float32)
+
+    def _max_tied_span(self):
+        """Widest a legitimately tied run can be, in metres.
+
+        A run ends as soon as ANY band's rounded offset changes, and band b's
+        offset moves one cell every ``along_track_resolution * H / (V * dt_b)``
+        metres of height. The reference band never moves -- its delay is the
+        epoch, so its offset is identically zero -- and is excluded.
+
+        Takes the WIDEST tread over the bands in use rather than the narrowest,
+        which is deliberately permissive: it can never reject a real tread, and
+        it does not weaken the check, because a degenerate run spans the whole
+        height grid (~21 km against ~1.2 km here). One ``height_step`` of slack
+        covers the grid sampling. Falls back to all known bands when the config
+        does not pin the band list, since the scene's bands are not visible here.
+        """
+        bands = list(getattr(self.config, "bands", None) or BAND_TIME_DELAYS)
+        treads = [self.config.along_track_resolution * SPACECRAFT_ALTITUDE
+                  / (ORBITAL_VELOCITY * BAND_TIME_DELAYS[b])
+                  for b in bands if BAND_TIME_DELAYS.get(b, 0) > 0]
+        if not treads:                      # only the epoch band: nothing moves
+            return float("inf")
+        return max(treads) + self.config.height_step
