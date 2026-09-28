@@ -49,6 +49,7 @@ dependencies = [
 
 [tool.setuptools.package-data]
 "clouds_decoded.workflows" = ["recipes/*.yaml"]
+"clouds_decoded.visualisation" = ["assets/*"]
 
 [project.optional-dependencies]
 viz = ["panel", "holoviews", "bokeh"]
