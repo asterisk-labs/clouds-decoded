@@ -11,6 +11,7 @@ from typing import Optional, Any, Dict, List, Tuple, Union, ClassVar
 
 from .base import Data
 from .band import Sentinel2Band, BandDict, BandUnit
+from .band_source import BandSource, open_band_source, scale_crop_window
 
 logger = logging.getLogger(__name__)
 from ..constants import BANDS, BAND_RESOLUTIONS
@@ -33,6 +34,7 @@ class Sentinel2Scene(Data):
 
     _band_cache: Dict[tuple, Sentinel2Band] = PrivateAttr(default_factory=dict)
     _resized_band_cache: Dict[tuple, np.ndarray] = PrivateAttr(default_factory=dict)
+    _band_source: Optional[BandSource] = PrivateAttr(default=None)
     sun_zenith: Optional[float] = None
     sun_azimuth: Optional[float] = None
     view_zenith: Optional[float] = None
@@ -78,17 +80,29 @@ class Sentinel2Scene(Data):
     def read(self, filepath: Union[str, Path], bands: List[str] = None, crop_window: Tuple[int, int, int, int] = None):
         """
         Read data from a Sentinel-2 scene directory.
-        
+
+        The band images are read through the product's band source: its
+        JPEG 2000 images, or, for a compressed product (a ``COMPRESSED.json``
+        manifest at the product root), the reader the manifest names. See
+        ``band_source.py``.
+
         Args:
             filepath: Path to .SAFE directory
             bands: List of band names to load
             crop_window: Optional tuple (col_off, row_off, width, height) in 10m pixels (B02 frame).
                          If provided, effectively crops the scene to this window.
+
+        Raises:
+            ImportError: If a compressed product's reader needs a package that
+                is not installed.
         """
         self.scene_directory = Path(filepath)
         if bands is None:
              bands = BANDS
-             
+        self._band_source = open_band_source(
+            self.scene_directory,
+            lambda names: self._get_band_paths(self.scene_directory, names))
+
         # Use object.__setattr__ to bypass Pydantic's Dict[str, Any] coercion
         # which would strip BandDict to plain dict
         object.__setattr__(self, 'bands', self._get_bands(self.scene_directory, bands, crop_window))
@@ -100,24 +114,19 @@ class Sentinel2Scene(Data):
         
         try:
              # Use B02 as reference for CRS and Transform (10m resolution)
-             ref_paths = self._get_band_paths(self.scene_directory, ["B02"])
-             if "B02" in ref_paths:
-                  with rio.open(ref_paths["B02"]) as src:
-                       self.crs = src.crs
-                       base_transform = src.transform
-                       full_width, full_height = src.width, src.height
-                  
-                  if crop_window:
-                       col_off, row_off, width, height = crop_window
-                       self.transform = rio.windows.transform(
-                           Window(col_off, row_off, width, height),
-                           base_transform
-                       )
-                       scene_width, scene_height = width, height
-                  else:
-                       self.transform = base_transform
-                       scene_width, scene_height = full_width, full_height
-                       
+             ref = self._band_source.georef()
+             self.crs = ref.crs
+             if crop_window:
+                  col_off, row_off, width, height = crop_window
+                  self.transform = rio.windows.transform(
+                      Window(col_off, row_off, width, height),
+                      ref.transform
+                  )
+                  scene_width, scene_height = width, height
+             else:
+                  self.transform = ref.transform
+                  scene_width, scene_height = ref.width, ref.height
+
         except Exception as e:
              # Just warn, don't crash if we can't extract CRS
              logger.warning(f"Could not extract CRS/Transform: {e}")
@@ -143,6 +152,18 @@ class Sentinel2Scene(Data):
             self.scene_directory
         )
         self.sensing_time = self._get_sensing_time(self.scene_directory)
+
+    @property
+    def band_source(self) -> Optional[BandSource]:
+        """Where the band images were read from (``None`` before ``read()``)."""
+        return self._band_source
+
+    @property
+    def compression(self) -> Optional[Dict[str, Any]]:
+        """Codec provenance of a compressed product, ``None`` for a standard one."""
+        if self._band_source is None or self._band_source.name == "jp2":
+            return None
+        return self._band_source.describe()
 
     def _calculate_center_coords(self, width: int, height: int) -> Tuple[float, float]:
         """Calculate center latitude/longitude based on current transform and size."""
@@ -476,6 +497,9 @@ class Sentinel2Scene(Data):
         constants, which may differ from actual pixel dimensions in newer
         SAFE processing baselines.
         """
+        if self._band_source is not None:
+            ref = self._band_source.georef()
+            return ref.width, ref.height
         if 'B02' in existing_paths:
             b02_path = existing_paths['B02']
         else:
@@ -503,35 +527,21 @@ class Sentinel2Scene(Data):
         Returns:
             A rasterio ``Window`` in the target band's pixel coordinates.
         """
-        col_off, row_off, width, height = crop_window
-        scale_x = src_w / b02_w
-        scale_y = src_h / b02_h
-        return Window(
-            col_off=int(col_off * scale_x),
-            row_off=int(row_off * scale_y),
-            width=int(width * scale_x),
-            height=int(height * scale_y),
-        )
+        return scale_crop_window(crop_window, b02_w, b02_h, src_w, src_h)
 
     def _get_bands(self, scene_directory: Path, bands: List[str], crop_window=None):
-        paths = self._get_band_paths(scene_directory, bands)
+        source = self._band_source
+        if source is None:
+            source = open_band_source(
+                scene_directory, lambda names: self._get_band_paths(scene_directory, names))
         bands_data = BandDict()
-        if crop_window:
-            b02_w, b02_h = self._get_b02_dims(scene_directory, paths)
-        for band, path in paths.items():
-            with rio.open(path) as src:
-                if crop_window:
-                    window = self._scale_crop_window(crop_window, b02_w, b02_h, src.width, src.height)
-                    data = src.read(1, window=window)
-                else:
-                    data = src.read(1)
-                # Use the actual pixel size from the jp2 transform:
-                actual_res = round(abs(src.transform.a))
-                bands_data[band] = Sentinel2Band(
-                    name=band,
-                    data=data,
-                    native_resolution=actual_res,
-                )
+        for band, data in source.read(list(bands), crop_window).items():
+            bands_data[band] = Sentinel2Band(
+                name=band,
+                data=data,
+                # the actual pixel size, not the nominal one
+                native_resolution=source.native_resolution(band),
+            )
         return bands_data
 
     def _get_footprints(self, scene_directory: Path, bands: List[str], crop_window=None):
@@ -665,12 +675,16 @@ class Sentinel2Scene(Data):
         angle = -np.arctan2(horizontal_dist, vertical_dist)
         return angle
 
+    def _reference_bounds(self, scene_directory: Path):
+        """Bounds and CRS of the full product's B02 grid."""
+        source = self._band_source or open_band_source(
+            scene_directory, lambda names: self._get_band_paths(scene_directory, names))
+        ref = source.georef()
+        return rio.coords.BoundingBox(*ref.bounds), ref.crs
+
     def _get_latitude(self, scene_directory: Path):
-        paths = self._get_band_paths(scene_directory, bands=['B02'])
-        with rio.open(paths['B02']) as src:
-            bounds = src.bounds
-            crs = src.crs
-            
+        bounds, crs = self._reference_bounds(scene_directory)
+
         transform = pyproj.transformer.Transformer.from_crs(crs, 'EPSG:4326', always_xy=True)
         # Lat is Y
         lat = (
@@ -680,11 +694,8 @@ class Sentinel2Scene(Data):
         return lat
         
     def _get_longitude(self, scene_directory: Path):
-        paths = self._get_band_paths(scene_directory, bands=['B02'])
-        with rio.open(paths['B02']) as src:
-            bounds = src.bounds
-            crs = src.crs
-            
+        bounds, crs = self._reference_bounds(scene_directory)
+
         transform = pyproj.transformer.Transformer.from_crs(crs, 'EPSG:4326', always_xy=True)
         # Lon is X
         lon = (
