@@ -14,7 +14,7 @@ from clouds_decoded.constants import BANDS, BAND_RESOLUTIONS
 from clouds_decoded.data import Sentinel2Scene
 from clouds_decoded.data.band_source import (
     MANIFEST_FORMAT, MANIFEST_NAME, Jp2BandSource, open_band_source, read_manifest,
-    require_optional, scale_crop_window)
+    require_optional, resolve_level, scale_crop_window)
 
 B02 = 120  # synthetic product: 120 px at 10 m, 60 at 20 m, 20 at 60 m
 ORIGIN = Affine.translation(300000.0, 5000000.0)
@@ -54,8 +54,9 @@ def safe(tmp_path):
     return root, arrays
 
 
-def _jp2_source(root):
-    return open_band_source(root, lambda names: Sentinel2Scene()._get_band_paths(root, names))
+def _jp2_source(root, level=None):
+    return open_band_source(root, lambda names: Sentinel2Scene()._get_band_paths(root, names),
+                            level=level)
 
 
 class TestScaleCropWindow:
@@ -125,6 +126,33 @@ class TestManifest:
             _jp2_source(safe[0])
 
 
+class TestLevels:
+    MANIFEST = dict(format=MANIFEST_FORMAT, version=2, reader="georvq", store="s.zarr",
+                    default="8-8", levels={"8-8": {"quality": "8-8"}, "8-0": {"quality": "8-0"}})
+
+    def test_default_level(self):
+        m = resolve_level(self.MANIFEST)
+        assert m["level"] == "8-8" and m["quality"] == "8-8" and "levels" not in m
+
+    def test_chosen_level(self):
+        m = resolve_level(self.MANIFEST, "8-0")
+        assert m["quality"] == "8-0" and m["store"] == "s.zarr"
+
+    def test_unknown_level(self):
+        with pytest.raises(ValueError, match="no level '8-4'"):
+            resolve_level(self.MANIFEST, "8-4")
+
+    def test_single_level_manifest(self):
+        m = dict(format=MANIFEST_FORMAT, version=1, reader="sz3", codec={"name": "sz3"})
+        assert resolve_level(m) is m
+        with pytest.raises(ValueError, match="single level"):
+            resolve_level(m, "abs-10")
+
+    def test_level_of_standard_product(self, safe):
+        with pytest.raises(ValueError, match="not a compressed product"):
+            _jp2_source(safe[0], level="8-4")
+
+
 class TestOptionalDependencies:
     def test_require_optional_explains(self):
         with pytest.raises(ImportError, match="not a clouds-decoded dependency.*pip install x"):
@@ -151,12 +179,39 @@ def _skip_without(codec):
 
 
 class TestTiled:
-    def _make(self, safe, codec, params, layout):
+    def _make(self, safe, codec, params, layout, level=None):
         from clouds_decoded.data.compressed.tiled import write_tiled_safe
         root, _ = safe
         out = root.parent / f"{codec}-{layout}" / root.name
-        manifest = write_tiled_safe(root, out, codec, params, layout=layout, tile=60, n_workers=2)
-        return out, manifest, _jp2_source(out)
+        manifest = write_tiled_safe(root, out, codec, params, level=level, layout=layout,
+                                    tile=60, n_workers=2)
+        return out, manifest, _jp2_source(out, level=level)
+
+    def test_levels_in_one_product(self, safe):
+        _skip_without("sz3")
+        _, arrays = safe
+        out, fine, _ = self._make(safe, "sz3", {"abs": 5}, "separate", level="fine")
+        _, coarse, _ = self._make(safe, "sz3", {"abs": 200}, "separate", level="coarse")
+        assert fine["bits_per_pixel"] > coarse["bits_per_pixel"]
+        m = read_manifest(out)
+        assert set(m["levels"]) == {"fine", "coarse"} and m["default"] == "fine"
+        for level, bound in (("fine", 5), ("coarse", 200), (None, 5)):
+            b02 = _jp2_source(out, level=level).read(["B02"])["B02"]
+            v = arrays["B02"] > 0
+            assert np.abs(b02[v].astype(int) - arrays["B02"][v]).max() <= bound
+        assert (out / "GRANULE" / "L1C_TEST" / "IMG_DATA" / "coarse" / "10m.bin").exists()
+        with pytest.raises(FileExistsError):
+            self._make(safe, "sz3", {"abs": 7}, "separate", level="fine")
+
+    def test_level_of_other_codec_rejected(self, safe):
+        _skip_without("sz3")
+        _skip_without("jpegxl")
+        self._make(safe, "sz3", {"abs": 25}, "separate")
+        from clouds_decoded.data.compressed.tiled import write_tiled_safe
+        root = safe[0]
+        with pytest.raises(ValueError, match="sz3 product, not jpegxl"):
+            write_tiled_safe(root, root.parent / "sz3-separate" / root.name, "jpegxl",
+                             {"distance": 1.0}, tile=60)
 
     @pytest.mark.parametrize("layout", ["separate", "grouped"])
     def test_sz3_round_trip(self, safe, layout):
@@ -195,7 +250,7 @@ class TestTiled:
         _skip_without("sz3")
         out, _, _ = self._make(safe, "sz3", {"abs": 25}, "separate")
         img = out / "GRANULE" / "L1C_TEST" / "IMG_DATA"
-        assert not list(img.glob("*.jp2"))
+        assert not list(img.rglob("*.jp2"))
         assert (out / "MTD_MSIL1C.xml").exists()
         assert (out / "GRANULE" / "L1C_TEST" / "MTD_TL.xml").exists()
 

@@ -826,6 +826,15 @@ class ProjectConfig(BaseModel):
             "first use, not during project init."
         ),
     )
+    compression_level: Optional[str] = Field(
+        default=None,
+        description=(
+            "For scenes that are compressed products holding several levels "
+            "(rates), the level to read. None reads each product's default. "
+            "A project runs one level, so comparing levels takes a project "
+            "per level."
+        ),
+    )
     stats: List[str] = Field(
         default_factory=lambda: [
             "cloud_mask::class_fractions",
@@ -933,6 +942,7 @@ class Project:
         name: Optional[str] = None,
         pipeline: str = "full-workflow",
         clone_from: Optional[str] = None,
+        compression_level: Optional[str] = None,
     ) -> "Project":
         """Create a new project directory with default config YAMLs.
 
@@ -959,6 +969,7 @@ class Project:
         config = ProjectConfig(
             name=name, pipeline=pipeline, workflow=workflow,
             created_at=datetime.now().isoformat(),
+            compression_level=compression_level,
         )
         config.to_yaml(project_dir / "project.yaml")
 
@@ -1449,9 +1460,10 @@ class Project:
             if len(parts) != 4:
                 raise ValueError(f"crop_window must have 4 comma-separated integers, got {len(parts)}")
             col_off, row_off, width, height = map(int, parts)
-            scene.read(ctx.scene_path, crop_window=(col_off, row_off, width, height))
+            scene.read(ctx.scene_path, crop_window=(col_off, row_off, width, height),
+                       level=self.config.compression_level)
         else:
-            scene.read(ctx.scene_path)
+            scene.read(ctx.scene_path, level=self.config.compression_level)
 
         # Populate scene_metadata and run footprint (best-effort, never raises)
         self._write_scene_metadata(scene, scene_id)

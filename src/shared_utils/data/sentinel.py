@@ -77,7 +77,8 @@ class Sentinel2Scene(Data):
                 bd[k] = v
             object.__setattr__(self, 'bands', bd)
 
-    def read(self, filepath: Union[str, Path], bands: List[str] = None, crop_window: Tuple[int, int, int, int] = None):
+    def read(self, filepath: Union[str, Path], bands: List[str] = None,
+             crop_window: Tuple[int, int, int, int] = None, level: Optional[str] = None):
         """
         Read data from a Sentinel-2 scene directory.
 
@@ -91,17 +92,21 @@ class Sentinel2Scene(Data):
             bands: List of band names to load
             crop_window: Optional tuple (col_off, row_off, width, height) in 10m pixels (B02 frame).
                          If provided, effectively crops the scene to this window.
+            level: For a compressed product holding several levels (rates), the
+                   level to read; ``None`` reads the product's default.
 
         Raises:
             ImportError: If a compressed product's reader needs a package that
                 is not installed.
+            ValueError: If ``level`` is not one of the product's levels.
         """
         self.scene_directory = Path(filepath)
         if bands is None:
              bands = BANDS
         self._band_source = open_band_source(
             self.scene_directory,
-            lambda names: self._get_band_paths(self.scene_directory, names))
+            lambda names: self._get_band_paths(self.scene_directory, names),
+            level=level)
 
         # Use object.__setattr__ to bypass Pydantic's Dict[str, Any] coercion
         # which would strip BandDict to plain dict

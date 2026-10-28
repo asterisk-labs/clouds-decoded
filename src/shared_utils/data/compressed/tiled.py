@@ -1,9 +1,11 @@
 """Tiled SZ3 / JPEG XL band data as a band source.
 
-Each band's native grid is cut into square tiles (``tile`` B02 pixels on
+A product holds one or more levels of one codec, each in
+``IMG_DATA/<level>/`` with its own codec parameters, listed in the
+manifest's ``levels``. Each band's native grid is cut into square tiles (``tile`` B02 pixels on
 a side, the same ground area at every resolution) and every tile is coded
 on its own, so a crop window decodes only the tiles it touches. Bands of
-one resolution group share a file, ``IMG_DATA/<group>.bin``, a plain
+one resolution group share a file, ``IMG_DATA/<level>/<group>.bin``, a plain
 concatenation of coded blobs located by the manifest's index.
 
 Layouts:
@@ -31,8 +33,10 @@ Codec parameters, as in ``imagecodecs``:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import shutil
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -44,7 +48,7 @@ from affine import Affine
 from rasterio.crs import CRS
 from rasterio.windows import Window
 
-from ..band_source import BandGeoref, BandSource, require_optional
+from ..band_source import BandGeoref, BandSource, read_manifest, require_optional, resolve_level
 from ...constants import BANDS
 from .shell import make_shell, write_manifest
 
@@ -210,33 +214,68 @@ class TiledBandSource(BandSource):
         return out
 
     def describe(self) -> Dict[str, Any]:
-        return {"reader": self.name, "codec": self.codec, "layout": self.layout,
+        return {"reader": self.name, "codec": self.codec, "level": self.manifest.get("level"),
+                "layout": self.layout,
                 "params": self.params, "bits_per_pixel": self.manifest.get("bits_per_pixel")}
 
 
+def _level_name(params: Dict[str, Any]) -> str:
+    return "_".join(f"{k}-{v:g}" if isinstance(v, (int, float)) else f"{k}-{v}"
+                    for k, v in params.items())
+
+
+def _ensure_shell(safe: Path, out_safe: Path, link: bool) -> Path:
+    """The product's skeleton, made if it does not exist yet. It is built
+    beside the target and renamed into place, so writers of different
+    levels can race to create it."""
+    if not out_safe.exists():
+        tmp = out_safe.with_name(f"{out_safe.name}.shell-{os.getpid()}")
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        make_shell(safe, tmp, link=link)
+        try:
+            os.rename(tmp, out_safe)
+        except OSError:  # another writer made it first
+            shutil.rmtree(tmp)
+    granules = [p for p in (out_safe / "GRANULE").iterdir() if p.is_dir()]
+    if len(granules) != 1:
+        raise ValueError(f"expected one granule in {out_safe}, found {len(granules)}")
+    return granules[0]
+
+
 def write_tiled_safe(safe: Union[str, Path], out_safe: Union[str, Path], codec: str,
-                     params: Dict[str, Any], layout: str = "separate",
-                     tile: int = DEFAULT_TILE, link_shell: bool = False,
-                     n_workers: Optional[int] = None) -> Dict[str, Any]:
-    """Compress a ``.SAFE`` product's band images into a tiled compressed product.
+                     params: Dict[str, Any], level: Optional[str] = None,
+                     layout: str = "separate", tile: int = DEFAULT_TILE,
+                     link_shell: bool = False, n_workers: Optional[int] = None) -> Dict[str, Any]:
+    """Compress a ``.SAFE`` product's band images as one level of a tiled
+    compressed product.
+
+    The compressed product is created if it does not exist; otherwise the
+    level is added to it, so one product directory holds every level of a
+    codec, each in ``IMG_DATA/<level>/``, and the manifest lists them. The
+    level with the most bits per pixel is the default. Levels may be
+    written concurrently by separate processes.
 
     Args:
         safe: The original ``.SAFE`` directory.
-        out_safe: The compressed ``.SAFE`` directory to create.
+        out_safe: The compressed ``.SAFE`` directory.
         codec: ``"sz3"`` or ``"jpegxl"``.
         params: Codec parameters (see the module docstring).
+        level: Level name (default: from the parameters, e.g. ``"abs-45"``).
         layout: ``"separate"`` or ``"grouped"`` (SZ3 only).
         tile: Tile side in B02 pixels; must divide evenly onto every grid.
         link_shell: Symlink the metadata files to ``safe`` instead of copying them.
         n_workers: Coding threads (default: all CPUs).
 
     Returns:
-        The manifest, including the coded size of each group, ``bytes``, and
-        ``bits_per_pixel`` (all band data and masks, per B02 pixel).
+        The manifest as resolved for this level, including the coded size of
+        each group, ``bytes``, and ``bits_per_pixel`` (all band data and masks,
+        per B02 pixel).
 
     Raises:
         ValueError: For an unknown codec or layout, a grouped JPEG XL product,
-            or a tile that does not fit a grid.
+            a tile that does not fit a grid, or a product of another codec.
+        FileExistsError: If the product already has the level.
     """
     if codec not in CODECS:
         raise ValueError(f"codec must be one of {CODECS}, got '{codec}'")
@@ -248,6 +287,13 @@ def write_tiled_safe(safe: Union[str, Path], out_safe: Union[str, Path], codec: 
     from ..sentinel import Sentinel2Scene
 
     safe, out_safe = Path(safe), Path(out_safe)
+    level = level or _level_name(params)
+    existing = read_manifest(out_safe) if out_safe.exists() else None
+    if existing is not None:
+        if existing["reader"] != codec:
+            raise ValueError(f"{out_safe} is a {existing['reader']} product, not {codec}")
+        if level in existing.get("levels", {}):
+            raise FileExistsError(f"{out_safe} already has level '{level}'")
     paths = Sentinel2Scene()._get_band_paths(safe, BANDS)
     with rio.open(paths["B02"]) as src:
         georef = dict(crs=src.crs.to_wkt(), transform=list(src.transform)[:6],
@@ -258,8 +304,11 @@ def write_tiled_safe(safe: Union[str, Path], out_safe: Union[str, Path], codec: 
             bands[b] = dict(shape=[src.height, src.width], res=round(abs(src.transform.a)))
         by_shape.setdefault(tuple(bands[b]["shape"]), []).append(b)
 
-    granule = make_shell(safe, out_safe, link=link_shell)
-    img = granule.relative_to(out_safe) / "IMG_DATA"
+    granule = _ensure_shell(safe, out_safe, link_shell)
+    img = granule.relative_to(out_safe) / "IMG_DATA" / level
+    if (out_safe / img).exists():  # partial, from an interrupted write
+        shutil.rmtree(out_safe / img)
+    (out_safe / img).mkdir(parents=True)
     groups, sizes = {}, {}
     pool = ThreadPoolExecutor(n_workers or os.cpu_count() or 1)
     try:
@@ -318,7 +367,19 @@ def write_tiled_safe(safe: Union[str, Path], out_safe: Union[str, Path], codec: 
     finally:
         pool.shutdown()
     total = sum(sizes.values())
-    return write_manifest(
-        out_safe, codec, codec={"name": codec, "params": params}, layout=layout, tile=tile,
-        georef=georef, bands=bands, groups=groups, bytes=dict(sizes, total=total),
-        bits_per_pixel=8 * total / (georef["width"] * georef["height"]))
+    entry = dict(codec={"name": codec, "params": params}, layout=layout, tile=tile,
+                 groups=groups, bytes=dict(sizes, total=total),
+                 bits_per_pixel=8 * total / (georef["width"] * georef["height"]))
+    # the manifest is shared by every level's writer: update it under a lock
+    fd = os.open(out_safe, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        current = read_manifest(out_safe) or {}
+        all_levels = dict(current.get("levels", {}), **{level: entry})
+        manifest = write_manifest(
+            out_safe, codec, georef=georef, bands=bands, levels=all_levels,
+            default=max(all_levels, key=lambda k: all_levels[k]["bits_per_pixel"]))
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    return resolve_level(manifest, level)

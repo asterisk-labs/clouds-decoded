@@ -27,8 +27,10 @@ app = typer.Typer(help="Clouds Decoded Command Line Interface")
 
 # --- Private Helpers ---
 
-def _load_scene(scene_path: str, crop_window: Optional[str] = None) -> Sentinel2Scene:
-    """Load a Sentinel2Scene, optionally applying a spatial crop."""
+def _load_scene(scene_path: str, crop_window: Optional[str] = None,
+                level: Optional[str] = None) -> Sentinel2Scene:
+    """Load a Sentinel2Scene, optionally applying a spatial crop, at a
+    compressed product's level (``None``: its default)."""
     from clouds_decoded.data import Sentinel2Scene
 
     logger.info(f"Loading Scene: {scene_path}")
@@ -42,9 +44,9 @@ def _load_scene(scene_path: str, crop_window: Optional[str] = None) -> Sentinel2
                 f"Invalid crop window '{crop_window}': {e}. "
                 f"Expected format: 'col_off,row_off,width,height' (4 integers)."
             )
-        scene.read(scene_path, crop_window=(col_off, row_off, width, height))
+        scene.read(scene_path, crop_window=(col_off, row_off, width, height), level=level)
     else:
-        scene.read(scene_path)
+        scene.read(scene_path, level=level)
     return scene
 
 
@@ -270,12 +272,14 @@ def cloud_height(
     config_path: Optional[str] = typer.Option(None, help="Config YAML (overrides flags)"),
     mask_path: Optional[str] = typer.Option(None, help="Path to cloud mask file"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    compression_level: Optional[str] = typer.Option(
+        None, help="Level (rate) to read a compressed product at; default: the product's default"),
     use_emulator: bool = typer.Option(True, help="Use Deep Learning Emulator for height retrieval"),
 ):
     """Calculate Cloud Height from Sentinel-2 data."""
     from clouds_decoded.modules.cloud_height.config import CloudHeightConfig
     from clouds_decoded.modules.cloud_height_emulator.config import CloudHeightEmulatorConfig
-    scene = _load_scene(scene_path, crop_window)
+    scene = _load_scene(scene_path, crop_window, compression_level)
 
     if config_path:
         if use_emulator:
@@ -301,13 +305,15 @@ def cloud_mask(
     threshold_value: float = typer.Option(0.06, help="Reflectance threshold (0-1)"),
     resolution: int = typer.Option(20, help="Model resolution in meters (default 20 for deep learning)"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    compression_level: Optional[str] = typer.Option(
+        None, help="Level (rate) to read a compressed product at; default: the product's default"),
 ):
     """
     Calculate Cloud Mask from Sentinel-2 data.
     Supports deep learning (SegFormer-B2) and simple thresholding.
     """
     from clouds_decoded.modules.cloud_mask.config import CloudMaskConfig
-    scene = _load_scene(scene_path, crop_window)
+    scene = _load_scene(scene_path, crop_window, compression_level)
 
     if config_path:
         mask_config = CloudMaskConfig.from_yaml(config_path)
@@ -330,10 +336,12 @@ def cloud_properties(
     config_path: Optional[str] = typer.Option(None, help="Refl2Prop config YAML (sets model_path, bands, etc.)"),
     properties_method: str = typer.Option("standard", help="Properties method: 'standard' or 'shading'"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    compression_level: Optional[str] = typer.Option(
+        None, help="Level (rate) to read a compressed product at; default: the product's default"),
 ):
     """Run Cloud Property Inversion (Refl2Prop). Requires pre-calculated cloud heights."""
     from clouds_decoded.modules.refl2prop.config import Refl2PropConfig, ShadingRefl2PropConfig
-    scene = _load_scene(scene_path, crop_window)
+    scene = _load_scene(scene_path, crop_window, compression_level)
 
     if properties_method == "shading":
         config = ShadingRefl2PropConfig.from_yaml(config_path)
@@ -351,6 +359,8 @@ def refocus(
     output_resolution: Optional[int] = typer.Option(None, help="Common output resolution (meters). None=native."),
     interpolation_order: int = typer.Option(1, help="Interpolation order (0=nearest, 1=bilinear, 3=cubic)"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    compression_level: Optional[str] = typer.Option(
+        None, help="Level (rate) to read a compressed product at; default: the product's default"),
 ):
     """
     Refocus (parallax-correct) Sentinel-2 bands using cloud height data.
@@ -360,7 +370,7 @@ def refocus(
     warped to align with it.
     """
     from clouds_decoded.modules.refocus.config import RefocusConfig
-    scene = _load_scene(scene_path, crop_window)
+    scene = _load_scene(scene_path, crop_window, compression_level)
 
     config = RefocusConfig(
         output_resolution=output_resolution,
@@ -381,6 +391,8 @@ def albedo(
     model_path: Optional[str] = typer.Option(None, help="Path to trained data-driven albedo model checkpoint"),
     output_resolution: int = typer.Option(300, help="Output resolution in meters/pixel"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    compression_level: Optional[str] = typer.Option(
+        None, help="Level (rate) to read a compressed product at; default: the product's default"),
 ):
     """
     Estimate surface albedo from Sentinel-2 data.
@@ -389,7 +401,7 @@ def albedo(
     cloud mask is provided), or a trained MLP for data-driven estimation.
     """
     from clouds_decoded.modules.albedo_estimator.config import AlbedoEstimatorConfig
-    scene = _load_scene(scene_path, crop_window)
+    scene = _load_scene(scene_path, crop_window, compression_level)
 
     if config_path:
         albedo_config = AlbedoEstimatorConfig.from_yaml(config_path)
@@ -419,6 +431,8 @@ def full_workflow(
     scene_path: str = typer.Argument(..., help="Path to Sentinel-2 .SAFE directory"),
     output_dir: str = typer.Option("output", help="Directory for outputs"),
     crop_window: Optional[str] = typer.Option(None, help="Crop: 'col_off,row_off,width,height'"),
+    compression_level: Optional[str] = typer.Option(
+        None, help="Level (rate) to read a compressed product at; default: the product's default"),
     mask_method: str = typer.Option("senseiv2", help="Mask method: 'senseiv2' or 'threshold'"),
     use_emulator: bool = typer.Option(True, help="Use Deep Learning Emulator for height retrieval"),
     config: Optional[str] = typer.Option(None, help="Pipeline config YAML (overrides defaults)"),
@@ -475,7 +489,7 @@ def full_workflow(
     refocus_config = RefocusConfig(**refocus_cfg_dict)
 
     # Load scene once
-    scene = _load_scene(scene_path, crop_window)
+    scene = _load_scene(scene_path, crop_window, compression_level)
 
     # Step 1: Cloud Mask
     logger.info("Step 1: Cloud Mask")
@@ -544,6 +558,8 @@ def project_init(
              "The chosen recipe is embedded in project.yaml and can be edited directly.",
     ),
     clone: Optional[str] = typer.Option(None, help="Clone configs from an existing project directory"),
+    compression_level: Optional[str] = typer.Option(
+        None, help="Level (rate) to read compressed products at; default: each product's default"),
 ):
     """
     Initialize a new project directory with default configs.
@@ -563,6 +579,7 @@ def project_init(
             name=name,
             pipeline=pipeline,
             clone_from=clone,
+            compression_level=compression_level,
         )
         logger.info(f"\nEdit configs in {project.configs_dir}/ then run:")
         logger.info(f"  clouds-decoded project run {project_dir}")

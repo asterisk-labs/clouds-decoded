@@ -9,6 +9,14 @@ replaced by another representation, described by a ``COMPRESSED.json``
 manifest at the product root; the manifest's ``reader`` names the
 ``BandSource`` that decodes it.
 
+A compressed product can hold several *levels* (rates) of the same
+codec, e.g. georvq rungs 8-8, 8-4 and 8-0 read from one store, or SZ3 at
+several error bounds. The manifest then lists them under ``levels``, each
+entry holding the fields that differ between levels, and names a
+``default``; the level to read is chosen with ``Sentinel2Scene.read(...,
+level=...)`` (``--compression-level`` on the CLI, ``compression_level``
+in a project).
+
 Bands are decoded in *groups*. A JPEG 2000 band is its own group, but a
 representation that codes several bands jointly (georvq codes all 13
 together; SZ3 can code each resolution's bands as one stack) has to be
@@ -41,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 MANIFEST_NAME = "COMPRESSED.json"
 MANIFEST_FORMAT = "clouds-decoded-compressed"
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2  # 2 adds levels; version 1 manifests (one level) still read
 
 # reader name in a manifest -> "module:class", imported on first use
 READERS: Dict[str, str] = {
@@ -288,26 +296,67 @@ def read_manifest(scene_directory: Path) -> Optional[Dict[str, Any]]:
     return manifest
 
 
-def open_band_source(scene_directory: Path, band_paths=None) -> BandSource:
+def levels(manifest: Dict[str, Any]) -> List[str]:
+    """The level names of a manifest (empty for a single-level one)."""
+    return list(manifest.get("levels", {}))
+
+
+def resolve_level(manifest: Dict[str, Any], level: Optional[str] = None) -> Dict[str, Any]:
+    """The manifest as seen by a reader for one level: the product-wide
+    fields, overlaid with the level's own, plus ``level``.
+
+    Args:
+        manifest: A product manifest.
+        level: Level to read; ``None`` for the manifest's default.
+
+    Returns:
+        The resolved manifest.
+
+    Raises:
+        ValueError: If the level is not in the manifest.
+    """
+    if "levels" not in manifest:
+        if level is not None and level != manifest.get("level"):
+            raise ValueError(f"product has a single level ({manifest.get('level')}); "
+                             f"cannot read level '{level}'")
+        return manifest
+    name = manifest.get("default") if level is None else level
+    if name not in manifest["levels"]:
+        raise ValueError(f"no level '{name}' in the product; it has {levels(manifest)}")
+    out = {k: v for k, v in manifest.items() if k not in ("levels", "default")}
+    out.update(manifest["levels"][name])
+    out["level"] = name
+    return out
+
+
+def open_band_source(scene_directory: Path, band_paths=None,
+                     level: Optional[str] = None) -> BandSource:
     """The band source of a product directory.
 
     Args:
         scene_directory: The ``.SAFE`` directory.
         band_paths: Callable ``(bands) -> {band: path}`` locating the JPEG 2000
             images of a standard product.
+        level: For a compressed product with several levels, the level to
+            read (``None``: the manifest's default).
 
     Returns:
         A ``Jp2BandSource`` for a standard product, otherwise the reader the
         product's manifest names.
 
     Raises:
-        ValueError: If the manifest names an unknown reader.
+        ValueError: If the manifest names an unknown reader or level, or a
+            level is asked of a standard product.
         ImportError: If the reader needs a package that is not installed.
     """
     scene_directory = Path(scene_directory)
     manifest = read_manifest(scene_directory)
     if manifest is None:
+        if level is not None:
+            raise ValueError(f"{scene_directory.name} is not a compressed product; "
+                             f"it has no level '{level}'")
         return Jp2BandSource(scene_directory, band_paths)
+    manifest = resolve_level(manifest, level)
     reader = manifest.get("reader")
     if reader not in READERS:
         raise ValueError(

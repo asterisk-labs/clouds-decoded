@@ -342,6 +342,15 @@ class TestProjectConfig:
         loaded = ProjectConfig.from_yaml(yaml_path)
         assert loaded.name == "Test Project"
         assert loaded.pipeline == "full-workflow"
+        assert loaded.compression_level is None
+
+    def test_project_config_compression_level_roundtrip(self, tmp_path):
+        """A project's compression level survives YAML roundtrip."""
+        from clouds_decoded.project import ProjectConfig
+
+        config = ProjectConfig(name="Test Project", compression_level="8-4")
+        config.to_yaml(tmp_path / "project.yaml")
+        assert ProjectConfig.from_yaml(tmp_path / "project.yaml").compression_level == "8-4"
 
     def test_project_config_ignores_legacy_scenes_key(self, tmp_path):
         """ProjectConfig silently ignores a legacy 'scenes' key in YAML."""
